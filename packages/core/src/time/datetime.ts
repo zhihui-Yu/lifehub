@@ -202,7 +202,8 @@ export function parseFlexibleDate(raw: string, opts?: ParseDateOptions): ParsedD
     throw new LifeHubError('LIFEHUB_E_DATE_INVALID');
   }
   // 归一化：去首尾空白、把全角空格换成半角；账单导出里这两种写法都很常见。
-  const text = raw.trim().replace(/　/g, ' ');
+  // 全角空格（U+3000）用 Unicode 转义书写，避免源码里出现不可见字符影响代码评审与 lint。
+  const text = raw.trim().replace(/\u3000/g, ' ');
   if (text === '') {
     throwDateInvalid(raw);
   }

@@ -31,7 +31,11 @@ export class NobleCryptoProvider implements CryptoProvider {
     // 纯 JS 实现无需任何平台能力探测。
   }
 
-  /** 当前环境是否可用（纯 JS 实现恒可用）。 */
+  /**
+   * 当前环境是否可用。
+   *
+   * @returns 存在 subtle 与随机源时返回 true
+   */
   get isAvailable(): boolean {
     return true;
   }

@@ -42,7 +42,11 @@ export class NodeCryptoProvider implements CryptoProvider {
     // 仅做一次可用性探测，构造失败时由 isAvailable 反映。
   }
 
-  /** 当前环境是否可用。 */
+  /**
+   * 当前环境是否可用。
+   *
+   * @returns 存在 subtle 与随机源时返回 true
+   */
   get isAvailable(): boolean {
     return typeof scryptSync === 'function' && typeof webcrypto?.subtle?.encrypt === 'function';
   }

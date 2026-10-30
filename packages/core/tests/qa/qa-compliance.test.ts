@@ -105,12 +105,14 @@ function stripComments(source: string): string {
 describe('R1 · 核心层零 DOM（A-01 ①② / X-08 ①）', () => {
   it('核心层真实代码中不出现 window / document / localStorage / navigator / sessionStorage / indexedDB', () => {
     const forbidden: { name: string; regex: RegExp }[] = [
-      { name: 'window', regex: /(?<![.\w])window\s*[.(\[]/g },
-      { name: 'document', regex: /(?<![.\w])document\s*[.(\[]/g },
+      // 说明：字符类里 `(` 与 `.` 无需转义；`[` 必须写成 `\[`，
+      // 否则会被解析成正则的字符类起始符，语义从「匹配一个字符」变成「开启字符类」。
+      { name: 'window', regex: /(?<![.\w])window\s*[.([]/g },
+      { name: 'document', regex: /(?<![.\w])document\s*[.([]/g },
       { name: 'localStorage', regex: /\blocalStorage\b/g },
       { name: 'sessionStorage', regex: /\bsessionStorage\b/g },
       { name: 'indexedDB', regex: /\bindexedDB\b/g },
-      { name: 'navigator', regex: /(?<![.\w])navigator\s*[.(\[]/g },
+      { name: 'navigator', regex: /(?<![.\w])navigator\s*[.([]/g },
       { name: 'globalThis.window', regex: /globalThis\s*\.\s*window\b/g },
       { name: 'globalThis.document', regex: /globalThis\s*\.\s*document\b/g },
       { name: 'globalThis.localStorage', regex: /globalThis\s*\.\s*localStorage\b/g },
@@ -382,21 +384,37 @@ describe('R6 / R7 / R8 · 全仓合规红线（X-05 / X-06）', () => {
 
 describe('R5 · 同步服务只存密文（X-01 ③）', () => {
   it('同步服务源码中不出现 salt / DEK / 主口令等敏感材料字段的存储', () => {
-    const source = readFileSync(join(REPO_ROOT, 'apps/sync-server/src/server.ts'), 'utf8');
+    // 说明：服务端已重构为多文件结构（server / store / validation / auth / config），
+    // 因此这里扫描**整个 src 目录**而不是单个文件，
+    // 避免「密钥逻辑被挪到另一个文件就绕过检查」。
+    const syncServerSrc = join(REPO_ROOT, 'apps/sync-server/src');
+    const sources = collectTsFiles(syncServerSrc).map((file) => ({
+      file,
+      content: readFileSync(file, 'utf8'),
+    }));
 
-    // 允许在**黑名单常量**里出现这些名字（用于拒绝它们），
-    // 但不允许出现真正持有密钥的代码路径。
-    expect(source).not.toMatch(/scrypt/i);
-    expect(source).not.toMatch(/createCipheriv|createDecipheriv/i);
-    expect(source).not.toMatch(/decrypt\s*\(/i);
-    // 服务端不得读取任何环境变量形式的密钥。
-    expect(source).not.toMatch(/process\.env\[.*(KEY|SECRET|PASSWORD|SALT)/i);
+    for (const { file, content } of sources) {
+      // 允许在**黑名单常量**里出现这些名字（用于拒绝它们），
+      // 但不允许出现真正持有密钥的代码路径。
+      expect(content, `${file} 不得出现 scrypt`).not.toMatch(/scrypt/i);
+      expect(content, `${file} 不得出现加解密原语`).not.toMatch(/createCipheriv|createDecipheriv/i);
+      expect(content, `${file} 不得出现解密调用`).not.toMatch(/decrypt\s*\(/i);
+      // 服务端不得读取任何环境变量形式的密钥。
+      expect(content, `${file} 不得读取密钥类环境变量`).not.toMatch(
+        /process\.env\[.*(KEY|SECRET|PASSWORD|SALT)/i,
+      );
+    }
   });
 
   it('同步服务的落盘结构只含密文字段', () => {
-    const source = readFileSync(join(REPO_ROOT, 'apps/sync-server/src/server.ts'), 'utf8');
+    // 说明：`StoredBlob` 接口随重构迁到了 `store.ts`（存储层），
+    // 这里同时扫 `store.ts` 与 `server.ts`：
+    // 前者确保**表结构**只有密文字段，后者确保 **HTTP 层**没有偷藏明文字段。
+    const storedBlobSource = readFileSync(join(REPO_ROOT, 'apps/sync-server/src/store.ts'), 'utf8');
+    const serverSource = readFileSync(join(REPO_ROOT, 'apps/sync-server/src/server.ts'), 'utf8');
+
     // StoredBlob 接口必须只有密文与元信息字段。
-    const interfaceMatch = source.match(/export interface StoredBlob \{([\s\S]*?)\n\}/);
+    const interfaceMatch = storedBlobSource.match(/export interface StoredBlob \{([\s\S]*?)\n\}/);
     expect(interfaceMatch).not.toBeNull();
     const body = interfaceMatch?.[1] ?? '';
     for (const field of ['ciphertext', 'iv', 'tag', 'algorithm', 'keyVersion']) {
@@ -404,6 +422,11 @@ describe('R5 · 同步服务只存密文（X-01 ③）', () => {
     }
     for (const field of ['amountMinor', 'counterparty', 'note', 'salt', 'dek', 'masterKey']) {
       expect(body).not.toContain(field);
+    }
+
+    // HTTP 层不得出现任何明文业务字段名。
+    for (const field of ['amountMinor', 'counterparty', 'note', 'salt', 'dek', 'masterKey']) {
+      expect(serverSource, `server.ts 不得出现明文字段 ${field}`).not.toContain(field);
     }
   });
 });

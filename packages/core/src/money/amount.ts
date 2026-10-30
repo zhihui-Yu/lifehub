@@ -82,6 +82,7 @@ export function parseAmountToMinor(raw: string, options?: ParseAmountOptions): n
  * @param amountMinor 以分为单位的整数金额
  * @param currency 币种，决定小数位，默认 CNY
  * @returns 十进制字符串，如 '1234.56'；负数带前置 '-'
+ * @throws {LifeHubError} `LIFEHUB_E_VALIDATION` —— 金额不是整数分
  */
 export function formatMinor(amountMinor: number, currency: CurrencyCode = DEFAULT_CURRENCY): string {
   if (!Number.isInteger(amountMinor)) {

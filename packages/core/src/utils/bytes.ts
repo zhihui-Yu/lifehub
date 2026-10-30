@@ -70,7 +70,7 @@ export function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
 export function utf8Encode(text: string): Uint8Array {
   const bytes: number[] = [];
   for (const char of text) {
-    let codePoint = char.codePointAt(0);
+    const codePoint = char.codePointAt(0);
     if (codePoint === undefined) {
       continue;
     }

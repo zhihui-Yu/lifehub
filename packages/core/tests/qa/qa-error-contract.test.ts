@@ -65,7 +65,11 @@ describe('X-03 ④ · 恢复码格式非法时抛 LIFEHUB_E_RECOVERY_INVALID', (
     // 只改一个**数据**字符并重算该组校验位 —— 格式合法，内容不匹配。
     const groups = setup.recoveryBundle.recoveryCode.split('-');
     const first = groups[0] ?? 'ABCDEF';
-    const flipped = first.slice(0, 5) === 'AAAAA' ? 'B' : 'A';
+    // 注意：必须保证翻转后的字符与原字符**一定不同**。
+    // 原写法 `first.slice(0, 5) === 'AAAAA' ? 'B' : 'A'` 在首组前 5 位为 "AAAAX"（X≠A）时
+    // 会算出 'A'，与原字符相同 → 恢复码没被改 → checksum 反而对上了 → 用例随机失败。
+    // 这里改成逐字符比较首字符，语义恒定且无随机性。
+    const flipped = first[0] === 'A' ? 'B' : 'A';
     groups[0] = `${flipped}${first.slice(1, 5)}`;
     // 重新计算该组校验位，确保格式合法。
     const { computeGroupCheck } = await import('../../src/crypto/recovery-code');

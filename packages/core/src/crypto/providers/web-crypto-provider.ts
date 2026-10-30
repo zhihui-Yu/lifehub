@@ -78,7 +78,11 @@ export class WebCryptoProvider implements CryptoProvider {
     this.randomSource = source ? source.bind(this.scope) : undefined;
   }
 
-  /** 当前环境是否可用（存在 subtle 与随机源）。 */
+  /**
+   * 当前环境是否可用。
+   *
+   * @returns 存在 subtle 与随机源时返回 true
+   */
   get isAvailable(): boolean {
     return Boolean(this.scope.subtle) && typeof this.randomSource === 'function';
   }

@@ -107,13 +107,14 @@ export class MemoryStorageAdapter implements StorageAdapter {
     }
 
     // localDate 闭区间过滤。
-    if (filter?.localDateFrom) {
-      records = records.filter(
-        (record) => record.localDate !== null && record.localDate >= filter.localDateFrom!,
-      );
+    // 注意：先把边界值取到局部常量，TS 才能在闭包里保持类型收窄，避免使用 `!` 非空断言。
+    const localDateFrom = filter?.localDateFrom;
+    if (localDateFrom) {
+      records = records.filter((record) => record.localDate !== null && record.localDate >= localDateFrom);
     }
-    if (filter?.localDateTo) {
-      records = records.filter((record) => record.localDate !== null && record.localDate <= filter.localDateTo!);
+    const localDateTo = filter?.localDateTo;
+    if (localDateTo) {
+      records = records.filter((record) => record.localDate !== null && record.localDate <= localDateTo);
     }
 
     // 排序。
