@@ -1,3 +1,5 @@
+import { LifeHubError } from '../errors';
+
 /**
  * 币种与小数位表。
  *
@@ -33,7 +35,8 @@ export const DEFAULT_CURRENCY: CurrencyCode = 'CNY';
 export function getExponent(currency: CurrencyCode): number {
   const exponent = CURRENCY_EXPONENT[currency];
   if (exponent === undefined) {
-    throw new Error(`不支持的币种：${String(currency)}`);
+    // 核心层只抛 LifeHubError（系统设计 §8.3），UI 层按 code 分支处理。
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', `不支持的币种：${String(currency)}`);
   }
   return exponent;
 }

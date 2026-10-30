@@ -4,6 +4,8 @@
  * 架构位置：core 包的最底层工具模块，零业务依赖，可被任意层引用。
  */
 
+import { LifeHubError } from '../errors';
+
 /**
  * 把字节数组格式化为小写 hex 字符串。
  *
@@ -23,11 +25,11 @@ export function toHex(bytes: Uint8Array): string {
  *
  * @param hex hex 字符串（不区分大小写）
  * @returns 字节数组
- * @throws {Error} 字符串含非法字符或长度为奇数
+ * @throws {LifeHubError} `LIFEHUB_E_VALIDATION` —— 字符串含非法字符或长度为奇数
  */
 export function fromHex(hex: string): Uint8Array {
   if (hex.length % 2 !== 0 || /[^0-9a-fA-F]/.test(hex)) {
-    throw new Error('非法 hex 字符串');
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '非法 hex 字符串');
   }
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i += 1) {

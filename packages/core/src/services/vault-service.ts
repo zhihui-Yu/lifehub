@@ -29,7 +29,7 @@ import { LifeHubError } from '../errors';
 import type { CryptoProvider } from '../crypto/provider';
 import { createKdfParams, KdfParams } from '../crypto/kdf';
 import { CryptoService } from '../crypto/service';
-import { computeRecoveryChecksum, generateRecoveryCode } from '../crypto/recovery-code';
+import { computeRecoveryChecksum, generateRecoveryCode, validateRecoveryCode } from '../crypto/recovery-code';
 import type { RecoveryBundle, RecoveryMeta, VaultParams, WrappedDek } from '../models/vault';
 import type { VaultRepository } from '../repositories/vault-repository';
 import type { StorageAdapter } from '../storage/adapter';
@@ -259,6 +259,19 @@ export class VaultService {
     const meta = await this.repository.loadRecoveryMeta();
     if (!meta) {
       throw new LifeHubError('LIFEHUB_E_RECOVERY_INVALID', '尚未生成恢复码，请先在安全页生成并导出');
+    }
+
+    // 第零步：先校验恢复码的**格式**（分组数、字符集、组内校验位）。
+    // 必须先做格式校验再比对 checksum：格式非法的输入其 checksum 必然对不上，
+    // 若跳过这一步会误报为「口令不正确」，让用户以为恢复码本身是错的。
+    // 错误码约定见系统设计 §3.4：格式或校验位错误 → LIFEHUB_E_RECOVERY_INVALID；
+    // 格式合法但内容不匹配 → LIFEHUB_E_VAULT_PASSWORD_WRONG（PRD X-03 ④「提示格式错误」）。
+    if (!validateRecoveryCode(code)) {
+      // 解锁失败同样要记审计（X-07 ②），否则用户无法察觉有人在爆破恢复码。
+      this.failedAttempts += 1;
+      await this.audit.log('failed_unlock', 'recovery', false);
+      this.applyCooldownIfNeeded();
+      throw new LifeHubError('LIFEHUB_E_RECOVERY_INVALID');
     }
 
     // 第一步：用恢复盐值校验恢复码本身（sha256(恢复码 + 盐值)）。

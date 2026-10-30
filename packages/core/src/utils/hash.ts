@@ -5,6 +5,7 @@
  */
 import { toHex } from './bytes';
 import type { CryptoProvider } from '../crypto/provider';
+import { LifeHubError } from '../errors';
 
 /**
  * 计算 SHA-256 摘要并返回 hex 字符串。
@@ -40,18 +41,18 @@ export function nowMillis(): number {
  * @param randomBytes 随机字节源（长度至少 10）
  * @param timestamp 毫秒时间戳，默认取当前时间
  * @returns UUIDv7 字符串
- * @throws {Error} 随机源不足或时间戳非法
+ * @throws {LifeHubError} `LIFEHUB_E_VALIDATION` —— 随机源不足或时间戳非法
  */
 export function uuidV7(
   randomBytes: (length: number) => Uint8Array,
   timestamp: number = Date.now(),
 ): string {
   if (!Number.isFinite(timestamp) || timestamp < 0) {
-    throw new Error('非法的时间戳');
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '非法的时间戳');
   }
   const random = randomBytes(10);
   if (random.length < 10) {
-    throw new Error('随机源至少需要 10 字节');
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '随机源至少需要 10 字节');
   }
 
   const bytes = new Uint8Array(16);

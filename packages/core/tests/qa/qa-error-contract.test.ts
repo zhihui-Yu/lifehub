@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createTestRuntime } from '../helpers/runtime';
+import * as currencyModule from '../../src/money/currency';
 
 /** 核心层源码目录。 */
 const CORE_SRC = fileURLToPath(new URL('../../src', import.meta.url));
@@ -116,9 +117,8 @@ describe('§8.3 · 核心层只抛 LifeHubError', () => {
 
   it('非法币种抛 LIFEHUB_E_VALIDATION 而不是原生 Error', () => {
     // 运行时用未受类型系统约束的值触发（模拟来自 JSON / 设置项的外部输入）。
-    const { getExponent } = require('../../src/money/currency') as {
-      getExponent: (currency: string) => number;
-    };
+    // 用 ESM 静态导入 + 类型断言绕过字面量类型检查，而不是用 require（核心包是 ESM，require 不可用）。
+    const getExponent = currencyModule.getExponent as unknown as (currency: string) => number;
     expect(() => getExponent('USD')).toThrowError(
       expect.objectContaining({ code: 'LIFEHUB_E_VALIDATION' }),
     );

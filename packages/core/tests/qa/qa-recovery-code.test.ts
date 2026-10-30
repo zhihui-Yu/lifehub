@@ -16,6 +16,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { createTestRuntime } from '../helpers/runtime';
+import { computeGroupCheck } from '../../src/crypto/recovery-code';
 import type { EntityType } from '../../src/types/entity-type';
 
 describe('X-03 · 恢复码解锁并解密已有数据', () => {
@@ -74,8 +75,10 @@ describe('X-03 · 恢复码解锁并解密已有数据', () => {
     const runtime = createTestRuntime();
     await runtime.vault.createVault('test-password-123');
 
+    // PRD X-03 ④：恢复码格式非法时必须**提示格式错误**，
+    // 因此错误码是 LIFEHUB_E_RECOVERY_INVALID（而非「口令不正确」）。
     await expect(runtime.vault.unlockWithRecoveryCode('ABCDEF-ABCDEF')).rejects.toThrowError(
-      expect.objectContaining({ code: 'LIFEHUB_E_VAULT_PASSWORD_WRONG' }),
+      expect.objectContaining({ code: 'LIFEHUB_E_RECOVERY_INVALID' }),
     );
 
     const logs = await runtime.audit.list();
@@ -86,9 +89,13 @@ describe('X-03 · 恢复码解锁并解密已有数据', () => {
     const runtime = createTestRuntime();
     const setup = await runtime.vault.createVault('test-password-123');
 
-    // 逐字符替换一个字符，保持格式合法但内容错误。
-    const wrong = `Z${setup.recoveryBundle.recoveryCode.slice(1)}`;
-    await expect(runtime.vault.unlockWithRecoveryCode(wrong)).rejects.toThrowError(
+    // 逐字符替换一个**数据**字符并重算该组校验位 —— 格式合法但内容错误。
+    const groups = setup.recoveryBundle.recoveryCode.split('-');
+    const first = groups[0] ?? 'ABCDEF';
+    const data = first.slice(0, 5) === 'AAAAA' ? 'B' : 'A';
+    groups[0] = `${data}${first.slice(1, 5)}${computeGroupCheck(`${data}${first.slice(1, 5)}`)}`;
+
+    await expect(runtime.vault.unlockWithRecoveryCode(groups.join('-'))).rejects.toThrowError(
       expect.objectContaining({ code: 'LIFEHUB_E_VAULT_PASSWORD_WRONG' }),
     );
   });
@@ -223,13 +230,14 @@ describe('X-03 · 恢复码格式校验（X-03 ①）', () => {
       expect(group).toHaveLength(6);
     }
 
-    // 改动某一组的**校验位**（最后一位）—— 组内校验应立刻识别出来。
+    // 改动某一组的**校验位**（最后一位）—— 组内校验应立刻识别出来，
+    // 按 PRD X-03 ④ 提示格式错误（LIFEHUB_E_RECOVERY_INVALID）。
     const tampered = [...groups];
     const first = tampered[0] ?? '';
     tampered[0] = `${first.slice(0, 5)}${first.slice(5) === 'A' ? 'B' : 'A'}`;
-    await expect(
-      runtime.vault.unlockWithRecoveryCode(tampered.join('-')),
-    ).rejects.toThrowError(expect.objectContaining({ code: 'LIFEHUB_E_VAULT_PASSWORD_WRONG' }));
+    await expect(runtime.vault.unlockWithRecoveryCode(tampered.join('-'))).rejects.toThrowError(
+      expect.objectContaining({ code: 'LIFEHUB_E_RECOVERY_INVALID' }),
+    );
   });
 
   it('恢复码字符集剔除易混字符 I / O / 0 / 1', async () => {

@@ -87,8 +87,10 @@ describe('VaultService', () => {
     const unlocked = await runtime.vault.unlockWithRecoveryCode(setup.recoveryBundle.recoveryCode);
     expect(unlocked.dek).toHaveLength(32);
 
+    // 'AAAAAA-BBBBBB-CCCCCC' 只有 3 组，属**格式非法**（缺少 9 组），
+    // 按系统设计 §3.4 错误码表应抛 LIFEHUB_E_RECOVERY_INVALID，而非「口令不正确」。
     await expect(runtime.vault.unlockWithRecoveryCode('AAAAAA-BBBBBB-CCCCCC')).rejects.toThrowError(
-      expect.objectContaining({ code: 'LIFEHUB_E_VAULT_PASSWORD_WRONG' }),
+      expect.objectContaining({ code: 'LIFEHUB_E_RECOVERY_INVALID' }),
     );
   });
 
