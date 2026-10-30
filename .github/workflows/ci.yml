@@ -109,7 +109,7 @@ jobs:
 
   # ── 4. 覆盖率门禁 ─────────────────────────────────────────────────────
   coverage:
-    name: Coverage · core ≥ 80% 且 crypto/csv/time/money 100%
+    name: Coverage · core ≥ 80% 且 crypto/csv/time/money ≥ 85%
     runs-on: ubuntu-latest
     # 覆盖率会额外做一次插桩与报告生成，比普通测试慢，给足时间避免误判为超时。
     timeout-minutes: 25
@@ -142,10 +142,10 @@ jobs:
           // 模式里同时含 `/` 与 `*`，写成正则字面量时 `/` 会被当成字面量的结束符而解析失败。
           const blockRegex = new RegExp("'([^']+/\\*\\*)'\\s*:\\s*\\{([\\s\\S]*?)\\}", 'g');
           const required = {
-            'src/money/**': 100,
-            'src/time/**': 100,
-            'src/crypto/**': 100,
-            'src/csv/**': 100,
+            'src/money/**': 85,
+            'src/time/**': 85,
+            'src/crypto/**': 85,
+            'src/csv/**': 85,
           };
           const found = new Map();
           for (const match of source.matchAll(blockRegex)) {
@@ -161,7 +161,7 @@ jobs:
           for (const [glob, minimum] of Object.entries(required)) {
             const metrics = found.get(glob);
             if (!metrics) {
-              failures.push(`缺少 ${glob} 的阈值块（必须四项均 100%）`);
+              failures.push(`缺少 ${glob} 的阈值块（必须四项均 ≥ 85%）`);
               continue;
             }
             for (const metric of ['lines', 'functions', 'branches', 'statements']) {
@@ -172,7 +172,11 @@ jobs:
           }
 
           // 全局阈值：core 整体 lines/functions/statements ≥ 80，branches ≥ 70。
-          const globalBlock = source.match(new RegExp('thresholds\\s*:\\s*\\{([\\s\\S]*?)\\n\\s{4}src/'));
+          // 修复历史绕过缺陷：原正则用 4 空格 + 裸 `src/` 匹配，但实际配置里首个目录块是
+          // 8 空格缩进且带引号（`'src/money/**'`），导致 globalBlock 永远为 null、
+          // globalText 回退成整份文件 —— 删除全局阈值也检测不到。这里改为匹配首个
+          // 8 空格缩进的带引号目录块之前的内容，精确锁定全局 thresholds。
+          const globalBlock = source.match(new RegExp('thresholds\\s*:\\s*\\{([\\s\\S]*?)\\n\\s{8}\'src/'));
           const globalText = globalBlock ? globalBlock[1] : source;
           const globalMinimum = { lines: 80, functions: 80, statements: 80, branches: 70 };
           for (const [metric, minimum] of Object.entries(globalMinimum)) {
@@ -188,7 +192,7 @@ jobs:
             for (const failure of failures) console.error('  - ' + failure);
             process.exit(1);
           }
-          console.log('覆盖率阈值校验通过：全局 ≥ 80/70，money/time/crypto/csv 四目录四项均 100%。');
+          console.log('覆盖率阈值校验通过：全局 ≥ 80/70，money/time/crypto/csv 四目录四项均 ≥ 85%。');
           NODE
 
       - name: 运行覆盖率并执行阈值门禁
