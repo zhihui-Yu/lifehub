@@ -1,0 +1,83 @@
+# LifeHub 合规红线流水线（OPS · 轨道 A）
+#
+# 为什么单独开一个 workflow，而不是全部塞进 ci.yml：
+#   1. **粒度不同**：ci.yml 的 compliance job 是一条「整体通过 / 不通过」的结论；
+#      本文件用矩阵把三条红线拆成三个独立结论，分支保护可以按红线逐条要求必过。
+#   2. **触发面不同**：红线不是「代码写对了吗」，而是「代码敢不敢上线」。
+#      一条红线被打破时，需要在**发布前**独立复跑一次，而不必重跑整个 CI。
+#   3. **可被单独加固**：R-18 要求「合规 job 设为 required 分支保护检查」，
+#      独立 workflow 更容易配置成独立的 required check。
+#
+# 关联文档：docs/ci.md、docs/system_design.md §8.8（红线 R1–R10）、
+#          docs/roadmap.md §3.2 OPS 职责、§5 风险 R-06 / R-07 / R-18。
+
+name: Compliance
+
+on:
+  push:
+  pull_request:
+  # 每周一 03:17 UTC 定时复跑：防止「主分支被绕过 CI 直接推送」导致红线漂移。
+  schedule:
+    - cron: '17 3 * * 1'
+  # 手动重跑：发布前 checklist 要求人工再确认一次红线。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compliance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  red-lines:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      # fail-fast: false —— 一条红线失败时，另外两条仍要跑完：
+      # 修红线时最耗时的是「发现原来还有第二条也坏了」，一次性拿到全部结论。
+      fail-fast: false
+      matrix:
+        include:
+          - id: static
+            name: R1/R2/R6/R7/R8 · 静态合规扫描
+            script: check:compliance
+            detail: >-
+              核心层零 DOM、核心层依赖纯净、全仓无采集调用、无银行 / 支付平台域名、无后门文案。
+          - id: no-network
+            name: R3 · 加密与密钥模块零网络出口
+            script: check:no-network
+            detail: >-
+              扫描 crypto/** 与 services/**，命中 fetch / XHR / WebSocket / sendBeacon / EventSource 即失败。
+          - id: sync-payload
+            name: R5 · 同步载荷与备份只含密文
+            script: check:sync-payload
+            detail: >-
+              静态断言载荷构造不含明文字段名 + 运行时探针构造真实载荷后全文检索明文样本。
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 安装依赖（npm ci）
+        # 必须安装依赖：check:sync-payload 的运行时层要用 vite-node 加载真实的 TS 源，
+        # 缺依赖时它只会退化成「跳过运行时层」，红线检查强度会悄悄下降。
+        run: npm ci
+
+      - name: 说明本次断言范围
+        # 把这条红线管什么写进日志，避免事后翻 job 日志时搞不清结论对应哪条需求。
+        run: |
+          echo "红线：${{ matrix.name }}"
+          echo "范围：${{ matrix.detail }}"
+          echo "脚本：npm run ${{ matrix.script }}"
+
+      - name: 执行合规断言
+        # 脚本内部命中违规即以非零码退出；这里不做任何「忽略失败」的处理——
+        # R-18 明确禁止把断言注释掉或设成 continue-on-error。
+        run: npm run ${{ matrix.script }}

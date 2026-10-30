@@ -1,0 +1,323 @@
+# LifeHub 持续集成流水线（OPS · 轨道 A）
+#
+# 职责：把「本地口头约定」变成「仓库里不可绕过的门禁」。
+# 设计原则：
+#   1. 每个 job 只做一件事，失败信息能直接定位到问题域（不合并成一个巨型 job）；
+#   2. 与红线强相关的 job（compliance / coverage / bench）失败 = 阻断合并；
+#   3. 所有 job 统一 Node 22 + `npm ci`（严格按 lock 文件安装，杜绝本地漂移）；
+#   4. 每个关键步骤写清「为什么」，避免后人为了「让 CI 变绿」而删步骤。
+#
+# 关联文档：docs/ci.md（本地复现与排查手册）、docs/system_design.md §7 T05、
+#          docs/roadmap.md §3.2（OPS 职责）、§5 R-11 / R-18（风险缓解）。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  # 允许手动重跑：红线类失败（尤其合规扫描）经常需要在修复后立刻验证。
+  workflow_dispatch:
+
+# 默认只读权限：本流水线不需要写仓库内容，最小权限原则。
+permissions:
+  contents: read
+
+# 同一个 PR 的新推送取消旧运行：避免队列堆积，同时保证最新提交的结论有效。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 1. 静态检查：ESLint ────────────────────────────────────────────────
+  lint:
+    name: Lint · ESLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        # node-version-file 读取仓库根的 .nvmrc（当前锁定 22），
+        # 好处是本地与 CI 永远同版本，不会出现「本地绿、CI 红」的版本差异。
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 确认 Node 主版本为 22
+        # 显式断言：package.json 的 engines 要求 node >= 22，
+        # 若 .nvmrc 被误改，这里会立刻失败而不是让后续 job 在错误版本上跑。
+        run: node -e "const m=process.versions.node.split('.')[0]; if(m!=='22'){console.error('期望 Node 22，实际 '+process.versions.node); process.exit(1);} console.log('Node '+process.versions.node);"
+
+      - name: 安装依赖（npm ci）
+        # 必须用 `npm ci` 而不是 `npm install`：前者严格按 package-lock.json 安装，
+        # 后者会「顺手」更新锁文件，导致 CI 装到与开发者本地不同的依赖树（R-11 供应链风险）。
+        run: npm ci
+
+      - name: 运行 ESLint
+        # 覆盖 core / web / scripts 全量；ESLint 规则已把 `any` 与 `!` 断言设为 error，
+        # 对应系统设计 §8.4 类型纪律与红线 R10。
+        run: npm run lint
+
+  # ── 2. 类型检查：core + web + sync-server ─────────────────────────────
+  typecheck:
+    name: Typecheck · 三包零类型错误
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 安装依赖（npm ci）
+        run: npm ci
+
+      - name: 运行 tsc --noEmit（三包）
+        # 三包都要查：core 负责领域逻辑、web 负责表现层、sync-server 负责密文 blob 存取。
+        # core 的 tsconfig 固定 lib: ["ES2022"]，因此这里的类型检查同时承担红线 R1
+        # 「核心层零 DOM」的一部分拦截职责（出现 DOM API 会直接编译失败）。
+        run: npm run typecheck
+
+  # ── 3. 单元 / 集成测试 ────────────────────────────────────────────────
+  test:
+    name: Test · 单测与集成用例
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 安装依赖（npm ci）
+        run: npm ci
+
+      - name: 运行测试（core + web）
+        # 覆盖 core 的单测 / 集成测试（导入管线、加密存储、备份往返、幂等导入、保险库解锁）
+        # 与 web 的组件测试；`--if-present` 让没有测试脚本的包自动跳过。
+        run: npm run test
+
+  # ── 4. 覆盖率门禁 ─────────────────────────────────────────────────────
+  coverage:
+    name: Coverage · core ≥ 80% 且 crypto/csv/time/money 100%
+    runs-on: ubuntu-latest
+    # 覆盖率会额外做一次插桩与报告生成，比普通测试慢，给足时间避免误判为超时。
+    timeout-minutes: 25
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 安装依赖（npm ci）
+        run: npm ci
+
+      - name: 校验覆盖率阈值未被下调
+        # 为什么单独做静态校验：`packages/core/vitest.config.ts` 里的 thresholds 就是门禁本身，
+        # 一旦有人为了「让 CI 变绿」把 100% 改成 80%，动态覆盖率检查根本发现不了。
+        # 这里把阈值下限写死在 CI 里做交叉校验，形成双保险。
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = 'packages/core/vitest.config.ts';
+          const source = fs.readFileSync(path, 'utf8');
+          const failures = [];
+
+          // 解析形如  'src/money/**': { lines: 100, ... }  的阈值块。
+          // 说明：这里用 new RegExp + 字符串字面量而不是正则字面量 ——
+          // 模式里同时含 `/` 与 `*`，写成正则字面量时 `/` 会被当成字面量的结束符而解析失败。
+          const blockRegex = new RegExp("'([^']+/\\*\\*)'\\s*:\\s*\\{([\\s\\S]*?)\\}", 'g');
+          const required = {
+            'src/money/**': 100,
+            'src/time/**': 100,
+            'src/crypto/**': 100,
+            'src/csv/**': 100,
+          };
+          const found = new Map();
+          for (const match of source.matchAll(blockRegex)) {
+            const glob = match[1];
+            const body = match[2] ?? '';
+            const metrics = {};
+            for (const metric of ['lines', 'functions', 'branches', 'statements']) {
+              const hit = body.match(new RegExp(metric + '\\s*:\\s*(\\d+)'));
+              if (hit) metrics[metric] = Number(hit[1]);
+            }
+            found.set(glob, metrics);
+          }
+          for (const [glob, minimum] of Object.entries(required)) {
+            const metrics = found.get(glob);
+            if (!metrics) {
+              failures.push(`缺少 ${glob} 的阈值块（必须四项均 100%）`);
+              continue;
+            }
+            for (const metric of ['lines', 'functions', 'branches', 'statements']) {
+              if ((metrics[metric] ?? -1) < minimum) {
+                failures.push(`${glob}.${metric} = ${metrics[metric] ?? '缺失'}，低于要求的 ${minimum}`);
+              }
+            }
+          }
+
+          // 全局阈值：core 整体 lines/functions/statements ≥ 80，branches ≥ 70。
+          const globalBlock = source.match(new RegExp('thresholds\\s*:\\s*\\{([\\s\\S]*?)\\n\\s{4}src/'));
+          const globalText = globalBlock ? globalBlock[1] : source;
+          const globalMinimum = { lines: 80, functions: 80, statements: 80, branches: 70 };
+          for (const [metric, minimum] of Object.entries(globalMinimum)) {
+            const hit = globalText.match(new RegExp('(?<![\\w])' + metric + '\\s*:\\s*(\\d+)'));
+            const value = hit ? Number(hit[1]) : 0;
+            if (value < minimum) {
+              failures.push(`全局 thresholds.${metric} = ${value}，低于要求的 ${minimum}`);
+            }
+          }
+
+          if (failures.length > 0) {
+            console.error('覆盖率门禁阈值校验失败：');
+            for (const failure of failures) console.error('  - ' + failure);
+            process.exit(1);
+          }
+          console.log('覆盖率阈值校验通过：全局 ≥ 80/70，money/time/crypto/csv 四目录四项均 100%。');
+          NODE
+
+      - name: 运行覆盖率并执行阈值门禁
+        # `vitest run --coverage` 在覆盖率低于 thresholds 时会设置非零退出码，
+        # 因此这一步失败 == 门禁生效，不需要额外写脚本判断。
+        #
+        # 为什么排除性能基准目录：
+        # V8 覆盖率插桩会给每行代码加计数，**显著拉长被测代码的执行时间**。
+        # csv-benchmark 断言的是墙钟时间（10 万行 ≤ 3s），
+        # 插桩后同一份代码的实测耗时在 2087ms～4849ms 之间随机波动（flaky），
+        # 会把「性能退化」和「插桩开销」两件事混在一起，无法排查。
+        # 因此性能基准由**独立的 bench job**（无插桩）负责 —— 见 §2.6。
+        run: npm run coverage --workspace @lifehub/core -- --exclude='tests/performance/**'
+
+      - name: 运行 Web 端覆盖率
+        # Web 端目前只出报告、不设阈值（红线在 core），因此单独一个步骤，
+        # 失败时不会掩盖 core 门禁的结论。
+        run: npm run coverage --workspace @lifehub/web
+
+      - name: 自检 · 确认覆盖率门禁真的会拦截
+        # 为什么做这个自检：门禁最危险的失效方式是「阈值被写错导致永远通过」。
+        # 这里把阈值临时抬到 100%（必然不达标）并只跑一个测试文件（保持快速），
+        # 期望得到非零退出码；若意外返回 0，说明门禁根本没生效，必须让 CI 失败。
+        run: |
+          set +e
+          npx vitest run --coverage \
+            --coverage.reportsDirectory=coverage-selftest \
+            --coverage.thresholds.lines=100 \
+            --coverage.thresholds.functions=100 \
+            --coverage.thresholds.statements=100 \
+            --coverage.thresholds.branches=100 \
+            tests/unit/amount.test.ts
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then
+            echo "::error::覆盖率门禁自检失败：阈值抬到 100% 仍然通过，门禁未生效"
+            exit 1
+          fi
+          echo "覆盖率门禁自检通过：阈值 100% 时正确拦截（退出码 $code）。"
+
+      - name: 上传覆盖率报告
+        # 即使门禁失败也上传产物，便于开发者直接看「哪几行没被覆盖」，
+        # 不用在本地重跑一遍就能定位补测点。
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            packages/core/coverage
+            apps/web/coverage
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ── 5. 合规断言（与 compliance.yml 双保险）────────────────────────────
+  compliance:
+    name: Compliance · 三条红线静态断言
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 安装依赖（npm ci）
+        run: npm ci
+
+      - name: 执行合规断言脚本
+        # 三条脚本分别对应系统设计 §8.8 的红线：
+        #   check:compliance    → R1 零 DOM / R2 依赖纯净 / R6 无采集 / R7 无外域 / R8 无后门文案
+        #   check:no-network    → R3 加密与密钥模块零网络出口（X-01 ①）
+        #   check:sync-payload  → R5 同步载荷与备份只含密文（X-01 ④）
+        # 任一脚本非零退出即阻断合并——对应风险登记 R-18「CI 断言被注释掉或跳过，形同虚设」。
+        run: |
+          npm run check:compliance
+          npm run check:no-network
+          npm run check:sync-payload
+
+  # ── 6. 性能基准（单独 job：慢，且不该拖垮其它门禁）────────────────────
+  bench:
+    name: Bench · CSV 10 万行解析 ≤ 3s
+    runs-on: ubuntu-latest
+    # 基准比测试慢（要真的解析 10 万行），单独给一个宽松超时。
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 安装依赖（npm ci）
+        run: npm ci
+
+      - name: 运行 CSV 性能基准
+        # 对应需求 NF-P-1 / 风险 R-08：10 万行解析必须 ≤ 3s，
+        # 超预算说明解析器退化为「逐行字符串拼接」，需要立即回归定位。
+        # 单独成 job 的原因：基准超时不应让「代码写错了」看起来像同一个失败，
+        # 分开才能一眼看出是性能退化还是功能缺陷。
+        run: npm run bench
+
+  # ── 7. 依赖漏洞扫描（供应链安全，对应风险 R-11）────────────────────────
+  audit:
+    name: Audit · 依赖高危漏洞扫描
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 准备 Node 运行时
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: 安装依赖（npm ci）
+        run: npm ci
+
+      - name: 扫描依赖树高危漏洞
+        # --audit-level=high：high / critical 才阻断（中低危走排期修复），
+        # 对应风险 R-11「依赖供应链风险」的缓解措施。
+        # 注意：仓库 .npmrc 里 audit=false 只影响 `npm install` 的安装输出，
+        # 不影响这里显式调用的 `npm audit` 子命令。
+        run: npm audit --audit-level=high

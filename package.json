@@ -30,7 +30,8 @@
     "check:compliance": "node scripts/check-compliance.mjs",
     "check:no-network": "node scripts/check-no-network-in-crypto.mjs",
     "check:sync-payload": "node scripts/check-sync-payload.mjs",
-    "bench": "npm run bench --workspace @lifehub/core"
+    "bench": "npm run bench --workspace @lifehub/core",
+    "ci": "npm run lint && npm run typecheck && npm run test && npm run coverage && npm run check:compliance && npm run check:no-network && npm run check:sync-payload && npm run bench"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",

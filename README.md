@@ -4,7 +4,7 @@
 >
 > 记账数据只存在你自己的设备上；即使使用同步服务，**服务端也只见密文**。
 
-**文档版本**：v1.0 ｜ **日期**：2026-10-30 ｜ **当前阶段**：Sprint 0（Web 可跑 MVP）
+**文档版本**：v1.1 ｜ **日期**：2026-10-30 ｜ **当前阶段**：Sprint 0（Web 可跑 MVP + 可运行的同步服务）
 
 ---
 
@@ -35,7 +35,7 @@
 ```bash
 npm install        # 安装全部 workspace 依赖（根目录执行一次即可）
 npm run dev        # 启动 Web 端开发服务器
-# 打开 http://localhost:5173
+# 打开 http://localhost:4180
 ```
 
 其它常用命令：
@@ -60,9 +60,9 @@ npm run typecheck  # 三个包的类型检查
 | 现象 | 原因与处理 |
 | --- | --- |
 | `npm install` 报 `EBADENGINE` | Node 版本过低。执行 `node -v` 确认 ≥ 22，或用 `nvm use` 切换到 `.nvmrc` 指定的版本 |
-| `npm run dev` 提示端口占用 | 改端口：`npm run dev -- --port 5174` |
+| `npm run dev` 报 `listen EACCES` | 端口落入了 Windows 动态「排除端口段」（Hyper-V/WSL 保留，如 `5147-5246`）。改端口：`npm run dev -- --port 4180`，或用 `netsh int ipv4 show excludedportrange protocol=tcp` 自查 |
 | 页面提示「本地数据读写失败」 | 浏览器禁用了 IndexedDB（例如隐私模式）。请用普通窗口打开 |
-| `crypto.subtle` 不可用 | WebCrypto 只在 **HTTPS 或 localhost** 下可用。用 `http://localhost:5173` 访问，不要用局域网 IP 直连 |
+| `crypto.subtle` 不可用 | WebCrypto 只在 **HTTPS 或 localhost** 下可用。用 `http://localhost:4180` 访问，不要用局域网 IP 直连 |
 | scrypt 派生很慢 | 默认 `N = 32768`（约 0.3–1 秒）。低性能设备可在设置中调低，或等 S5 的 KDF 参数升级能力 |
 | 忘记主密码 | 用恢复码解锁；**两者都没有则数据永久丢失**（这是产品红线，不存在后门找回） |
 
@@ -97,22 +97,25 @@ lifehub/
 │   │   │   ├── platform/      # 平台适配层：Dexie、Clock、DeviceLabel、WebCryptoProvider
 │   │   │   └── __tests__/     # 组件与 store 测试（jsdom）
 │   │   └── (README 见 apps/web/README.md)
-│   └── sync-server/           # 自托管同步服务（只存密文，Node 原生 http）
-│       ├── src/server.ts      # 两个端点：密文 blob upsert / 增量拉取
-│       └── Dockerfile         # 构建上下文为仓库根目录
+│   └── sync-server/           # 自托管同步服务（只存密文，零 npm 依赖）
+│       ├── src/               # server / store / validation / auth / config 五个模块
+│       ├── tests/             # 端到端 + 存储层 + 校验 + 配置测试（node 环境）
+│       ├── Dockerfile         # 多阶段构建；构建上下文为仓库根目录
+│       └── .env.example       # 环境变量示例（含设备令牌说明）
 ├── docs/
 │   ├── PRD.md                 # 产品需求文档（需求池与追踪索引）
 │   ├── system_design.md       # 系统设计（类图、时序、任务列表、共享约定）
-│   ├── architecture.md        # 架构说明（分层、数据流、加密边界、移植路径）
+│   ├── architecture.md        # 架构说明（分层、数据流、加密边界、同步协议、移植路径）
 │   ├── compliance-checklist.md  # 合规自检清单（逐条对应 PRD 第六节）
 │   ├── roadmap.md             # 12 周路线图与任务分工矩阵
-│   ├── adr/                   # 架构决策记录 ADR-001 … ADR-006
+│   ├── adr/                   # 架构决策记录 ADR-001 … ADR-007
 │   ├── class-diagram.mermaid  # 类图（源）
 │   ├── sequence-diagram.mermaid # 时序图（源）
 │   └── task-dependency-graph.mermaid # 任务依赖图（源）
-├── scripts/                   # 合规静态断言脚本（CI 可直接跑）
+├── scripts/                   # 合规静态断言脚本 + 同步服务快照脚本（CI 可直接跑）
+├── docker-compose.yml         # 同步服务编排（含夜间快照 sidecar）
 ├── package.json               # npm workspaces 根清单
-└── vitest.workspace.ts        # 跨包测试编排
+└── vitest.config.ts           # 跨包测试编排（projects 指向 core / web / sync-server）
 ```
 
 ### 各包职责一句话
@@ -242,8 +245,8 @@ IndexedDB（密文 payload + 7 个索引明文列）
 | **X-09** | 索引明文列 | ✅ | 7 个索引列（见 §6.9） |
 | **X-10** | 密钥轮换 | ⏳ | 阶段 5（本轮只落接口与参数校验） |
 | **X-11** | 冲突合并基础 | ✅ | `services/sync/merge.ts`（`(updatedAt, deviceId)` 决胜） |
-| **X-12** | 自托管同步服务 | ✅ | `apps/sync-server`（只搬密文） |
-| **X-13 ~ X-14** | 多设备授权 / 密钥分发 | ⏳ | 阶段 5 |
+| **X-12** | 自托管同步服务 | ✅ | `apps/sync-server`（只搬密文；5 个端点 + SQLite 持久化 + 设备级授权 + 快照备份） |
+| **X-13 ~ X-14** | 多设备授权 / 密钥分发 | ⏳ | 服务端的**设备级令牌授权**已落地（X-13 的服务端形态）；密钥分发仍在阶段 5 |
 | **X-15** | 合规自检清单 | ✅ | `docs/compliance-checklist.md` |
 | **X-16 ~ X-17** | 可访问性 / 国际化 | ⏳ | 阶段 2 起逐步补齐 |
 | **M-01** | 微信小程序轻量版 | 🚫 | 最后做，且个人主体下必须砍掉金融 / AI / 公开 UGC 部分 |
@@ -256,11 +259,11 @@ IndexedDB（密文 payload + 7 个索引明文列）
 
 | 命令 | 作用 | 适用包 |
 | --- | --- | --- |
-| `npm run dev` | 启动 Web 开发服务器（`http://localhost:5173`） | `apps/web` |
+| `npm run dev` | 启动 Web 开发服务器（`http://localhost:4180`） | `apps/web` |
 | `npm run build` | 类型检查 + 构建生产产物到 `apps/web/dist` | `apps/web` |
 | `npm run build:sync` | 编译同步服务到 `apps/sync-server/dist` | `apps/sync-server` |
 | `npm run preview` | 预览生产构建产物 | `apps/web` |
-| `npm run test` | 运行全部测试 | 全部 workspace |
+| `npm run test` | 运行全部测试（core + web + sync-server） | 全部 workspace |
 | `npm run test:watch` | 监听模式运行测试 | 全部 workspace |
 | `npm run coverage` | 生成覆盖率报告 | 全部 workspace |
 | `npm run typecheck` | 类型检查（core → web → sync-server） | 全部 workspace |
@@ -271,6 +274,7 @@ IndexedDB（密文 payload + 7 个索引明文列）
 | `npm run check:no-network` | 加密与服务层「零网络出口」断言（X-01 ①） | `packages/core` |
 | `npm run check:sync-payload` | 同步载荷 / 备份「只含密文」断言（X-01 ④ / R5） | `packages/core` |
 | `npm run bench` | CSV 解析性能基准（10 万行 ≤ 3s） | `packages/core` |
+| `npm run ci` | 本地跑一遍完整质量门禁（lint → typecheck → test → coverage → 3 个 `check:*` → bench） | 全仓 |
 
 ### 分包脚本
 
@@ -278,12 +282,18 @@ IndexedDB（密文 payload + 7 个索引明文列）
 | --- | --- | --- |
 | `packages/core` | `npm run test --workspace @lifehub/core` | 运行核心层测试（Node 环境，**不使用 jsdom**） |
 | `packages/core` | `npm run bench --workspace @lifehub/core` | CSV 解析基准 |
+| `packages/core` | `npm run coverage --workspace @lifehub/core` | 核心层覆盖率（阈值门禁：整体 ≥ 80%，加密 / CSV / 时间 / 金额四个目录 100%） |
 | `apps/web` | `npm run test --workspace @lifehub/web` | 运行组件与 store 测试（jsdom） |
 | `apps/web` | `npm run build --workspace @lifehub/web` | 构建 Web 产物 |
+| `apps/web` | `npm run coverage --workspace @lifehub/web` | Web 端覆盖率报告 |
 | `apps/sync-server` | `npm run build --workspace @lifehub/sync-server` | 编译同步服务 |
-| `apps/sync-server` | `npm run start --workspace @lifehub/sync-server` | 启动同步服务（默认 `127.0.0.1:8787`） |
+| `apps/sync-server` | `npm run start --workspace @lifehub/sync-server` | 启动同步服务（默认 `127.0.0.1:8787`；**需先设置 `LIFEHUB_SYNC_TOKENS`**） |
+| `apps/sync-server` | `npm run test --workspace @lifehub/sync-server` | 运行同步服务测试（起真实实例 + `fetch`，83 例） |
+| `apps/sync-server` | `npm run coverage --workspace @lifehub/sync-server` | 同步服务覆盖率报告（当前语句覆盖 91.1% / 分支 84.2%） |
+| 仓库根 | `node scripts/snapshot.mjs` | 同步服务 SQLite 在线快照（保留 N 份，见 `scripts/snapshot.sh`） |
 
-> 四个 `check:*` 脚本是**可执行的红线断言**，建议接入 CI；它们不依赖任何第三方包。
+> 三个 `check:*` 脚本是**可执行的红线断言**，建议接入 CI；它们不依赖任何第三方包。
+> `npm run ci` 会把 lint / typecheck / test / coverage / 三个 `check:*` / bench 串成一条完整的质量门禁。
 
 ---
 
@@ -334,10 +344,25 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 
 自托管同步服务（`apps/sync-server`）：
 
-- 请求体**只接受**密文 blob 白名单字段；出现 `amountMinor` / `counterparty` / `note` / `localDate` /
-  `salt` / `dek` / `masterKey` 等字段名**直接返回 400**。
+- 请求体**只接受**密文 blob 白名单字段（`EncryptedBlob` 的 10 个字段）；
+  出现 `amountMinor` / `counterparty` / `note` / `localDate` / `salt` / `dek` / `masterKey` /
+  `recoveryCode` 等明文字段名——**包括藏在嵌套对象里的**——**直接返回 400 且绝不落盘**。
 - 服务端**没有**密钥、不会解密、不知道你的业务数据长什么样；**即使数据库整体泄露也无法还原任何业务内容**。
-- 服务端**不采集**任何信息，**不做**银行直连，**不引入**任何第三方 SDK。
+- 数据库**只有一张表** `encrypted_blob`，**没有任何业务明文列**，也没有本地那 7 个索引明文列——
+  服务端连「哪天有消费」都看不到。
+- 服务端**不采集**任何信息，**不做**银行直连，**不引入**任何第三方 SDK（**零 npm 运行时依赖**）。
+
+**如实披露服务端「能看见」的**：记录条数、每条多长、什么时间改的、属于哪个实体类型与实体 id。
+这些是同步协议必需的元信息，不含任何业务语义。完整的能力边界见
+[`apps/sync-server/README.md` §2](apps/sync-server/README.md)。
+
+**服务端的授权与可用性**：
+
+- **设备级令牌**：`Authorization: Bearer <token>`，未授权 401。令牌只来自环境变量，
+  **不硬编码、不入库、不落日志**；**未配置令牌时服务拒绝启动**（失败即关闭）。
+- **不提供长期可用性承诺（AS-7）**：服务由你自托管，停机 / 损坏 / 忘记备份都由你负责。
+  请务必配置**定期快照备份**（`scripts/snapshot.mjs`，见 `docker-compose.yml` 的夜间快照 sidecar），
+  并把快照复制到**另一块盘**。
 
 ### 6.8 忘记口令且没有恢复码 = 数据永久丢失
 
@@ -384,7 +409,7 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 
 ### 7.2 当前 Sprint 范围
 
-本轮（Sprint 0）交付：**核心层 + Web 可跑 MVP + 同步服务骨架 + 完整文档与红线断言**。
+本轮（Sprint 0）交付：**核心层 + Web 可跑 MVP + 可运行的同步服务 + 完整文档与红线断言**。
 
 已完成的工程约束（后续每轮都要维持）：
 
@@ -392,7 +417,8 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 - 金额**分为单位整数**，时间**ISO 8601 UTC + localDate**。
 - 加密走 `CryptoProvider` 注入，存储走 `StorageAdapter` 注入。
 - 每个导出函数有**五要素中文 JSDoc**；不新增任何 `TODO`。
-- 四个 `check:*` 脚本**全绿**才能提交。
+- 三个 `check:*` 脚本**全绿**才能提交（`npm run ci` 一次跑完全部门禁）。
+- 同步服务**零 npm 运行时依赖**，且**只存密文**（见 §6.7）。
 
 ### 7.3 文档索引
 
@@ -400,13 +426,14 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 | --- | --- |
 | [`docs/PRD.md`](docs/PRD.md) | 产品需求文档：需求池、UI 稿描述、约束与假设、需求追踪索引 |
 | [`docs/system_design.md`](docs/system_design.md) | 系统设计：类图、时序、数据结构、任务列表、共享约定（注释与文档规范） |
-| [`docs/architecture.md`](docs/architecture.md) | 架构说明：分层图、数据流、加密边界详版、索引列取舍、Flutter 移植路径评估 |
+| [`docs/architecture.md`](docs/architecture.md) | 架构说明：分层图、数据流、加密边界详版、索引列取舍、**同步协议与密文 blob 格式**、Flutter 移植路径评估 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 12 周路线图、任务分工矩阵、里程碑与验收关卡、风险登记册 |
-| [`docs/compliance-checklist.md`](docs/compliance-checklist.md) | 合规自检清单：逐条对应 PRD 第六节 |
-| [`docs/adr/`](docs/adr/) | 架构决策记录：ADR-001 金额精度 / 002 时间与时区 / 003 加密封装边界 / 004 存储抽象层 / 005 冲突合并 / 006 索引明文列 |
+| [`docs/compliance-checklist.md`](docs/compliance-checklist.md) | 合规自检清单：逐条对应 PRD 第六节 + **同步服务专项检查** |
+| [`docs/adr/`](docs/adr/) | 架构决策记录：ADR-001 金额精度 / 002 时间与时区 / 003 加密封装边界 / 004 存储抽象层 / 005 冲突合并 / 006 索引明文列 / **007 同步协议与密文 blob 格式** |
 | [`packages/core/README.md`](packages/core/README.md) | 核心包对外 API 概览与在 Node / 浏览器中的用法 |
 | [`apps/web/README.md`](apps/web/README.md) | Web 端结构、页面职责与开发指引 |
-| [`apps/sync-server/README.md`](apps/sync-server/README.md) | 同步服务接口说明与自托管方式 |
+| [`apps/sync-server/README.md`](apps/sync-server/README.md) | 同步服务接口说明、**能力边界**与三种自托管场景（NAS / VPS / 内网） |
+| [`docker-compose.yml`](docker-compose.yml) | 同步服务编排：数据卷 + 设备令牌 + 夜间快照 sidecar |
 
 ---
 
