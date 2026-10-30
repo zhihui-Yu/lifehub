@@ -1,220 +1,104 @@
 /**
- * LifeHub 自托管同步服务。
+ * LifeHub 自托管同步服务 —— HTTP 层。
  *
  * 架构位置：apps/sync-server —— **只存密文**的极简同步后端。
  *
- * 红线（X-01 ④ / R5）：
+ * 红线（X-01 ④ / R5 / X-12）：
  * - 服务端**只接受密文 blob**（ciphertext / iv / tag / algorithm / keyVersion 等）；
  * - 服务端**永不接触**主口令、DEK、盐值与任何业务明文（金额 / 对方 / 备注）；
- * - 请求体一旦出现明文字段名，服务端直接拒绝并返回 400；
- * - 服务端没有「解密」能力，也没有密钥material——即使拿到数据库也无法还原任何业务数据。
+ * - 请求体一旦出现明文字段名，服务端直接拒绝并返回 400，**且绝不落盘**；
+ * - 服务端没有「解密」能力，也没有密钥材料——即使拿到数据库也无法还原任何业务数据；
+ * - 设备级令牌鉴权：令牌只来自环境变量，进程内只保留其 SHA-256 摘要。
  *
- * 提供两个端点：
- * 1. `POST /v1/blobs` —— 上传 / 覆盖一条密文 blob（upsert 语义）；
- * 2. `GET  /v1/blobs` —— 按游标增量拉取密文 blob。
- *
- * 说明：本实现用内存 Map 存储，进程重启即丢失；
- * 生产部署请把 `BlobStore` 换成持久化实现（SQLite / 文件 / 对象存储均可），
- * 接口保持不变。
+ * 端点：
+ * 1. `POST   /v1/blobs`      —— 幂等 upsert 一条密文 blob；
+ * 2. `GET    /v1/blobs`      —— 按 `since` 增量拉取密文 blob；
+ * 3. `GET    /v1/blobs/:id`  —— 查询单条密文 blob；
+ * 4. `DELETE /v1/blobs/:id`  —— 删除单条密文 blob；
+ * 5. `GET    /health`        —— 健康检查（供容器编排探活）。
  */
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { DeviceAuthorizer } from './auth.ts';
+import { loadConfig, type SyncServerConfig } from './config.ts';
+import { SqliteBlobStore, type StoredBlob } from './store.ts';
+import { ValidationError, normalizeTimestamp, validateBlobBody } from './validation.ts';
 
-/** 服务端监听端口（可用环境变量 `LIFEHUB_SYNC_PORT` 覆盖）。 */
-const DEFAULT_PORT = 8787;
-
-/** 单次增量拉取的最大条数。 */
-const MAX_PAGE_SIZE = 500;
-
-/** 默认页大小。 */
+/** 增量拉取的默认条数。 */
 const DEFAULT_PAGE_SIZE = 100;
 
-/** 允许出现在请求体中的 blob 字段白名单。 */
-const ALLOWED_BLOB_FIELDS: readonly string[] = [
-  'id',
-  'entityType',
-  'entityId',
-  'ciphertext',
-  'iv',
-  'tag',
-  'algorithm',
-  'keyVersion',
-  'updatedAt',
-  'version',
-];
+/** 增量拉取的最大条数。 */
+const MAX_PAGE_SIZE = 500;
 
-/** 明文字段黑名单：出现即拒绝（服务端只存密文）。 */
-const FORBIDDEN_FIELDS: readonly string[] = [
-  'amountMinor',
-  'amount',
-  'counterparty',
-  'categoryId',
-  'localDate',
-  'note',
-  'title',
-  'body',
-  'content',
-  'password',
-  'salt',
-  'dek',
-  'masterKey',
-  'recoveryCode',
-];
-
-/** 服务端存储的一条密文 blob。 */
-export interface StoredBlob {
-  /** blob id（全局唯一）。 */
-  id: string;
-  /** 实体类型。 */
-  entityType: string;
-  /** 实体 id。 */
-  entityId: string;
-  /** 密文正文（base64）。 */
-  ciphertext: string;
-  /** 随机 IV（base64）。 */
-  iv: string;
-  /** GCM 认证标签（base64）。 */
-  tag: string;
-  /** 加密算法标识。 */
-  algorithm: string;
-  /** 密钥版本。 */
-  keyVersion: number;
-  /** 最后更新时间，ISO 8601 UTC。 */
-  updatedAt: string;
-  /** 版本号。 */
-  version: number;
-  /** 服务端写入序号（增量游标）。 */
-  seq: number;
-}
+/** 服务启动时间（用于计算运行时长）。 */
+const STARTED_AT = Date.now();
 
 /**
- * 密文 blob 存储。
+ * 把 blob 转成对外的 JSON 表示。
  *
- * 说明：接口刻意保持极简，替换成持久化实现时无需改动 HTTP 层。
- */
-export interface BlobStore {
-  /**
-   * 写入或覆盖一条密文 blob。
-   *
-   * @param blob 待写入的密文 blob（不含 seq）
-   * @returns 写入后的 blob（含服务端分配的 seq）
-   */
-  upsert(blob: Omit<StoredBlob, 'seq'>): Promise<StoredBlob>;
-  /**
-   * 按游标增量拉取。
-   *
-   * @param cursor 起始游标（不含该序号）；从 0 开始表示全量
-   * @param limit 最多返回条数
-   * @returns 密文 blob 列表（按 seq 升序）
-   */
-  listSince(cursor: number, limit: number): Promise<StoredBlob[]>;
-}
-
-/**
- * 内存版密文存储。
+ * 说明：返回的字段与 `EncryptedBlob` 完全一致——**只有密文与元信息，没有任何明文**。
  *
- * 说明：仅用于自托管单机场景与开发调试；生产环境请换成持久化实现。
+ * @param blob 库中的 blob
+ * @returns 对外的 JSON 对象
  */
-export class MemoryBlobStore implements BlobStore {
-  /** blob id → blob。 */
-  private readonly blobs = new Map<string, StoredBlob>();
-  /** 自增序号（增量游标）。 */
-  private sequence = 0;
-
-  /**
-   * 写入或覆盖一条密文 blob。
-   *
-   * @param blob 待写入的密文 blob
-   * @returns 写入后的 blob
-   */
-  async upsert(blob: Omit<StoredBlob, 'seq'>): Promise<StoredBlob> {
-    this.sequence += 1;
-    const stored: StoredBlob = { ...blob, seq: this.sequence };
-    this.blobs.set(blob.id, stored);
-    return stored;
-  }
-
-  /**
-   * 按游标增量拉取。
-   *
-   * @param cursor 起始游标（不含该序号）
-   * @param limit 最多返回条数
-   * @returns 密文 blob 列表（按 seq 升序）
-   */
-  async listSince(cursor: number, limit: number): Promise<StoredBlob[]> {
-    return [...this.blobs.values()]
-      .filter((blob) => blob.seq > cursor)
-      .sort((left, right) => left.seq - right.seq)
-      .slice(0, limit);
-  }
-}
-
-/**
- * 校验请求体：只允许密文字段，且不得出现任何明文字段名。
- *
- * @param body 已解析的请求体
- * @returns 校验通过返回规范化后的 blob
- * @throws {Error} 字段非法时抛出，消息为中文提示
- */
-export function validateBlobBody(body: unknown): Omit<StoredBlob, 'seq'> {
-  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
-    throw new Error('请求体必须是对象');
-  }
-  const candidate = body as Record<string, unknown>;
-
-  // 明文字段一律拒绝——服务端只见密文。
-  for (const field of FORBIDDEN_FIELDS) {
-    if (field in candidate) {
-      throw new Error(`服务端只接受密文，拒绝明文字段：${field}`);
-    }
-  }
-  // 白名单之外的字段也拒绝，避免夹带。
-  for (const key of Object.keys(candidate)) {
-    if (!ALLOWED_BLOB_FIELDS.includes(key)) {
-      throw new Error(`出现未允许的字段：${key}`);
-    }
-  }
-
-  const required = ['id', 'entityType', 'entityId', 'ciphertext', 'iv', 'tag', 'algorithm', 'keyVersion', 'updatedAt', 'version'];
-  for (const key of required) {
-    if (candidate[key] === undefined || candidate[key] === null || candidate[key] === '') {
-      throw new Error(`缺少必填字段：${key}`);
-    }
-  }
-  if (typeof candidate['keyVersion'] !== 'number' || typeof candidate['version'] !== 'number') {
-    throw new Error('keyVersion 与 version 必须是数字');
-  }
-
+function toPublicJson(blob: StoredBlob): Record<string, unknown> {
   return {
-    id: String(candidate['id']),
-    entityType: String(candidate['entityType']),
-    entityId: String(candidate['entityId']),
-    ciphertext: String(candidate['ciphertext']),
-    iv: String(candidate['iv']),
-    tag: String(candidate['tag']),
-    algorithm: String(candidate['algorithm']),
-    keyVersion: Number(candidate['keyVersion']),
-    updatedAt: String(candidate['updatedAt']),
-    version: Number(candidate['version']),
+    id: blob.id,
+    entityType: blob.entityType,
+    entityId: blob.entityId,
+    ciphertext: blob.ciphertext,
+    iv: blob.iv,
+    tag: blob.tag,
+    algorithm: blob.algorithm,
+    keyVersion: blob.keyVersion,
+    updatedAt: blob.updatedAt,
+    version: blob.version,
   };
 }
 
 /**
- * 读取并解析请求体。
+ * 写出 JSON 响应。
+ *
+ * @param response HTTP 响应对象
+ * @param status HTTP 状态码
+ * @param payload 响应体
+ * @param headers 附加响应头
+ * @returns 无异常
+ */
+function sendJson(
+  response: ServerResponse,
+  status: number,
+  payload: unknown,
+  headers: Record<string, string> = {},
+): void {
+  const body = JSON.stringify(payload);
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    ...headers,
+  });
+  response.end(body);
+}
+
+/**
+ * 读取并解析 JSON 请求体。
  *
  * @param request HTTP 请求
+ * @param maxBytes 请求体大小上限（字节）
  * @returns 解析后的 JSON
- * @throws {Error} 请求体非法时抛出
+ * @throws {ValidationError} 请求体过大或不是合法 JSON 时抛出
  */
-async function readJsonBody(request: IncomingMessage): Promise<unknown> {
+async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = chunk as Buffer;
     size += buffer.length;
-    // 单条 blob 体积很小，限制 1MB 足够，防止恶意大包。
-    if (size > 1024 * 1024) {
-      throw new Error('请求体过大');
+    // 单条 blob 体积很小，限制上限足够，防止恶意大包。
+    if (size > maxBytes) {
+      throw new ValidationError('请求体过大');
     }
     chunks.push(buffer);
   }
@@ -225,36 +109,60 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new Error('请求体不是合法 JSON');
+    throw new ValidationError('请求体不是合法 JSON');
   }
 }
 
 /**
- * 写出 JSON 响应。
+ * 解析增量拉取的时间游标。
  *
- * @param response HTTP 响应
- * @param status HTTP 状态码
- * @param payload 响应体
- * @returns 无异常
+ * @param raw `since` 查询参数原始值
+ * @returns 归一化后的 ISO 时间串
+ * @throws {ValidationError} 不是合法时间戳时抛出
  */
-function sendJson(response: ServerResponse, status: number, payload: unknown): void {
-  const body = JSON.stringify(payload);
-  response.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  response.end(body);
+function parseSince(raw: string | null): string {
+  if (raw === null || raw.trim() === '') {
+    return '1970-01-01T00:00:00.000Z';
+  }
+  return normalizeTimestamp(raw, 'since');
+}
+
+/**
+ * 解析分页条数。
+ *
+ * @param raw `limit` 查询参数原始值
+ * @returns 落在 [1, MAX_PAGE_SIZE] 区间内的条数
+ */
+function parseLimit(raw: string | null): number {
+  if (raw === null || raw.trim() === '') {
+    return DEFAULT_PAGE_SIZE;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_PAGE_SIZE;
+  }
+  return Math.min(Math.max(parsed, 1), MAX_PAGE_SIZE);
+}
+
+/** 同步服务的运行期上下文。 */
+export interface SyncServerContext {
+  /** 密文 blob 存储。 */
+  store: SqliteBlobStore;
+  /** 设备令牌鉴权器。 */
+  authorizer: DeviceAuthorizer;
+  /** 运行时配置。 */
+  config: SyncServerConfig;
 }
 
 /**
  * 创建同步服务实例。
  *
- * @param store 密文 blob 存储
+ * @param context 运行期上下文
  * @returns HTTP 服务实例
  */
-export function createSyncServer(store: BlobStore = new MemoryBlobStore()) {
+export function createSyncServer(context: SyncServerContext): Server {
   return createServer((request, response) => {
-    void handleRequest(request, response, store);
+    void handleRequest(request, response, context);
   });
 }
 
@@ -263,61 +171,156 @@ export function createSyncServer(store: BlobStore = new MemoryBlobStore()) {
  *
  * @param request HTTP 请求
  * @param response HTTP 响应
- * @param store 密文 blob 存储
+ * @param context 运行期上下文
  * @returns 无异常
  */
 async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  store: BlobStore,
+  context: SyncServerContext,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://localhost');
+  const method = request.method ?? 'GET';
+  const corsOrigin = context.config.corsOrigin;
+  const corsHeaders: Record<string, string> =
+    corsOrigin === ''
+      ? {}
+      : {
+          'access-control-allow-origin': corsOrigin,
+          'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
+          'access-control-allow-headers': 'authorization,content-type',
+          'access-control-max-age': '600',
+        };
 
-  // 健康检查：便于容器编排探活。
-  if (request.method === 'GET' && url.pathname === '/healthz') {
-    sendJson(response, 200, { ok: true, service: 'lifehub-sync-server' });
+  // 预检请求：直接放行，不触碰数据。
+  if (method === 'OPTIONS') {
+    response.writeHead(204, corsHeaders);
+    response.end();
     return;
   }
 
-  // 增量拉取。
-  if (request.method === 'GET' && url.pathname === '/v1/blobs') {
-    const cursor = Number.parseInt(url.searchParams.get('cursor') ?? '0', 10);
-    const limitRaw = Number.parseInt(url.searchParams.get('limit') ?? String(DEFAULT_PAGE_SIZE), 10);
-    const limit = Math.min(Math.max(Number.isFinite(limitRaw) ? limitRaw : DEFAULT_PAGE_SIZE, 1), MAX_PAGE_SIZE);
-    const blobs = await store.listSince(Number.isFinite(cursor) ? cursor : 0, limit);
-    const nextCursor = blobs.length > 0 ? blobs[blobs.length - 1]?.seq ?? cursor : cursor;
-    sendJson(response, 200, { blobs, nextCursor });
+  // 健康检查：供容器编排探活，不暴露任何业务信息。
+  if (method === 'GET' && url.pathname === '/health') {
+    sendJson(
+      response,
+      200,
+      {
+        ok: true,
+        service: 'lifehub-sync-server',
+        uptimeSeconds: Math.floor((Date.now() - STARTED_AT) / 1000),
+      },
+      corsHeaders,
+    );
     return;
   }
 
-  // 上传 / 覆盖一条密文 blob。
-  if (request.method === 'POST' && url.pathname === '/v1/blobs') {
-    try {
-      const body = await readJsonBody(request);
+  // 以下端点都需要设备级令牌。
+  const auth = context.authorizer.authorize(request.headers.authorization);
+  if (!auth.ok) {
+    sendJson(
+      response,
+      401,
+      { error: auth.reason },
+      { ...corsHeaders, 'www-authenticate': 'Bearer' },
+    );
+    return;
+  }
+
+  try {
+    // 上传 / 覆盖一条密文 blob（幂等 upsert）。
+    if (method === 'POST' && url.pathname === '/v1/blobs') {
+      const body = await readJsonBody(request, context.config.maxBodyBytes);
       const blob = validateBlobBody(body);
-      const stored = await store.upsert(blob);
-      sendJson(response, 200, { id: stored.id, seq: stored.seq, updatedAt: stored.updatedAt });
-    } catch (error) {
-      sendJson(response, 400, {
-        error: error instanceof Error ? error.message : '请求无法处理',
-      });
+      const result = context.store.upsert(blob);
+      sendJson(
+        response,
+        200,
+        {
+          id: result.blob.id,
+          status: result.status,
+          version: result.blob.version,
+          updatedAt: result.blob.updatedAt,
+        },
+        corsHeaders,
+      );
+      return;
     }
-    return;
-  }
 
-  sendJson(response, 404, { error: '接口不存在' });
+    // 按 since 增量拉取密文 blob。
+    if (method === 'GET' && url.pathname === '/v1/blobs') {
+      const since = parseSince(url.searchParams.get('since'));
+      const sinceId = url.searchParams.get('sinceId');
+      const limit = parseLimit(url.searchParams.get('limit'));
+      const result = context.store.listSince(since, sinceId, limit);
+      sendJson(
+        response,
+        200,
+        {
+          blobs: result.blobs.map(toPublicJson),
+          count: result.blobs.length,
+          nextSince: result.nextSince,
+          nextSinceId: result.nextSinceId,
+        },
+        corsHeaders,
+      );
+      return;
+    }
+
+    // 查询单条密文 blob。
+    const single = /^\/v1\/blobs\/([^/]+)$/.exec(url.pathname);
+    if (single !== null) {
+      const id = decodeURIComponent(single[1] ?? '');
+      if (method === 'GET') {
+        const blob = context.store.get(id);
+        if (blob === null) {
+          sendJson(response, 404, { error: '未找到该 blob' }, corsHeaders);
+          return;
+        }
+        sendJson(response, 200, toPublicJson(blob), corsHeaders);
+        return;
+      }
+      if (method === 'DELETE') {
+        const removed = context.store.remove(id);
+        if (!removed) {
+          sendJson(response, 404, { error: '未找到该 blob' }, corsHeaders);
+          return;
+        }
+        sendJson(response, 200, { id, deleted: true }, corsHeaders);
+        return;
+      }
+    }
+
+    sendJson(response, 404, { error: '接口不存在' }, corsHeaders);
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      // 校验失败（含明文字段）——**绝不落盘**，直接 400。
+      sendJson(response, 400, { error: error.message }, corsHeaders);
+      return;
+    }
+    sendJson(response, 500, { error: '服务端内部错误' }, corsHeaders);
+  }
 }
 
 /**
  * 启动同步服务。
  *
  * @returns 无异常
+ * @throws {Error} 配置非法（例如未配置设备令牌）时抛出
  */
 function main(): void {
-  const port = Number.parseInt(process.env['LIFEHUB_SYNC_PORT'] ?? String(DEFAULT_PORT), 10);
-  const server = createSyncServer();
-  server.listen(port, () => {
-    console.log(`[lifehub-sync] 同步服务已启动：http://127.0.0.1:${port}（只存密文）`);
+  const config = loadConfig();
+  const authorizer = new DeviceAuthorizer(config.credentials);
+  const databasePath = config.databasePath;
+  if (databasePath !== ':memory:') {
+    mkdirSync(dirname(databasePath), { recursive: true });
+  }
+  const store = new SqliteBlobStore(databasePath);
+  const server = createSyncServer({ store, authorizer, config });
+  server.listen(config.port, config.host, () => {
+    console.log(
+      `[lifehub-sync] 同步服务已启动：http://${config.host}:${config.port}` +
+        `（只存密文；数据库 ${databasePath}；已授权设备 ${config.credentials.length} 台）`,
+    );
   });
 }
 

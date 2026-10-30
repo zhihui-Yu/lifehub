@@ -7,12 +7,15 @@
   "license": "MIT",
   "main": "./dist/server.js",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.5.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "dev": "node --experimental-strip-types src/server.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage"
   }
 }

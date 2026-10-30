@@ -1,0 +1,116 @@
+# LifeHub 自托管同步服务 —— Docker Compose 编排。
+#
+# 架构位置：仓库根目录 —— 一条命令起一个「只存密文」的同步服务 + 夜间快照备份。
+#
+# 快速开始：
+#   1) 生成设备令牌（每台设备一个，不要复用）：
+#        node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+#   2) 复制环境变量示例并填入令牌：
+#        cp .env.example .env
+#   3) 起服务：
+#        docker compose up -d
+#   4) 验证：
+#        curl http://127.0.0.1:8787/health
+#
+# 安全说明：
+# - **服务端只见密文**：数据库里没有任何业务明文，也没有密钥材料；
+# - 令牌只放在 `.env`（已被 .gitignore 忽略）或 Docker Secret 里，**不入镜像、不入库**；
+# - 默认只监听 127.0.0.1，外网访问请在前面加一层 TLS 反向代理；
+# - 本服务由用户自托管，**运营方不承担可用性承诺**（PRD AS-7）。
+
+services:
+  # ── 同步服务本体 ────────────────────────────────────────────────
+  lifehub-sync:
+    build:
+      # 构建上下文必须是仓库根目录（Dockerfile 在 apps/sync-server/ 下）。
+      context: .
+      dockerfile: apps/sync-server/Dockerfile
+    image: lifehub/sync-server:latest
+    container_name: lifehub-sync
+    restart: unless-stopped
+    environment:
+      # 监听地址：容器内必须用 0.0.0.0，否则端口映射不通。
+      LIFEHUB_SYNC_HOST: '0.0.0.0'
+      LIFEHUB_SYNC_PORT: '8787'
+      # 数据库落在数据卷里，容器重建不丢数据。
+      LIFEHUB_SYNC_DB_PATH: /data/lifehub-sync.db
+      # 设备令牌：逗号分隔，每台设备一个。
+      # 令牌从 .env 注入（.env 已被 .gitignore 忽略），**不入镜像、不入库**。
+      # 想改用 Docker Secret 文件形式，见本文件末尾的注释说明。
+      LIFEHUB_SYNC_TOKENS: ${LIFEHUB_SYNC_TOKENS:?请在 .env 中设置 LIFEHUB_SYNC_TOKENS}
+      # LIFEHUB_SYNC_TOKEN_FILE: /run/secrets/lifehub_sync_tokens
+    ports:
+      # 默认只暴露给本机；外网访问请在前面加 TLS 反向代理后再放开。
+      - '127.0.0.1:8787:8787'
+    volumes:
+      # 数据卷：SQLite 库 + 快照。
+      - lifehub-sync-data:/data
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  # ── 夜间快照备份 ─────────────────────────────────────────────────
+  # 用同一个镜像跑一个 sidecar，每晚执行一次 SQLite 在线快照并保留 N 份。
+  lifehub-sync-snapshot:
+    image: lifehub/sync-server:latest
+    container_name: lifehub-sync-snapshot
+    restart: unless-stopped
+    depends_on:
+      lifehub-sync:
+        condition: service_started
+    environment:
+      LIFEHUB_SYNC_DB_PATH: /data/lifehub-sync.db
+      LIFEHUB_SYNC_SNAPSHOT_DIR: /data/snapshots
+      # 保留份数：7 份 ≈ 一周的每日快照。
+      LIFEHUB_SYNC_SNAPSHOT_KEEP: ${LIFEHUB_SYNC_SNAPSHOT_KEEP:-7}
+    volumes:
+      - lifehub-sync-data:/data
+      # 挂载快照脚本：备份逻辑在仓库的 scripts/snapshot.mjs（零 npm 依赖）。
+      - ./scripts:/opt/lifehub-scripts:ro
+    # 每晚 03:17 跑一次（错开整点，避免与其它定时任务撞车）。
+    # 说明：alpine 的 busybox `date` 不支持 `-d`，因此用 node 计算到下一个 03:17 的秒数。
+    command:
+      [
+        'sh',
+        '-c',
+        'while true; do sleep $(node -e "const n=new Date();n.setHours(3,17,0,0);if(n<=new Date())n.setDate(n.getDate()+1);console.log(Math.floor((n-new Date())/1000))"); node /opt/lifehub-scripts/snapshot.mjs; done',
+      ]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+volumes:
+  # SQLite 库与快照的持久化卷。
+  lifehub-sync-data:
+
+# ── 可选：Docker Secret 文件形式的授权 ──────────────────────────────
+# 想让令牌不出现在环境变量里，可改用文件形式：
+#   1) mkdir -p secrets
+#   2) echo 'deviceA=<token>' > secrets/lifehub_sync_tokens.txt
+#      （再 echo 'deviceB=<token>' >> secrets/lifehub_sync_tokens.txt）
+#   3) 取消下面两处注释：
+#      · 服务里去掉 LIFEHUB_SYNC_TOKENS，改设 LIFEHUB_SYNC_TOKEN_FILE: /run/secrets/lifehub_sync_tokens
+#      · 服务里加上 secrets: [lifehub_sync_tokens]
+# secrets:
+#   lifehub_sync_tokens:
+#     file: ./secrets/lifehub_sync_tokens.txt
