@@ -92,7 +92,8 @@ export class VaultRepository {
   /**
    * 标记恢复码已导出。
    *
-   * @returns 无异常
+   * @returns 成功标记恢复码导出状态后解析（无返回值）
+   * @throws {LifeHubError} `LIFEHUB_E_ENTITY_NOT_FOUND` —— 尚未生成恢复码元数据
    */
   async markRecoveryExported(): Promise<void> {
     const meta = await this.loadRecoveryMeta();

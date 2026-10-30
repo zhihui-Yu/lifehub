@@ -77,6 +77,8 @@ export class FixedClock implements Clock {
 export class TestDekProvider implements DekProvider {
   /** DEK。 */
   private dek: Uint8Array;
+  /** 是否处于解锁态；默认已解锁，便于现有测试，锁定时用于模拟「锁定态写不进加密库」。 */
+  private unlocked = true;
 
   /**
    * 构造测试用 DEK 供给器。
@@ -90,10 +92,20 @@ export class TestDekProvider implements DekProvider {
   /**
    * 是否已解锁。
    *
-   * @returns 恒为 true
+   * @returns 未锁定时返回 true
    */
   isUnlocked(): boolean {
-    return true;
+    return this.unlocked;
+  }
+
+  /**
+   * 切换锁定态（用于模拟解锁失败时加密库不可写，B-4）。
+   *
+   * @param unlocked 是否解锁
+   * @returns 无异常
+   */
+  setUnlocked(unlocked: boolean): void {
+    this.unlocked = unlocked;
   }
 
   /**
@@ -184,9 +196,12 @@ export function createTestRuntime(): TestRuntime {
     repository: vaultRepository,
     audit,
     clock,
-    // 建库 / 解锁时把 DEK 装进供给器，
+    // 建库 / 解锁时把 DEK 装进供给器并切换为解锁态，
     // 这样「建库 / 解锁」两条审计日志才会用当前密钥加密落盘。
-    onDekAvailable: (newDek) => dek.setDek(newDek),
+    onDekAvailable: (newDek) => {
+      dek.setDek(newDek);
+      dek.setUnlocked(true);
+    },
     currentDek: () => dek.getDek('bill'),
   });
   const bills = new BillRepository({ store, dek });

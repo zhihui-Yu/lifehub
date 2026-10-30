@@ -23,6 +23,8 @@ export class AuditLogger {
   private readonly clock: Clock;
   /** 设备标签，形如 '本机 · Chrome'。 */
   private readonly deviceLabel: string;
+  /** 写入失败回调：调用方借它暂存「写不进加密库」的失败审计条目。 */
+  private onWriteFailure: ((entry: AuditLog) => void | Promise<void>) | undefined;
 
   /**
    * 构造审计日志服务。
@@ -36,10 +38,25 @@ export class AuditLogger {
   }
 
   /**
+   * 注册审计写入失败回调。
+   *
+   * 说明：解锁失败时保险库处于锁定态、加密审计库写不进去，
+   * 调用方（如 `VaultService`）用此回调把条目暂存到明文白名单内，
+   * 成功解锁后再刷入加密审计（X-07 ② / B-4）。
+   *
+   * @param handler 写入失败时的回调
+   * @returns 无异常
+   */
+  setOnWriteFailure(handler: (entry: AuditLog) => void | Promise<void>): void {
+    this.onWriteFailure = handler;
+  }
+
+  /**
    * 记录一条审计日志。
    *
    * 说明：审计失败**不应中断主流程**（例如解密失败本身要记日志，
-   * 若此时日志写库也失败会造成递归），因此这里吞掉异常但保留接口契约。
+   * 若此时日志写库也失败会造成递归），因此这里吞掉异常但保留接口契约，
+   * 并交给 `onWriteFailure` 回调兜底（若已注册）。
    *
    * @param action 审计动作
    * @param target 作用对象（实体名 / 文件名 / 空串）
@@ -58,9 +75,28 @@ export class AuditLogger {
     try {
       await this.repository.save(entry);
     } catch {
-      // 审计写入失败不抛出：审计是旁路能力，不能因为它让主流程失败。
+      try {
+        await this.onWriteFailure?.(entry);
+      } catch {
+        // 兜底回调自身失败也吞掉：审计始终是旁路能力。
+      }
     }
     return entry;
+  }
+
+  /**
+   * 尝试把一条已构造好的审计条目直接写库（用于刷入暂存条目）。
+   *
+   * @param entry 已构造好的审计条目
+   * @returns 写入成功返回 true；写入失败返回 false（调用方可继续暂存）
+   */
+  async restore(entry: AuditLog): Promise<boolean> {
+    try {
+      await this.repository.save(entry);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**

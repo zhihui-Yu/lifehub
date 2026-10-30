@@ -10,6 +10,7 @@
  */
 import { ISO_UTC_PATTERN } from '../constants';
 import { LifeHubError } from '../errors';
+import type { AuditAction } from './audit';
 import type { EncryptedPayload } from './common';
 
 /** KDF 参数（与 crypto/kdf.ts 的 KdfParams 结构一致，此处为落盘形态）。 */
@@ -36,6 +37,26 @@ export interface WrappedDek {
   wrappedByKeyVersion: number;
   /** 包裹后的密文载荷。 */
   wrapped: EncryptedPayload;
+}
+
+/**
+ * 解锁失败时暂存在明文 `VaultParams` 里的审计条目。
+ *
+ * 说明：解锁失败时保险库处于**锁定态**，加密审计库写不进去；
+ * 这些条目先暂存在明文白名单内（只含时间 / 动作 / 对象 / 设备标签 / 成败，
+ * **严禁任何业务数据**），成功解锁后再刷入加密审计库（B-4）。
+ */
+export interface PendingAuditEntry {
+  /** 发生时间，ISO 8601 UTC。 */
+  at: string;
+  /** 审计动作。 */
+  action: AuditAction;
+  /** 作用对象（实体名 / 空串）。 */
+  target: string;
+  /** 设备标签，形如 '本机 · Chrome'。 */
+  deviceLabel: string;
+  /** 操作是否成功。 */
+  success: boolean;
 }
 
 /** 保险库参数（本地明文存储的实体）。 */
@@ -66,6 +87,12 @@ export interface VaultParams {
   createdAt: string;
   /** 最后更新时间，ISO 8601 UTC。 */
   updatedAt: string;
+  /** 连续解锁失败次数（速率限制状态，NF-S-8）；缺失视为 0。 */
+  failedAttempts?: number;
+  /** 冷却截止时间戳（epoch ms）；0 或缺失表示未冷却。 */
+  cooldownUntil?: number;
+  /** 锁定态下暂存的失败审计条目；解锁后刷入加密审计库并清空。 */
+  pendingAuditEntries?: PendingAuditEntry[];
 }
 
 /** 恢复码包（用户持有并导出的文件内容）。 */
@@ -159,6 +186,40 @@ export function validateVaultParams(params: unknown): VaultParams {
   }
   if (typeof candidate['updatedAt'] !== 'string' || !ISO_UTC_PATTERN.test(candidate['updatedAt'])) {
     throw new LifeHubError('LIFEHUB_E_VALIDATION', '保险库更新时间必须是 ISO 8601 UTC');
+  }
+
+  // 可选字段：速率限制状态与暂存审计队列（缺失时合法，向后兼容旧数据）。
+  if (candidate['failedAttempts'] !== undefined) {
+    const failedAttempts = candidate['failedAttempts'];
+    if (typeof failedAttempts !== 'number' || !Number.isInteger(failedAttempts) || failedAttempts < 0) {
+      throw new LifeHubError('LIFEHUB_E_VALIDATION', '解锁失败次数必须是非负整数');
+    }
+  }
+  if (candidate['cooldownUntil'] !== undefined) {
+    const cooldownUntil = candidate['cooldownUntil'];
+    if (typeof cooldownUntil !== 'number' || !Number.isFinite(cooldownUntil) || cooldownUntil < 0) {
+      throw new LifeHubError('LIFEHUB_E_VALIDATION', '冷却截止时间戳必须是非负数');
+    }
+  }
+  if (candidate['pendingAuditEntries'] !== undefined) {
+    const pending = candidate['pendingAuditEntries'];
+    if (!Array.isArray(pending)) {
+      throw new LifeHubError('LIFEHUB_E_VALIDATION', '暂存审计队列必须是数组');
+    }
+    for (const entry of pending) {
+      if (
+        typeof entry !== 'object' ||
+        entry === null ||
+        typeof entry['at'] !== 'string' ||
+        !ISO_UTC_PATTERN.test(entry['at']) ||
+        typeof entry['action'] !== 'string' ||
+        typeof entry['target'] !== 'string' ||
+        typeof entry['deviceLabel'] !== 'string' ||
+        typeof entry['success'] !== 'boolean'
+      ) {
+        throw new LifeHubError('LIFEHUB_E_VALIDATION', '暂存审计条目字段非法');
+      }
+    }
   }
 
   return candidate as unknown as VaultParams;

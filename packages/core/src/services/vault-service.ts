@@ -30,7 +30,8 @@ import type { CryptoProvider } from '../crypto/provider';
 import { createKdfParams, KdfParams } from '../crypto/kdf';
 import { CryptoService } from '../crypto/service';
 import { computeRecoveryChecksum, generateRecoveryCode, validateRecoveryCode } from '../crypto/recovery-code';
-import type { RecoveryBundle, RecoveryMeta, VaultParams, WrappedDek } from '../models/vault';
+import type { AuditLog } from '../models/audit';
+import type { PendingAuditEntry, RecoveryBundle, RecoveryMeta, VaultParams, WrappedDek } from '../models/vault';
 import type { VaultRepository } from '../repositories/vault-repository';
 import type { StorageAdapter } from '../storage/adapter';
 import type { Clock } from '../types/common';
@@ -127,6 +128,9 @@ export class VaultService {
     this.clock = deps.clock;
     this.currentDekProvider = deps.currentDek;
     this.onDekAvailable = deps.onDekAvailable;
+    // 解锁失败时加密审计写不进去（锁定态），交给 VaultService 暂存到明文白名单，
+    // 成功解锁后再刷入加密审计（X-07 ② / B-4）。
+    this.audit.setOnWriteFailure((entry) => this.stageFailedAudit(entry));
   }
 
   /**
@@ -207,19 +211,20 @@ export class VaultService {
    * @throws {LifeHubError} `LIFEHUB_E_VAULT_NOT_FOUND` —— 尚未创建；`LIFEHUB_E_VAULT_PASSWORD_WRONG` —— 口令错误
    */
   async unlock(password: string): Promise<UnlockedVault> {
-    this.assertNotCoolingDown();
     const params = await this.repository.load();
     if (!params) {
       throw new LifeHubError('LIFEHUB_E_VAULT_NOT_FOUND');
     }
+    // 从持久化状态恢复速率限制（NF-S-8：刷新页面后冷却不失效，B-4）。
+    this.restoreRateLimitState(params);
+    this.assertNotCoolingDown();
 
     const kdfParams = this.toKdfParams(params);
     const masterKey = await this.provider.deriveKey(kdfParams, password);
     const ok = await this.crypto.verifyPassword(masterKey, params.verifier);
     if (!ok) {
-      this.failedAttempts += 1;
-      await this.audit.log('failed_unlock', '', false);
-      this.applyCooldownIfNeeded();
+      // 锁定态下这条审计写不进加密库，会经 onWriteFailure 暂存到明文白名单。
+      await this.recordFailedUnlock('');
       // 统一抛「口令不正确」，不区分「口令错」与「数据损坏」，避免信息泄露（§4.3 关键点 2）。
       throw new LifeHubError('LIFEHUB_E_VAULT_PASSWORD_WRONG');
     }
@@ -230,6 +235,14 @@ export class VaultService {
     this.sessionDek = dek;
     // 同建库流程：先安装 DEK，再写审计，保证审计条目用的是当前密钥。
     this.onDekAvailable?.(dek, params.keyVersion);
+    // 先刷入暂存的失败审计（现在 DEK 已安装），再清零速率限制状态。
+    const flushed = await this.flushPendingAudits(params);
+    await this.repository.save({
+      ...flushed,
+      failedAttempts: 0,
+      cooldownUntil: 0,
+      updatedAt: this.clock.nowIso(),
+    });
     await this.audit.log('unlock', '', true);
     return { dek, masterKey, keyVersion: params.keyVersion };
   }
@@ -251,11 +264,14 @@ export class VaultService {
    * @throws {LifeHubError} `LIFEHUB_E_VAULT_NOT_FOUND` —— 尚未创建；`LIFEHUB_E_RECOVERY_INVALID` —— 恢复码格式错误；`LIFEHUB_E_VAULT_PASSWORD_WRONG` —— 恢复码不匹配
    */
   async unlockWithRecoveryCode(code: string): Promise<UnlockedVault> {
-    this.assertNotCoolingDown();
     const params = await this.repository.load();
     if (!params) {
       throw new LifeHubError('LIFEHUB_E_VAULT_NOT_FOUND');
     }
+    // 从持久化状态恢复速率限制（与口令解锁一致，B-4）。
+    this.restoreRateLimitState(params);
+    this.assertNotCoolingDown();
+
     const meta = await this.repository.loadRecoveryMeta();
     if (!meta) {
       throw new LifeHubError('LIFEHUB_E_RECOVERY_INVALID', '尚未生成恢复码，请先在安全页生成并导出');
@@ -268,18 +284,14 @@ export class VaultService {
     // 格式合法但内容不匹配 → LIFEHUB_E_VAULT_PASSWORD_WRONG（PRD X-03 ④「提示格式错误」）。
     if (!validateRecoveryCode(code)) {
       // 解锁失败同样要记审计（X-07 ②），否则用户无法察觉有人在爆破恢复码。
-      this.failedAttempts += 1;
-      await this.audit.log('failed_unlock', 'recovery', false);
-      this.applyCooldownIfNeeded();
+      await this.recordFailedUnlock('recovery');
       throw new LifeHubError('LIFEHUB_E_RECOVERY_INVALID');
     }
 
     // 第一步：用恢复盐值校验恢复码本身（sha256(恢复码 + 盐值)）。
     const checksum = await computeRecoveryChecksum(this.provider, code, meta.salt);
     if (checksum !== meta.checksum) {
-      this.failedAttempts += 1;
-      await this.audit.log('failed_unlock', 'recovery', false);
-      this.applyCooldownIfNeeded();
+      await this.recordFailedUnlock('recovery');
       throw new LifeHubError('LIFEHUB_E_VAULT_PASSWORD_WRONG');
     }
 
@@ -290,9 +302,7 @@ export class VaultService {
       dek = await this.crypto.unwrapDek(recoveryKey, meta.wrappedDek);
     } catch {
       // 校验和能对上但解包失败，说明本地数据被篡改或损坏；对外仍统一为「口令不正确」。
-      this.failedAttempts += 1;
-      await this.audit.log('failed_unlock', 'recovery', false);
-      this.applyCooldownIfNeeded();
+      await this.recordFailedUnlock('recovery');
       throw new LifeHubError('LIFEHUB_E_VAULT_PASSWORD_WRONG');
     }
 
@@ -301,6 +311,14 @@ export class VaultService {
     this.sessionDek = dek;
     // 同建库流程：先安装 DEK，再写审计，保证审计条目用的是当前密钥。
     this.onDekAvailable?.(dek, params.keyVersion);
+    // 先刷入暂存的失败审计，再清零速率限制状态。
+    const flushed = await this.flushPendingAudits(params);
+    await this.repository.save({
+      ...flushed,
+      failedAttempts: 0,
+      cooldownUntil: 0,
+      updatedAt: this.clock.nowIso(),
+    });
     await this.audit.log('recover', 'recovery', true);
     return { dek, masterKey: recoveryKey, keyVersion: params.keyVersion };
   }
@@ -517,6 +535,118 @@ export class VaultService {
       this.cooldownUntil = Date.now() + UNLOCK_COOLDOWN_MS;
       this.failedAttempts = 0;
     }
+  }
+
+  /**
+   * 从持久化的保险库参数恢复速率限制状态。
+   *
+   * 说明：`failedAttempts` / `cooldownUntil` 落盘在明文 `vaultParams` 中，
+   * 服务实例重建（刷新页面）后从这里恢复，冷却不会因刷新而失效（B-4）。
+   *
+   * @param params 保险库参数
+   * @returns 无异常
+   */
+  private restoreRateLimitState(params: VaultParams): void {
+    this.failedAttempts = params.failedAttempts ?? 0;
+    this.cooldownUntil = params.cooldownUntil ?? 0;
+  }
+
+  /**
+   * 把当前速率限制状态持久化到保险库参数。
+   *
+   * 说明：从存储重新读取最新参数后再写回，避免覆盖并发暂存的
+   * `pendingAuditEntries`；同时更新 `updatedAt`。这些字段是明文白名单内的
+   * 元数据，不含任何业务语义（B-4）。
+   *
+   * @returns 无异常
+   */
+  private async persistRateLimitState(): Promise<void> {
+    const latest = await this.repository.load();
+    if (!latest) {
+      return;
+    }
+    await this.repository.save({
+      ...latest,
+      failedAttempts: this.failedAttempts,
+      cooldownUntil: this.cooldownUntil,
+      updatedAt: this.clock.nowIso(),
+    });
+  }
+
+  /**
+   * 记录一次解锁失败并持久化速率限制状态。
+   *
+   * 说明：锁定态下 `failed_unlock` 审计写不进加密库，会经 `onWriteFailure`
+   * 暂存到明文白名单；这里同时把失败计数与冷却状态落盘（B-4）。
+   *
+   * @param target 作用对象（口令解锁为空串，恢复码为 'recovery'）
+   * @returns 无异常
+   */
+  private async recordFailedUnlock(target: string): Promise<void> {
+    this.failedAttempts += 1;
+    await this.audit.log('failed_unlock', target, false);
+    this.applyCooldownIfNeeded();
+    await this.persistRateLimitState();
+  }
+
+  /**
+   * 暂存一条写不进加密库的失败审计条目。
+   *
+   * 说明：这是 `AuditLogger.onWriteFailure` 的回调实现——解锁失败时保险库锁定、
+   * 加密审计写不进去，条目先暂存到 `vaultParams.pendingAuditEntries`
+   * （只含时间 / 动作 / 对象 / 设备标签 / 成败，**无任何业务数据**）。
+   *
+   * @param entry 写库失败的审计条目
+   * @returns 无异常
+   */
+  private async stageFailedAudit(entry: AuditLog): Promise<void> {
+    const params = await this.repository.load();
+    if (!params) {
+      return;
+    }
+    const pending = [...(params.pendingAuditEntries ?? [])];
+    pending.push({
+      at: entry.at,
+      action: entry.action,
+      target: entry.target,
+      deviceLabel: entry.deviceLabel,
+      success: entry.success,
+    });
+    await this.repository.save({ ...params, pendingAuditEntries: pending, updatedAt: this.clock.nowIso() });
+  }
+
+  /**
+   * 把暂存的失败审计条目刷入加密审计库。
+   *
+   * 说明：成功解锁后 DEK 已安装，此时把之前因锁定态写不进去的失败条目补写入库；
+   * 仍写不进的条目保留在队列里，下次解锁再试。
+   *
+   * @param params 保险库参数
+   * @returns 刷入后（可能已清空暂存队列）的保险库参数
+   */
+  private async flushPendingAudits(params: VaultParams): Promise<VaultParams> {
+    const pending = params.pendingAuditEntries ?? [];
+    if (pending.length === 0) {
+      return params;
+    }
+    const remaining: PendingAuditEntry[] = [];
+    for (const entry of pending) {
+      const ok = await this.audit.restore({
+        id: uuidV7(),
+        at: entry.at,
+        action: entry.action,
+        target: entry.target,
+        deviceLabel: entry.deviceLabel,
+        success: entry.success,
+      });
+      if (!ok) {
+        remaining.push(entry);
+      }
+    }
+    if (remaining.length === pending.length) {
+      return params;
+    }
+    return { ...params, pendingAuditEntries: remaining, updatedAt: this.clock.nowIso() };
   }
 
   /**
