@@ -6,7 +6,7 @@
  * 说明：按 `localDate` 分组展示；搜索 200ms 防抖；方向 / 日期区间 / 分类可组合筛选；
  * 长列表使用虚拟化（A-09）。
  */
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Box, Typography } from '@mui/material';
 import { BillFilterBar } from '@/components/bills/BillFilterBar';
 import { BillGroupList } from '@/components/bills/BillGroupList';
@@ -30,6 +30,8 @@ export function BillsPage() {
   const filters = useBillStore((state) => state.filters);
   const setFilters = useBillStore((state) => state.setFilters);
   const clearFilters = useBillStore((state) => state.clearFilters);
+  // 原始工作集（过滤前）——用于区分「根本没有账单」与「筛选后为空」两种空状态。
+  const allBills = useBillStore((state) => state.bills);
 
   const categoryNames = useMemo(() => {
     const map: Record<string, string> = {};
@@ -39,13 +41,35 @@ export function BillsPage() {
     return map;
   }, [categories]);
 
-  const sourceFileNames = useMemo(() => {
-    const map: Record<string, string> = {};
-    void runtime;
-    return map;
+  const [sourceFileNames, setSourceFileNames] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const batchRepository = runtime?.importBatchRepository;
+      if (!batchRepository) {
+        return;
+      }
+      try {
+        const batches = await batchRepository.list();
+        if (cancelled) {
+          return;
+        }
+        const map: Record<string, string> = {};
+        for (const batch of batches) {
+          map[batch.id] = batch.fileName;
+        }
+        setSourceFileNames(map);
+      } catch {
+        // 批次列表加载失败不阻断账单列表渲染，来源文件列降级为「—」。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [runtime]);
 
-  if (status === 'unlocked' && bills.length === 0 && !loading) {
+  if (status === 'unlocked' && allBills.length === 0 && !loading) {
     return (
       <div data-testid="bills-page">
         <EmptyState
