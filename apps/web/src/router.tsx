@@ -5,32 +5,19 @@
  *
  * 说明：使用 hash 路由，保证静态部署（无服务端 rewrite）时也能直接访问深链接。
  * 根布局路由负责装配 AppShell 与 TopBar。
+ *
+ * 根布局组件已独立到 `components/layout/RootLayout.tsx` ——
+ * `react-refresh/only-export-components` 要求组件文件不混放非组件导出，
+ * 而本文件需要导出路由表。
  */
-import { Outlet, createHashRouter } from 'react-router-dom';
-import { AppShell } from '@/components/layout/AppShell';
-import { TopBar } from '@/components/layout/TopBar';
+import { createHashRouter } from 'react-router-dom';
+import { RootLayout } from '@/components/layout/RootLayout';
 import { BillsPage } from '@/pages/BillsPage';
 import { ImportPage } from '@/pages/ImportPage';
 import { MappingPage } from '@/pages/MappingPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { SecurityPage } from '@/pages/SecurityPage';
 import { SettingsPage } from '@/pages/SettingsPage';
-import { useVault } from '@/hooks/useVault';
-
-/**
- * 根布局组件：侧导航 + 顶栏 + 内容区。
- *
- * @returns React 节点
- */
-function RootLayout() {
-  const { status } = useVault();
-  return (
-    <AppShell>
-      <TopBar title="LifeHub" unlocked={status === 'unlocked'} />
-      <Outlet />
-    </AppShell>
-  );
-}
 
 /**
  * 路由配置。

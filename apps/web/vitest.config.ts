@@ -20,6 +20,11 @@ export default defineConfig({
     globals: true,
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     setupFiles: ['./src/__tests__/setup.ts'],
+    // 说明：限制并发 worker 数，与 packages/core 保持一致。
+    // 原因：根 vitest.config.ts 用 `test.projects` 聚合三个包时，
+    // Vitest 5 要求同一 sequence.groupOrder 下的各项目 maxWorkers 一致，
+    // 否则报 "Projects have different 'maxWorkers' but same 'sequence.groupOrder'"。
+    maxWorkers: 4,
     // 说明：首次导入 `@lifehub/core` 需要转换约 90 个源文件，
     // 在 CI 机器上可能超过默认的 5 秒超时，因此这里放宽单测超时。
     testTimeout: 30_000,

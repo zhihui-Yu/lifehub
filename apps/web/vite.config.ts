@@ -20,7 +20,11 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    // 绑定 IPv4 loopback：部分 Windows 环境对 IPv6 `::1` 的 bind 会被拦截。
+    host: '127.0.0.1',
+    // 默认端口避开 Windows Hyper-V/WSL 动态「排除端口段」（如 5147-5246），
+    // 否则 bind 会直接 EACCES（非占用，netstat 不可见）。
+    port: 4180,
     strictPort: false,
   },
   build: {
