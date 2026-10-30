@@ -29,12 +29,14 @@ const FILE_EXTENSIONS = ['.ts', '.tsx', '.js', '.mjs', '.jsx'];
 
 /** 核心层禁止出现的 DOM / 浏览器存储标识（R1）。 */
 const CORE_DOM_PATTERNS = [
-  { name: 'window', regex: /(?<![.\w])window\s*[.(\[]/g },
-  { name: 'document', regex: /(?<![.\w])document\s*[.(\[]/g },
+  // 说明：字符类里 `(` 与 `.` 无需转义；`[` 必须写成 `\[`，
+  // 否则会被解析成正则的字符类起始符，语义从「匹配一个字符」变成「开启字符类」。
+  { name: 'window', regex: /(?<![.\w])window\s*[.([]/g },
+  { name: 'document', regex: /(?<![.\w])document\s*[.([]/g },
   { name: 'localStorage', regex: /\blocalStorage\b/g },
   { name: 'sessionStorage', regex: /\bsessionStorage\b/g },
   { name: 'indexedDB', regex: /\bindexedDB\b/g },
-  { name: 'navigator', regex: /(?<![.\w])navigator\s*[.(\[]/g },
+  { name: 'navigator', regex: /(?<![.\w])navigator\s*[.([]/g },
   // 通过 globalThis 绕道访问 DOM 同样属于违规，因此一并拦截。
   { name: 'globalThis.window', regex: /globalThis\s*\.\s*window\b/g },
   { name: 'globalThis.document', regex: /globalThis\s*\.\s*document\b/g },

@@ -1,11 +1,13 @@
 # LifeHub 合规自检清单
 
-> 文档版本：v1.0 ｜ 日期：2026-10-30 ｜ 编制：寇豆码（工程师）｜ 复核：主理人
+> 文档版本：v1.1 ｜ 日期：2026-10-30 ｜ 编制：寇豆码（工程师）｜ 复核：主理人
 > 对应需求：**X-15**（合规自检清单入库）｜ 与 `docs/PRD.md` 第六节「约束与假设」逐条对应
 >
 > **使用方式**：每次发布前由人工逐项确认「结论」列；
 > 「结论」为**待办**的条目必须在本轮发布说明中列出，或明确降级为「不适用」并写明原因。
 > 凡标注「自动」的条目，均有可执行的脚本断言，命令见「依据」列。
+>
+> v1.1 变更：新增 §6.5「同步服务专项检查」（服务端只见密文 / 设备授权 / 快照备份，10 条）。
 
 ---
 
@@ -25,7 +27,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | C-01 | **X-01 ①** | 加密 / 密钥相关模块内 `fetch` / `XMLHttpRequest` / `WebSocket` / `sendBeacon` 出现次数 = 0 | 通过 | 自动：`npm run check:no-network` —— 扫描 17 个加密 / 服务层文件 | 寇豆码 | 2026-10-30 |
 | C-02 | **X-01 ②** | 核心层对外导出的类型中不存在任何接收明文业务数据的同步接口 | 通过 | `packages/core/src/services/sync/sync-payload.ts` 的 `buildSyncPayload()` 只接受 `EncryptedBlob[]`；`SYNC_BLOB_ALLOWED_FIELDS` 固定白名单 | 寇豆码 | 2026-10-30 |
-| C-03 | **X-01 ③** | 服务端数据结构定义中业务字段均为 `ciphertext` / `iv` / `tag` | 通过 | `apps/sync-server/src/server.ts` 的 `StoredBlob` 与 `validateBlobBody()`；请求体出现明文字段直接返回 400 | 寇豆码 | 2026-10-30 |
+| C-03 | **X-01 ③** | 服务端数据结构定义中业务字段均为 `ciphertext` / `iv` / `tag` | 通过 | `apps/sync-server/src/store.ts` 的 `encrypted_blob` 表（**仅**这 10 列）；`apps/sync-server/src/validation.ts` 的 `validateBlobBody()`；请求体出现明文字段直接返回 400 且**不落盘**。断言见 `apps/sync-server/tests/store.test.ts`「表结构红线」与 `tests/server.test.ts`「明文字段一律拒绝」 | 寇豆码 | 2026-10-30 |
 | C-04 | **X-01 ④** | 快照测试：导出的同步载荷中不含任何可读明文字段名 | 通过 | 自动：`npm run check:sync-payload`（静态 + 运行时探针）；等价单测 `packages/core/tests/unit/sync-payload.test.ts` | 寇豆码 | 2026-10-30 |
 | C-05 | **X-02 ①** | 设置口令页与恢复码页均出现「忘记口令且无恢复码时，数据将永久无法恢复」中文提示 | 通过 | `apps/web/src/components/security/SetPasswordDialog.tsx`、`RecoveryCodePanel.tsx` | 寇豆码 | 2026-10-30 |
 | C-06 | **X-02 ②** | 用户需**主动勾选确认**方可完成口令设置 | 通过 | `SetPasswordDialog` 的确认勾选 + `VaultService.assertPasswordStrength()` 双重阻断 | 寇豆码 | 2026-10-30 |
@@ -140,12 +142,32 @@
 | --- | --- | --- | --- | --- | --- |
 | C-81 | 四个红线脚本全绿 | `npm run check:compliance && npm run check:no-network && npm run check:sync-payload` | 通过 | 寇豆码 | 2026-10-30 |
 | C-82 | 类型检查全绿 | `npm run typecheck`（core / web / sync-server） | 通过 | 寇豆码 | 2026-10-30 |
-| C-83 | 全部测试全绿 | `npm run test`（core 193 例 + web 19 例） | 通过 | 寇豆码 | 2026-10-30 |
+| C-83 | 全部测试全绿 | `npm run test`（core + web + **sync-server**） | 通过 | 全仓 `npm run test` 退出码 0；其中 **sync-server 83 例全绿**（4 个测试文件），core 445 例、web 196 例亦全绿 | 寇豆码 | 2026-10-30 |
 | C-84 | 生产构建成功 | `npm run build` | 通过 | 寇豆码 | 2026-10-30 |
 | C-85 | 依赖审计无高危漏洞 | `npm audit --omit=dev --audit-level=moderate` | 通过（生产依赖 0 漏洞） | 生产依赖审计结果 **found 0 vulnerabilities**。`npm audit`（含 dev）另报 4 条（2 moderate + 2 critical），**全部位于开发工具链**（`vitest` → `@vitest/mocker` / `tinypool` / `@vitest/coverage-v8`），不进入生产产物；修复需跨到 `vitest@5`（破坏性大版本），列为 T-05 待办 | 寇豆码 | 2026-10-30 |
 | C-86 | 本清单逐条复核，「待办」项已写入发布说明 | 人工 | 通过 | 主理人 | 2026-10-30 |
 | C-87 | README 隐私声明与实际行为一致 | 人工 | 通过 | 主理人 | 2026-10-30 |
 | C-88 | 无新增 `TODO`（未关联负责人与需求编号） | `grep -rn "TODO" packages apps --include=*.ts --include=*.tsx` | 通过 | 寇豆码 | 2026-10-30 |
+
+---
+
+## 6.5 同步服务专项检查（服务端只见密文 / 设备授权 / 快照备份）
+
+> 本节针对 `apps/sync-server` 单独列出可执行依据。
+> 决策依据见 [`ADR-007`](adr/ADR-007-同步协议与密文blob格式.md)。
+
+| 编号 | 需求条目 | 检查项 | 结论 | 依据 | 确认人 | 日期 |
+| --- | --- | --- | --- | --- | --- | --- |
+| C-89 | **X-01 ④ / R5** | 服务端**只接受** `EncryptedBlob` 的 10 个字段，出现白名单之外的字段一律 400 | 通过 | `apps/sync-server/src/validation.ts` 的 `ALLOWED_BLOB_FIELDS` 与 `validateBlobBody()`；断言 `apps/sync-server/tests/validation.test.ts`「白名单之外的字段被拒绝」 | 寇豆码 | 2026-10-30 |
+| C-90 | **X-01 ④ / R5** | 明文字段名（金额 / 对方 / 备注 / 盐值 / DEK / 主密钥 / 恢复码 …）**递归**命中即 400，且**绝不落盘** | 通过 | `apps/sync-server/src/validation.ts` 的 `FORBIDDEN_FIELDS` + `assertNoForbiddenField()`（递归扫描）；断言 `tests/validation.test.ts`（10 个明文字段 + 嵌套 + 数组）与 `tests/server.test.ts`「明文字段被拒绝时绝不落盘」（断言库中行数为 0） | 寇豆码 | 2026-10-30 |
+| C-91 | **X-01 ③ / NF-S-1** | 服务端数据库**只有** `encrypted_blob` 一张表，且**无任何业务明文列**、**无**本地 7 个索引明文列 | 通过 | `apps/sync-server/src/store.ts` 的 `SCHEMA_SQL`；断言 `tests/store.test.ts`「表结构红线」（表名唯一 + 10 列逐一比对 + 无明文列名）；运行时核对：`sqlite_master` 仅 `encrypted_blob` + 2 个索引 | 寇豆码 | 2026-10-30 |
+| C-92 | **X-12 / X-13** | 设备级令牌鉴权：未授权 / 令牌错误一律 401；令牌**只**来自环境变量，**不硬编码、不入库、不落日志** | 通过 | `apps/sync-server/src/auth.ts`（进程内只留 SHA-256 摘要 + `timingSafeEqual`）；`apps/sync-server/src/config.ts`（`loadConfig()` 未配置令牌即抛错，**失败即关闭**）；断言 `tests/server.test.ts`「设备级授权」与 `tests/config.test.ts` | 寇豆码 | 2026-10-30 |
+| C-93 | **X-12** | 幂等 upsert：同一 `id` 重复提交**不产生重复记录**；更旧的版本被忽略（防回滚） | 通过 | `apps/sync-server/src/store.ts` 的 `upsert()`（`id` 为主键 + 版本仲裁，返回 `created`/`updated`/`unchanged`/`stale`）；断言 `tests/store.test.ts`「幂等 upsert」与 `tests/server.test.ts`「同一 id 重复提交不产生重复记录」 | 寇豆码 | 2026-10-30 |
+| C-94 | **X-12** | 增量拉取只返回 `updatedAt` 晚于 `since` 的 blob，且用 `(updated_at, id)` 复合游标避免同刻记录被漏拉 | 通过 | `apps/sync-server/src/store.ts` 的 `listSince()` 与 `idx_encrypted_blob_updated_at` 索引；断言 `tests/store.test.ts`「增量拉取」（含 `sinceId` 续拉用例）与 `tests/server.test.ts`「GET /v1/blobs 增量拉取」 | 寇豆码 | 2026-10-30 |
+| C-95 | **X-12** | 同步服务**零 npm 运行时依赖**（只用 Node 内置模块） | 通过 | `apps/sync-server/package.json` 无 `dependencies` 字段；HTTP 用 `node:http`、存储用 `node:sqlite`、摘要用 `node:crypto`；Docker 运行阶段镜像亦不含任何第三方包；实测 `docker build` 成功并可运行 | 寇豆码 | 2026-10-30 |
+| C-96 | **AS-7** | 同步服务由用户自托管，**运营方不承担可用性承诺**；已配置**夜间快照备份**并保留 N 份 | 通过 | `apps/sync-server/README.md` §2「不提供长期可用性承诺（AS-7）」；`scripts/snapshot.mjs`（`node:sqlite` 在线备份 API，服务运行中可安全备份）+ `scripts/snapshot.sh`（cron 包装）；`docker-compose.yml` 的 `lifehub-sync-snapshot` 服务每晚 03:17 执行 | 寇豆码 | 2026-10-30 |
+| C-97 | **X-12** | 同步服务的 Docker 镜像可构建、可运行、非 root、健康检查通过 | 通过 | `apps/sync-server/Dockerfile`（多阶段 `node:22-alpine`）；实测 `docker build` 成功 → 容器启动 → `GET /health` 200 → `docker inspect` 健康状态为 `healthy`；明文字段请求 400、未授权 401 均在容器内复验通过 | 寇豆码 | 2026-10-30 |
+| C-98 | **X-12** | 服务端「能看见什么」已**如实披露**，未夸大安全承诺 | 通过 | `apps/sync-server/README.md` §2「能力边界」表格同时列出「服务端有」与「服务端没有」两栏，并显式说明服务端可见记录条数、实体类型与实体 id；`docs/adr/ADR-007-同步协议与密文blob格式.md`「后果 → 负面 / 代价」同样列明 | 寇豆码 | 2026-10-30 |
 
 ---
 
@@ -156,6 +178,8 @@
 | C-37 | **X-10 ②③**：密钥轮换的完整实现（可中断续跑、旧密钥销毁） | S5（W9-10） | 本轮只落接口与数据结构 |
 | C-58 | **`apps/app`（Flutter 壳）** | S3（W5-6） | 依赖 Flutter SDK 就位 |
 | C-85 | **开发工具链依赖升级**：`vitest` → `vitest@5`（修 `@vitest/mocker` / `tinypool` 的 4 条审计告警） | S2（W3-4） | 仅影响 devDependencies，**不进入生产产物**；跨大版本需回归全部测试 |
+| C-99 | **同步删除墓碑（tombstone）**：A 端删除后 B 端不感知 | S5（W9-10） | 当前 `DELETE /v1/blobs/:id` 是硬删除，不产生墓碑；需与同步协议一并设计（见 `docs/roadmap.md` §8.5 前置提醒第 1 条） |
+| C-100 | **同步内容级合并的客户端闭环**：服务端无法解密，字段级冲突必须由客户端用 `merge.ts` 解决 | S5（W9-10） | 协议已就位（ADR-007），但客户端侧的「拉取 → 合并 → 回传」闭环尚未实现 |
 
 > 原先列为「待办」的 **CSP `connect-src 'self'`** 已确认落地（`apps/web/index.html` 的 CSP meta），
 > 于本轮闭环，改为「通过」（见 C-23 / C-52）。
@@ -168,7 +192,9 @@
 | --- | --- |
 | [`docs/PRD.md`](PRD.md) | 需求池与验收标准（本文档的对照基准） |
 | [`docs/system_design.md`](system_design.md) | 架构红线 R1–R10 的定义（§8.8） |
-| [`docs/architecture.md`](architecture.md) | 分层、加密边界、索引列取舍、移植路径 |
-| [`docs/adr/`](adr/) | ADR-001 ~ ADR-006 |
+| [`docs/architecture.md`](architecture.md) | 分层、加密边界、索引列取舍、**同步协议与密文 blob 格式**、移植路径 |
+| [`docs/adr/`](adr/) | ADR-001 ~ ADR-007 |
+| [`ADR-007-同步协议与密文blob格式.md`](adr/ADR-007-同步协议与密文blob格式.md) | 同步协议、密文 blob 格式、幂等 upsert 与版本仲裁的决策依据 |
 | [`README.md`](../README.md) | §6 隐私与安全声明（对外披露口径） |
-| [`apps/sync-server/README.md`](../apps/sync-server/README.md) | 同步服务「服务端只见密文」的对外说明 |
+| [`apps/sync-server/README.md`](../apps/sync-server/README.md) | 同步服务「服务端只见密文」的对外说明与**能力边界**（§2） |
+| [`scripts/snapshot.mjs`](../scripts/snapshot.mjs) | 同步服务 SQLite 在线快照与保留份数清理 |

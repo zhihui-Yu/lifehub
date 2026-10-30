@@ -1,8 +1,10 @@
 # LifeHub 架构说明
 
-> 文档版本：v1.0 ｜ 日期：2026-10-30 ｜ 作者：寇豆码（工程师）
+> 文档版本：v1.1 ｜ 日期：2026-10-30 ｜ 作者：寇豆码（工程师）
 > 上游输入：`docs/PRD.md` v1.0 ｜ `docs/system_design.md` v1.0
-> 本文是 `docs/system_design.md` 的**面向读者版**：讲清「为什么这样分层、加密边界在哪里、索引列为何是这 7 个、以后怎么移植到 Flutter」。
+> 本文是 `docs/system_design.md` 的**面向读者版**：讲清「为什么这样分层、加密边界在哪里、索引列为何是这 7 个、同步协议长什么样、以后怎么移植到 Flutter」。
+>
+> v1.1 变更：新增 §5「同步协议与密文 blob 格式」，与 `apps/sync-server` 的实际实现对齐。
 
 ---
 
@@ -12,8 +14,9 @@
 2. [数据流](#2-数据流)
 3. [加密边界详版](#3-加密边界详版)
 4. [索引明文列的取舍](#4-索引明文列的取舍)
-5. [Flutter 移植路径评估](#5-flutter-移植路径评估)
-6. [关键设计决策速查](#6-关键设计决策速查)
+5. [同步协议与密文 blob 格式](#5-同步协议与密文-blob-格式)
+6. [Flutter 移植路径评估](#6-flutter-移植路径评估)
+7. [关键设计决策速查](#7-关键设计决策速查)
 
 ---
 
@@ -53,7 +56,8 @@
 │ ③ 适配器层                                                            │
 │   apps/web/platform/   DexieStorageAdapter / WebCryptoProvider /        │
 │                        Clock / DeviceLabel                             │
-│   apps/sync-server/    Node 原生 http（只搬密文）                       │
+│   apps/sync-server/    Node 原生 http + node:sqlite（只搬密文，         │
+│                        零 npm 依赖；见 §5）                              │
 │                                                                       │
 │   约束：这是**唯一**知道「平台是什么」的地方                             │
 └───────────────────────────────────────────────────────────────────────┘
@@ -298,9 +302,155 @@ export interface StorageAdapter {
 
 ---
 
-## 5. Flutter 移植路径评估
+## 5. 同步协议与密文 blob 格式
 
-### 5.1 三条路径对比
+> 本节描述**已经实现**的同步协议，与 `apps/sync-server` 的实际代码一一对应。
+> 决策依据见 [`ADR-007`](adr/ADR-007-同步协议与密文blob格式.md)。
+
+### 5.1 全景：谁持有什么
+
+同步协议的两端，职责是**完全不对称**的——这正是端到端加密的落点：
+
+| | 客户端（`packages/core`） | 服务端（`apps/sync-server`） |
+| --- | --- | --- |
+| 持有 DEK / 主密钥 | ✅ | ❌ **永远不会有** |
+| 执行加解密 | ✅ | ❌ **连代码路径都不存在** |
+| 决定内容级冲突如何合并 | ✅（`merge.ts` 三方合并） | ❌ 只能按版本仲裁 |
+| 持有明文 | ✅ | ❌ |
+| 持有密文 | ✅（本地库） | ✅（唯一职责） |
+
+服务端因此**没有能力**做内容级合并——它连密文都解不开。
+协议的冲突解决必须放在客户端，服务端只负责「搬运」与「按版本挡掉明显更旧的写入」。
+
+### 5.2 上行：一个 blob 的 10 个字段
+
+客户端 → 服务端的载荷单元是 `EncryptedBlob`
+（`packages/core/src/models/encrypted-blob.ts`），共 **10 个字段**：
+
+| 字段 | 类型 | 含义 | 是否敏感 |
+| --- | --- | --- | --- |
+| `id` | string | blob id（全局唯一） | 否 |
+| `entityType` | string | 实体类型（`bill` / `category` …） | 否（结构信息） |
+| `entityId` | string | 实体 id | 否（标识符） |
+| `ciphertext` | base64 | **密文正文** | —— |
+| `iv` | base64 | 随机 IV | —— |
+| `tag` | base64 | GCM 认证标签 | —— |
+| `algorithm` | string | `AES-256-GCM` | 否 |
+| `keyVersion` | number | 加密时使用的密钥版本 | 否 |
+| `updatedAt` | ISO 8601 UTC | 实体最后修改时间 | 否 |
+| `version` | number | 实体版本号（单调递增） | 否 |
+
+服务端对这份载荷做**三重**校验（`apps/sync-server/src/validation.ts`）：
+
+1. **递归黑名单**——出现 `amount` / `counterparty` / `note` / `salt` / `dek` / `masterKey` /
+   `recoveryCode` / `localDate` 等明文字段名（**含嵌套**）→ **400**，且**不落盘**；
+2. **顶层白名单**——出现 10 个字段之外的任何字段 → **400**；
+3. **形状校验**——类型、长度、算法标识、版本号非负整数、时间戳合法。
+
+> **服务端无法校验「密文是否真的是密文」**——验证需要 DEK。
+> 它只能校验形状。这是端到端加密的必然结果，不是实现缺陷。
+> 密文的真实性由客户端用 GCM 标签验证。
+
+### 5.3 下行：`(updated_at, id)` 复合游标
+
+增量拉取不用服务端自增序号（那会泄露「你上传了多少条」的顺序信息），
+而用**客户端的 `updatedAt` + `id`** 组成的复合游标：
+
+```
+GET /v1/blobs?since=<ISO 时间戳>&sinceId=<同一时刻的 id>&limit=<条数>
+```
+
+- `updated_at` 由服务端**归一化**成 `YYYY-MM-DDTHH:mm:ss.sssZ` 定宽 UTC，
+  保证**字典序等于时间序**（SQL 里可直接字符串比较，索引能命中）；
+- `id` 作为同一毫秒内的次级排序键，避免「同一时刻的多条记录被整批跳过」；
+- 响应返回 `nextSince` + `nextSinceId`，客户端原样回传即无缝续拉。
+
+SQL 侧对应一条索引：
+
+```sql
+CREATE INDEX idx_encrypted_blob_updated_at ON encrypted_blob (updated_at, id);
+```
+
+### 5.4 幂等 upsert 与版本仲裁
+
+服务端**永远只有一条** `id` 对应的记录（`id` 是主键）。写入时按版本仲裁：
+
+| 提交 vs 库中 | 结果 | `status` |
+| --- | --- | --- |
+| 库中无此 id | 新建 | `created` |
+| 提交版本 > 库中版本 | 覆盖 | `updated` |
+| 版本相同且内容一致 | 不动 | `unchanged` |
+| 版本相同但内容不同 | 覆盖 | `updated` |
+| 提交版本 < 库中版本 | **忽略，保留较新的密文** | `stale` |
+
+最后一条是**防回滚**机制：一台离线很久的设备醒来后会把旧版本重新上传，
+若无条件接受就会把新密文回滚成旧密文——那是**静默的数据丢失**。
+
+### 5.5 服务端存储：只有一张表
+
+```sql
+CREATE TABLE encrypted_blob (
+  id            TEXT    PRIMARY KEY,
+  entity_type   TEXT    NOT NULL,
+  entity_id     TEXT    NOT NULL,
+  ciphertext    TEXT    NOT NULL,
+  iv            TEXT    NOT NULL,
+  tag           TEXT    NOT NULL,
+  algorithm     TEXT    NOT NULL,
+  key_version   INTEGER NOT NULL,
+  updated_at    TEXT    NOT NULL,
+  version       INTEGER NOT NULL
+);
+```
+
+与 §4 的 7 个本地索引明文列对照，服务端**一个都没有**：
+
+| 本地索引明文列 | 服务端是否存储 | 原因 |
+| --- | --- | --- |
+| `entityType` | ✅ 存 | 同步协议必需（客户端要按类型拉取） |
+| `localDate` | ❌ 不存 | 会泄露「哪天有消费」 |
+| `occurredAt` | ❌ 不存 | 会泄露「消费的时间点」 |
+| `createdAt` | ❌ 不存 | 无同步价值 |
+| `updatedAt` | ✅ 存（作 `updated_at`） | 增量同步游标必需 |
+| `version` | ✅ 存 | 幂等与版本仲裁必需 |
+| `deviceId` | ❌ 不存 | 设备标识，属索引明文列；且服务端合并不了内容 |
+
+> 服务端**连「哪天有消费」都看不到**（ADR-006 的结论）。
+> 它只知道「有一个 blob，密文是这些字节」。
+
+### 5.6 端点一览
+
+| 端点 | 鉴权 | 用途 |
+| --- | --- | --- |
+| `POST /v1/blobs` | ✅ | 幂等 upsert 一条密文 blob |
+| `GET /v1/blobs?since=&sinceId=&limit=` | ✅ | 增量拉取密文 blob |
+| `GET /v1/blobs/:id` | ✅ | 查询单条密文 blob |
+| `DELETE /v1/blobs/:id` | ✅ | 删除单条密文 blob（硬删除，无墓碑） |
+| `GET /health` | ❌ | 健康检查（容器探活），不暴露任何业务信息 |
+
+### 5.7 授权与运维
+
+- **设备级令牌**：`Authorization: Bearer <token>`；令牌只来自环境变量或令牌文件，
+  进程内只留 SHA-256 摘要，比对用 `timingSafeEqual`；**未配置令牌则拒绝启动**（fail-closed）。
+- **零 npm 依赖**：HTTP 用 `node:http`，存储用 `node:sqlite`，服务端**不需要**密码学。
+- **在线快照**：`scripts/snapshot.mjs` 用 `node:sqlite` 的 `backup()` 做**在线一致性快照**
+  （服务运行中也能安全备份，不会拿到半截 WAL），按份数滚动保留 N 份。
+- **可用性边界**：服务由用户自托管，**运营方不承担可用性承诺**（PRD AS-7）。
+
+### 5.8 已知缺口
+
+| 缺口 | 影响 | 归属 |
+| --- | --- | --- |
+| **删除没有墓碑（tombstone）** | A 端删除后 B 端不感知，两端短暂不一致 | 阶段 5，需与协议一起补 |
+| **无内容级合并** | 同字段双端并发修改，客户端需重新拉取后在本地用 `merge.ts` 解决 | 设计如此（服务端无法解密） |
+| **`updatedAt` 依赖设备时钟** | 时钟不准会让增量游标异常 | 依赖已声明前提 AS-8（见 ADR-002） |
+| **`node:sqlite` 在 Node 22 仍是实验特性** | 启动有 `ExperimentalWarning`，未来 API 可能变 | 需锁定 Node 版本（`.nvmrc` = 22） |
+
+---
+
+## 6. Flutter 移植路径评估
+
+### 6.1 三条路径对比
 
 | 维度 | ① 移植为 Dart | ② `dart:ffi` 调 Rust/C | ③ JS 互操作（quickjs / JSC） |
 | --- | --- | --- | --- |
@@ -312,7 +462,7 @@ export interface StorageAdapter {
 | **供应链** | 纯 Dart，风险最低 | 需维护 Rust/C 工具链 | 引入解释器依赖 |
 | **适合阶段** | S3（Android 壳） | S5+（同步 / 高频加密） | S3 快速验证 |
 
-### 5.2 建议路径：**① 为主，② 为辅，③ 作为过渡**
+### 6.2 建议路径：**① 为主，② 为辅，③ 作为过渡**
 
 **阶段 3（S3）的推荐做法**：用 **③ JS 互操作**把 `packages/core` 原样跑起来，**先验证业务闭环**；
 同时按语义把核心层**逐模块**翻译为 Dart（**①**），翻译过程中用同一批**跨端一致性测试向量**
@@ -322,7 +472,7 @@ export interface StorageAdapter {
 把 `AES-256-GCM` 与 `scrypt` 下沉到 Rust/C，通过 `dart:ffi` 调用——**前提是这部分实现被设计成
 「可移植边界」（PRD §6.2 的关键约束）**。
 
-### 5.3 本轮为此做的设计预留
+### 6.3 本轮为此做的设计预留
 
 | 预留点 | 位置 | 说明 |
 | --- | --- | --- |
@@ -332,7 +482,7 @@ export interface StorageAdapter {
 | 跨端测试向量 | `packages/core/tests/fixtures/` | CSV 夹具与密文 fixture 可直接用于 Dart 端一致性测试 |
 | KDF 参数可序列化 | `crypto/kdf.ts` 的 `serializeKdfParams` / `deserializeKdfParams` | 参数升级后仍可用旧参数校验（A-07 ⑥） |
 
-### 5.4 移植时的三个坑
+### 6.4 移植时的三个坑
 
 1. **`Uint8Array` 语义**：Dart 端用 `Uint8List`；注意 JS 的 `Uint8Array` 是**视图**（可共享底层 buffer），
    Dart 的 `Uint8List` 是**拷贝**——跨边界时必须显式复制，否则会出现「改了一处另一处也变」的诡异 bug。
@@ -342,7 +492,7 @@ export interface StorageAdapter {
 
 ---
 
-## 6. 关键设计决策速查
+## 7. 关键设计决策速查
 
 | 决策 | 一句话理由 | 详细记录 |
 | --- | --- | --- |
@@ -355,6 +505,9 @@ export interface StorageAdapter {
 | 恢复码直接包裹 DEK | 让恢复码真正成为一把能解开数据的备用钥匙 | [ADR-003](adr/ADR-003-加密封装边界.md) |
 | 零第三方 CSV 库 | 真正流式 + 零供应链风险 | `docs/system_design.md` §1.3 |
 | scrypt 而非 Argon2id | WebCrypto 无原生 Argon2，跨端行为一致性优先 | `docs/system_design.md` §1.3 |
+| 同步协议只搬密文 blob | 服务端只见密文，是「端到端加密」在服务端侧的落点 | [ADR-007](adr/ADR-007-同步协议与密文blob格式.md) |
+| 增量游标用 `(updated_at, id)` | 服务端不分配自增序号；复合游标避免同一时刻的记录被整批跳过 | [ADR-007](adr/ADR-007-同步协议与密文blob格式.md) |
+| 版本仲裁拒绝陈旧写入 | 离线设备不能把新密文回滚成旧密文（静默数据丢失） | [ADR-007](adr/ADR-007-同步协议与密文blob格式.md) |
 
 ---
 
@@ -362,5 +515,7 @@ export interface StorageAdapter {
 
 - [`docs/system_design.md`](system_design.md) —— 详细类图、时序图、任务列表与共享约定
 - [`docs/compliance-checklist.md`](compliance-checklist.md) —— 逐条合规自检
+- [`docs/adr/ADR-007-同步协议与密文blob格式.md`](adr/ADR-007-同步协议与密文blob格式.md) —— 同步协议与密文 blob 格式的决策依据
 - [`packages/core/README.md`](../packages/core/README.md) —— 核心包对外 API
 - [`apps/web/README.md`](../apps/web/README.md) —— Web 端结构与开发指引
+- [`apps/sync-server/README.md`](../apps/sync-server/README.md) —— 同步服务接口与自托管方式

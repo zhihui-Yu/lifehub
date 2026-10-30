@@ -124,8 +124,12 @@ describe('EncryptedStore', () => {
 
   it('PlainStore 拒绝写入白名单之外的实体', async () => {
     const runtime = await createUnlockedRuntime();
-    await expect(
-      runtime.vaultRepository.save({ ...(await runtime.vaultRepository.load()!) } as never),
-    ).resolves.toBeUndefined();
+    const params = await runtime.vaultRepository.load();
+    // 说明：load() 的返回类型是 `VaultParams | null`，
+    // 这里显式判空而不是写 `!` 非空断言（§8.4 类型纪律禁止 `!`）。
+    if (params === null) {
+      throw new Error('保险库参数应已存在');
+    }
+    await expect(runtime.vaultRepository.save({ ...params } as never)).resolves.toBeUndefined();
   });
 });

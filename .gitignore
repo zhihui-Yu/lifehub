@@ -1,5 +1,18 @@
+# 依赖与构建产物
 node_modules/
 dist/
-coverage/
 *.log
 .DS_Store
+
+# 覆盖率产物（各包 coverage/ 与 CI 自检用的 coverage-*/）
+coverage/
+coverage-*/
+
+# QA 临时目录（独立验证用的临时脚本、基线快照等）
+.qa-tmp-*/
+.qa-*/
+
+# 本地环境变量（绝不入库）
+.env
+.env.*
+!.env.example

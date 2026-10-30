@@ -16,6 +16,8 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/dist/**',
       '**/coverage/**',
+      '**/coverage-*/**',
+      '**/.qa-*/**',
       'apps/sync-server/**',
       '**/*.d.ts',
     ],
@@ -52,6 +54,15 @@ export default tseslint.config(
     },
     rules: {
       'no-undef': 'error',
+    },
+  },
+  {
+    // 测试与测试辅助文件不参与 Vite 的 Fast Refresh，
+    // 因此 `react-refresh/only-export-components` 对它们没有意义 ——
+    // 测试辅助常常需要在同一文件里同时导出组件与渲染函数。
+    files: ['**/__tests__/**/*.{ts,tsx}', '**/test-utils/**/*.{ts,tsx}', '**/*.test.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
     },
   },
 );
