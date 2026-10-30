@@ -1,0 +1,221 @@
+%% ============================================================================
+%% LifeHub —— 关键调用时序图
+%% 配套文档: docs/system_design.md §4
+%%
+%% 本文件包含 4 条独立的 mermaid 时序图, 以 `---` 分隔。
+%% 说明: 多数 mermaid 渲染器一个文件只渲染第一张图;
+%%       docs/system_design.md §4 内以 4 个独立代码块给出, 每个都可单独渲染。
+%% ============================================================================
+
+
+%% ============================================================================
+%% 流程 ①: 设置口令 → 派生主密钥 → 创建保险库 (create vault)
+%% 覆盖需求: A-07 / X-02 / X-03 / X-04 / X-07
+%% ============================================================================
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant UI as SecurityPage<br/>SetPasswordDialog
+    participant VS as VaultService
+    participant CP as CryptoProvider
+    participant CS as CryptoService
+    participant VR as VaultRepository
+    participant AL as AuditLogger
+
+    U->>UI: 输入口令 + 确认口令 + 勾选「我已知悉忘记密码将无法恢复」
+    UI->>UI: 前端校验：两次一致 / 长度 ≥ 8 / 已勾选确认（X-02 阻断）
+    UI->>VS: createVault(password)
+
+    VS->>CP: randomBytes(16)
+    CP-->>VS: salt
+    VS->>CP: deriveKey({scrypt,N=32768,r=8,p=1,keyLength=32,salt}, password)
+    CP-->>VS: masterKey (32 bytes)
+    Note over VS,CP: 派生耗时需记录，P95 ≤ 1.0s（NF-P-3）；< 0.3s 时提示调高 N
+
+    VS->>CP: randomBytes(32)
+    CP-->>VS: dek (数据密钥)
+    VS->>CS: wrapDek(masterKey, dek, keyVersion=1)
+    CS->>CS: buildAad('vaultParams','dek',1) → AES-GCM 加密
+    CS-->>VS: WrappedDek{wrappedByKeyVersion:1, keyVersion:1, wrapped}
+
+    VS->>CS: encryptRecord(masterKey, 'vaultParams', 'verifier', 1, 'lifehub:verify:v1')
+    CS-->>VS: EncryptedPayload (verifier 哨兵密文)
+
+    VS->>VR: save(VaultParams{salt,n,r,p,keyLength,verifier,paramsVersion:1,keyVersion:1,currentDek})
+    Note over VR: VaultParams 只存「公开 KDF 参数 + 密文」，不含任何明文密钥
+
+    VS->>AL: log('create_vault', 'vault', true)
+    AL-->>UI: 返回 VaultSetup{masterKey 留在内存, vaultParams}
+
+    VS->>VS: generateRecoveryBundle()
+    VS->>CS: 用 recoveryKey 包裹 dek 生成 12×6 Base32 恢复码 + checksum
+    VS->>VR: saveRecoveryMeta({checksum, exported:false, createdAt})
+    Note over VS,VR: 恢复码明文只存在于内存与用户导出的盐值备份文件，<br/>不与密文同存（X-03 ⑤）
+
+    VS-->>UI: VaultSetup（含一次性展示的恢复码，需用户确认已备份）
+    UI-->>U: 提示「忘记口令且无恢复码时，数据将永久无法恢复」
+
+
+%% ============================================================================
+%% 流程 ②: 导入 CSV → 解析 → 列头映射 → 方向推断 → 清洗去重 → 持久化
+%% 覆盖需求: A-04 / A-05 / A-06 / A-10 / A-11 / A-12 / A-13
+%% ============================================================================
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant UI as ImportPage / MappingPage
+    participant IS as ImportService
+    participant CP as CryptoProvider
+    participant ENC as EncodingDetector
+    participant PS as CsvParser
+    participant CM as ColumnMapper
+    participant DR as DirectionResolver
+    participant RM as RowMapper
+    participant DD as Deduplicator
+    participant TR as RuleTemplateRepository
+    participant BR as BillRepository
+    participant IBR as ImportBatchRepository
+    participant AL as AuditLogger
+
+    U->>UI: 拖拽 / 选择 账单.csv
+    UI->>IS: plan(source{fileName,sizeBytes,bytes})
+
+    IS->>CP: sha256(bytes)
+    CP-->>IS: fileHash (hex)
+    IS->>IBR: findByFileHash(fileHash)
+    IBR-->>IS: 已有批次 或 null
+    alt 已有批次（A-12 幂等）
+        IS-->>UI: ImportPlan{duplicate:true, previousBatch}
+        UI-->>U: 提示「该文件已导入过（时间戳）」，默认不重复写入
+    else 新文件
+        IS->>ENC: detect(bytes)
+        ENC-->>IS: encoding ∈ {utf-8, utf-8-bom, gbk, gb18030}
+        IS->>PS: parseStream(decode(bytes), {delimiter:'auto'})
+        PS-->>IS: CsvRow[]（流式逐行）
+        IS->>CM: buildSignature(headers)
+        CM-->>IS: fileSignature (sha256 of 表头行)
+        IS->>TR: findBySignature(fileSignature)
+        TR-->>IS: matchedTemplate 或 null（A-13 自动命中）
+        IS->>CM: suggest(headers)
+        CM-->>IS: suggestedMapping（疑似日期/金额列预填）
+        IS->>UI: ImportPlan{headers, rowCount, suggestedMapping, matchedTemplate, preview[10]}
+
+        U->>UI: 调整列映射 / 选择方向策略 / 添加分类规则
+        UI->>IS: run(source, mapping, {directionRule, categoryRules})
+
+        loop 逐行（流式，不整表驻留内存）
+            IS->>RM: toBill(row, mapping, context)
+            RM->>DR: resolve(mappedRow)
+            alt 方向可判定
+                DR-->>RM: DirectionResult{income|expense|refund}
+            else 方向无法判定（A-06）
+                DR-->>RM: DirectionResult{direction:null, reason}
+                RM-->>IS: 抛 ParseRowError → 记入 errors，跳过该行
+            end
+            RM->>RM: parseAmountToMinor → amountMinor（整数分）
+            RM->>RM: parseFlexibleDate → occurredAt(UTC) + localDate(本地时区)
+            RM-->>IS: Bill
+            IS->>DD: isDuplicate(bill, fingerprints)
+            alt 重复（A-12）
+                DD-->>IS: true → rowSkipped++，不落库
+            else 新记录
+                IS->>BR: putMany(buffer)
+                BR->>BR: EncryptedStore.put → AES-GCM 加密 → StorageAdapter.put
+            end
+        end
+
+        IS->>IBR: save(ImportBatch{rowTotal,rowImported,rowSkipped,templateId,fileHash,encoding})
+        IS->>AL: log('import', fileName, true)
+        IS-->>UI: ImportSummary{rowTotal,rowImported,rowSkipped,rowDuplicated,errors,durationMs}
+        UI-->>U: Snackbar「成功导入 N 条，跳过 M 条」+ 跳转账单列表
+    end
+
+
+%% ============================================================================
+%% 流程 ③: 解锁 → 解包 DEK → 解密账单
+%% 覆盖需求: A-07 / X-04 / X-07 / X-09
+%% ============================================================================
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant UI as SecurityPage / BillsPage
+    participant VS as VaultService
+    participant VR as VaultRepository
+    participant CP as CryptoProvider
+    participant CS as CryptoService
+    participant AL as AuditLogger
+    participant BR as BillRepository
+    participant ES as EncryptedStore
+    participant SA as StorageAdapter
+
+    U->>UI: 输入主口令
+    UI->>VS: unlock(password)
+
+    VS->>VR: load()
+    VR-->>VS: VaultParams{salt,n,r,p,keyLength,verifier,currentDek}
+
+    VS->>CP: deriveKey({scrypt,...}, password)
+    CP-->>VS: masterKey
+
+    VS->>CS: decryptRecord(masterKey, 'vaultParams', 'verifier', keyVersion, verifier)
+    alt 解密失败 / 明文 ≠ 'lifehub:verify:v1'（口令错误或参数不符）
+        CS-->>VS: 抛 LIFEHUB_E_CRYPTO_AUTH_FAILED
+        VS->>AL: log('failed_unlock', '', false)
+        VS-->>UI: 抛 LIFEHUB_E_VAULT_PASSWORD_WRONG
+        UI-->>U: 中文提示「主口令不正确」
+    else 哨兵校验通过
+        CS-->>VS: 'lifehub:verify:v1'
+        VS->>CS: unwrapDek(masterKey, currentDek)
+        CS-->>VS: dek (32 bytes)
+        VS->>AL: log('unlock', '', true)
+        VS-->>UI: UnlockedVault{dek, keyVersion, masterKey}
+        Note over VS: masterKey / dek 仅驻留内存，<br/>登出或关闭页面即清除（NF-S-2）
+    end
+
+    U->>UI: 打开账单列表页
+    UI->>BR: list({keyword, directions, dateFrom, dateTo, limit, offset})
+    BR->>ES: query('bill', {localDateFrom, localDateTo, orderBy, limit, offset})
+    ES->>SA: query('bill', filter)
+    SA-->>ES: StoredRecord[]（密文 + 索引明文列）
+    ES->>CS: decryptRecord(dek, 'bill', entityId, keyVersion, payload)
+    CS-->>ES: Bill JSON
+    ES-->>BR: Bill[]
+    BR-->>UI: Bill[]
+    UI-->>U: 按 localDate 分组展示账单
+
+
+%% ============================================================================
+%% 流程 ④: 加密备份导出 / 导入 (.enc.json)
+%% 覆盖需求: A-24 / X-01 ④ / NF-PR-6
+%% ============================================================================
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant UI as SecurityPage
+    participant BS as BackupService
+    participant SA as StorageAdapter
+    participant CS as CryptoService
+    participant UI2 as 导入备份对话框
+
+    U->>UI: 点击「导出加密备份」
+    BS->>SA: query('bill' | 'category' | 'ruleTemplate' | 'importBatch', {})
+    SA-->>BS: StoredRecord[]（已是密文）
+    Note over BS: 备份文件直接复用存储层密文，<br/>不做解密-再加密，因此文件内无任何明文
+    BS->>BS: buildBackupFile(blobs, {magic,version,exportedAt,algorithm,keyVersion})
+    BS-->>UI: BackupFile JSON
+    UI->>U: 触发下载 lifehub-backup-YYYY-MM-DD.enc.json
+
+    U->>UI2: 选择 .enc.json 备份文件
+    UI2->>BS: importBackup(file)
+    BS->>BS: 校验 magic / version / algorithm
+    alt 校验失败
+        BS-->>UI2: 抛 LIFEHUB_E_BACKUP_INVALID → 中文提示「备份文件格式不正确」
+    else 校验通过
+        loop 逐条 blob
+            BS->>SA: put('encryptedBlob', {id, entityType, entityId, ciphertext, iv, tag, keyVersion})
+            BS->>SA: put('bill', StoredRecord{... 密文 ...})
+        end
+        BS-->>UI2: ImportSummary{rowImported, rowSkipped}
+        UI2-->>U: 「已恢复 N 条记录」
+    end
+    Note over BS,SA: 备份文件只含 ciphertext/iv/tag/algorithm/keyVersion/updatedAt/version，<br/>不含 salt、DEK、主密钥，也不含金额/对方/备注等明文（A-24 ① ②）

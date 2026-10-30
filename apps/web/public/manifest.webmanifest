@@ -1,0 +1,16 @@
+{
+  "name": "LifeHub",
+  "short_name": "LifeHub",
+  "description": "跨端、本地优先、端到端加密的个人生活数据管理工具",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f7fb",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

@@ -1,0 +1,747 @@
+%% ============================================================================
+%% LifeHub —— 核心类图 (packages/core)
+%% 配套文档: docs/system_design.md §3
+%% 约定: 实体名与字段名在 packages/core 与未来 Dart/Flutter 端保持同名同义 (NF-M-9)
+%% ============================================================================
+classDiagram
+    direction TB
+
+    %% ------------------------------------------------------------------
+    %% 枚举与基础类型
+    %% ------------------------------------------------------------------
+    class Direction {
+        <<enumeration>>
+        income
+        expense
+        refund
+    }
+
+    class CurrencyCode {
+        <<enumeration>>
+        CNY
+    }
+
+    class EntityType {
+        <<enumeration>>
+        bill
+        category
+        ruleTemplate
+        importBatch
+        vaultParams
+        recoveryMeta
+        auditLog
+        encryptedBlob
+        appSettings
+        syncBase
+        rotationState
+    }
+
+    class IndexColumn {
+        <<enumeration>>
+        entityType
+        localDate
+        occurredAt
+        createdAt
+        updatedAt
+        version
+        deviceId
+    }
+
+    %% ------------------------------------------------------------------
+    %% 实体 (models/)
+    %% ------------------------------------------------------------------
+    class BaseEntity {
+        <<interface>>
+        +string id
+        +number version
+        +string createdAt
+        +string updatedAt
+        +string deviceId
+    }
+
+    class Bill {
+        +string id
+        +number amountMinor
+        +CurrencyCode currency
+        +Direction direction
+        +string occurredAt
+        +string localDate
+        +string sourceTimeZone
+        +string counterparty
+        +string categoryId
+        +string note
+        +string sourceFileId
+        +number sourceRowIndex
+        +string createdAt
+        +string updatedAt
+        +number version
+        +string deviceId
+    }
+
+    class Category {
+        +string id
+        +string name
+        +string kind
+        +string parentId
+        +string color
+        +string icon
+        +boolean isSystem
+        +number sortOrder
+        +string createdAt
+        +string updatedAt
+        +number version
+        +string deviceId
+    }
+
+    class RuleTemplate {
+        +string id
+        +string name
+        +string fileSignature
+        +ColumnMapping columnMapping
+        +DirectionRule directionRule
+        +CategoryRule[] categoryRules
+        +string[] dateFormatHints
+        +string createdAt
+        +string updatedAt
+        +number version
+        +string deviceId
+    }
+
+    class ImportBatch {
+        +string id
+        +string fileName
+        +number fileSize
+        +string fileHash
+        +string encoding
+        +number rowTotal
+        +number rowImported
+        +number rowSkipped
+        +string templateId
+        +string createdAt
+        +string updatedAt
+        +number version
+        +string deviceId
+    }
+
+    class VaultParams {
+        +string kdf
+        +number n
+        +number r
+        +number p
+        +number keyLength
+        +Uint8Array salt
+        +EncryptedPayload verifier
+        +number paramsVersion
+        +number keyVersion
+        +WrappedDek currentDek
+        +WrappedDek previousDek
+        +string createdAt
+        +string updatedAt
+    }
+
+    class WrappedDek {
+        +number keyVersion
+        +string wrappedByKeyVersion
+        +EncryptedPayload wrapped
+    }
+
+    class RecoveryBundle {
+        +string version
+        +string recoveryCode
+        +Uint8Array salt
+        +KdfParams kdfParams
+        +EncryptedPayload verifier
+        +string checksum
+        +string createdAt
+    }
+
+    class RecoveryMeta {
+        +string id
+        +string checksum
+        +boolean exported
+        +string createdAt
+    }
+
+    class AuditLog {
+        +string id
+        +string at
+        +string action
+        +string target
+        +string deviceLabel
+        +boolean success
+    }
+
+    class EncryptedBlob {
+        +string id
+        +EntityType entityType
+        +string entityId
+        +Uint8Array ciphertext
+        +Uint8Array iv
+        +Uint8Array tag
+        +string algorithm
+        +number keyVersion
+        +string updatedAt
+        +number version
+    }
+
+    class AppSettings {
+        +string id
+        +string theme
+        +string locale
+        +string timezone
+        +number weekStart
+        +CurrencyCode currency
+        +number firstDayOfMonth
+    }
+
+    %% ------------------------------------------------------------------
+    %% 值对象 (models/ 与 rules/)
+    %% ------------------------------------------------------------------
+    class ColumnMapping {
+        <<value object>>
+        +number[] mappedColumns
+        +BillField fieldOf(columnIndex) BillField
+        +boolean has(field) boolean
+    }
+
+    class BillField {
+        <<enumeration>>
+        occurredAt
+        amount
+        counterparty
+        category
+        direction
+        balance
+        note
+        ignore
+    }
+
+    class DirectionRule {
+        <<value object>>
+        +string mode
+        +number columnIndex
+        +string[] incomeKeywords
+        +string[] expenseKeywords
+    }
+
+    class CategoryRule {
+        <<value object>>
+        +string id
+        +number priority
+        +string matchType
+        +string pattern
+        +string categoryId
+    }
+
+    class KdfParams {
+        <<value object>>
+        +string algorithm
+        +number n
+        +number r
+        +number p
+        +number keyLength
+        +Uint8Array salt
+    }
+
+    class EncryptedPayload {
+        <<value object>>
+        +string kind
+        +string algorithm
+        +Uint8Array iv
+        +Uint8Array ciphertext
+        +Uint8Array tag
+        +number keyVersion
+    }
+
+    class PlainPayload {
+        <<value object>>
+        +string kind
+        +string json
+    }
+
+    class StoredRecord {
+        +string id
+        +EntityType entityType
+        +number version
+        +string createdAt
+        +string updatedAt
+        +string deviceId
+        +string localDate
+        +string occurredAt
+        +EncryptedPayload encryptedPayload
+        +PlainPayload plainPayload
+    }
+
+    class StorageQuery {
+        <<value object>>
+        +Record where
+        +string localDateFrom
+        +string localDateTo
+        +string orderBy
+        +number limit
+        +number offset
+    }
+
+    class ImportError {
+        <<value object>>
+        +number rowIndex
+        +number columnIndex
+        +string reason
+        +string raw
+    }
+
+    class ImportSummary {
+        <<value object>>
+        +string batchId
+        +number rowTotal
+        +number rowImported
+        +number rowSkipped
+        +number rowDuplicated
+        +ImportError[] errors
+        +number durationMs
+    }
+
+    class ImportPlan {
+        <<value object>>
+        +string fileName
+        +number fileSize
+        +string fileHash
+        +string encoding
+        +string[] headers
+        +number columnCount
+        +number rowCount
+        +ColumnMapping suggestedMapping
+        +RuleTemplate matchedTemplate
+        +PreviewRow[] preview
+        +ImportError[] errors
+    }
+
+    class PreviewRow {
+        <<value object>>
+        +number rowIndex
+        +string occurredAt
+        +string localDate
+        +number amountMinor
+        +string direction
+        +string counterparty
+        +string categoryName
+        +string note
+    }
+
+    class MergeResult {
+        <<value object>>
+        +boolean changed
+        +string[] mergedFields
+        +FieldConflict[] conflicts
+    }
+
+    class FieldConflict {
+        <<value object>>
+        +string field
+        +string localValue
+        +string remoteValue
+        +string winner
+    }
+
+    %% ------------------------------------------------------------------
+    %% 端口 (Ports) —— 依赖注入接口
+    %% ------------------------------------------------------------------
+    class CryptoProvider {
+        <<interface>>
+        +string name
+        +boolean isAvailable
+        +randomBytes(length) Uint8Array
+        +deriveKey(params, password) Promise~Uint8Array~
+        +encrypt(key, plaintext, aad) Promise~EncryptedPayload~
+        +decrypt(key, payload, aad) Promise~Uint8Array~
+        +sha256(data) Promise~Uint8Array~
+    }
+
+    class StorageAdapter {
+        <<interface>>
+        +open() Promise~void~
+        +close() Promise~void~
+        +get(entityType, id) Promise~StoredRecord~
+        +getMany(entityType, ids) Promise~StoredRecord[]~
+        +query(entityType, filter) Promise~StoredRecord[]~
+        +put(entityType, record) Promise~void~
+        +putMany(entityType, records) Promise~void~
+        +delete(entityType, id) Promise~void~
+        +deleteMany(entityType, ids) Promise~void~
+        +count(entityType, filter) Promise~number~
+        +clear(entityType) Promise~void~
+    }
+
+    class Clock {
+        <<interface>>
+        +now() Date
+        +nowIso() string
+    }
+
+    class Logger {
+        <<interface>>
+        +debug(message, context) void
+        +info(message, context) void
+        +warn(message, context) void
+        +error(message, context) void
+    }
+
+    %% ------------------------------------------------------------------
+    %% 服务 (services/ 与 crypto/ 与 csv/ 与 storage/)
+    %% ------------------------------------------------------------------
+    class CryptoService {
+        +CryptoProvider provider
+        +Clock clock
+        +buildAad(entityType, entityId, keyVersion) Uint8Array
+        +encryptRecord(key, entityType, entityId, keyVersion, data) Promise~EncryptedPayload~
+        +decryptRecord(key, entityType, entityId, keyVersion, payload) Promise~string~
+        +wrapDek(masterKey, dek, keyVersion) Promise~WrappedDek~
+        +unwrapDek(masterKey, wrapped) Promise~Uint8Array~
+        +verifyPassword(masterKey, verifier) boolean
+    }
+
+    class VaultService {
+        +StorageAdapter adapter
+        +CryptoService crypto
+        +CryptoProvider provider
+        +AuditLogger audit
+        +Clock clock
+        +createVault(password) Promise~VaultSetup~
+        +unlock(password) Promise~UnlockedVault~
+        +unlockWithRecoveryCode(code) Promise~UnlockedVault~
+        +isVaultCreated() Promise~boolean~
+        +generateRecoveryBundle() Promise~RecoveryBundle~
+        +rotateMasterKey(oldPassword, newPassword) Promise~RotationPlan~
+    }
+
+    class CsvParser {
+        +string delimiter
+        +parse(text, options) CsvTable
+        +parseRows(text, options) string[][]
+        +parseStream(chunks, options) AsyncGenerator~CsvRow~
+    }
+
+    class CsvTable {
+        <<value object>>
+        +string[] headers
+        +string[][] rows
+        +string delimiter
+    }
+
+    class CsvRow {
+        <<value object>>
+        +number index
+        +string[] cells
+        +string raw
+    }
+
+    class ColumnMapper {
+        +string[] columns
+        +suggest() ColumnMapping
+        +validate(mapping) MappingValidation
+        +mapRow(row, mapping) MappedRow
+        +buildSignature(headers) string
+    }
+
+    class MappingValidation {
+        <<value object>>
+        +boolean ok
+        +string[] missingRequired
+        +string[] duplicatedFields
+        +string message
+    }
+
+    class MappedRow {
+        <<value object>>
+        +string occurredAt
+        +string amount
+        +string counterparty
+        +string category
+        +string direction
+        +string balance
+        +string note
+    }
+
+    class DirectionResolver {
+        +DirectionRule rule
+        +resolve(row) DirectionResult
+        +static defaultIncomeKeywords() string[]
+        +static defaultExpenseKeywords() string[]
+    }
+
+    class DirectionResult {
+        <<value object>>
+        +string direction
+        +string source
+        +string reason
+    }
+
+    class RowMapper {
+        +ColumnMapper mapper
+        +DirectionResolver direction
+        +CurrencyCode currency
+        +string defaultTimeZone
+        +toBill(row, mapping, context) Bill
+        +toPreview(row, mapping, context) PreviewRow
+    }
+
+    class ImportService {
+        +CsvParser parser
+        +ColumnMapper mapper
+        +RowMapper rowMapper
+        +BillRepository bills
+        +ImportBatchRepository batches
+        +RuleTemplateRepository templates
+        +AuditLogger audit
+        +Clock clock
+        +plan(source, options) Promise~ImportPlan~
+        +preview(source, mapping, rowCount) Promise~PreviewRow[]~
+        +run(source, mapping, options) Promise~ImportSummary~
+    }
+
+    class Deduplicator {
+        +computeFingerprint(bill) string
+        +isDuplicate(bill, fingerprints) boolean
+        +merge(existing, incoming) Bill
+    }
+
+    class CategoryRuleEngine {
+        +apply(rules, counterparty, note) string
+        +match(rule, counterparty, note) boolean
+    }
+
+    class AuditLogger {
+        +AuditLogRepository repository
+        +Clock clock
+        +string deviceLabel
+        +log(action, target, success) Promise~AuditLog~
+        +list(query) Promise~AuditLog[]~
+        +clear() Promise~void~
+    }
+
+    class BackupService {
+        +StorageAdapter adapter
+        +Clock clock
+        +exportBackup() Promise~BackupFile~
+        +importBackup(file) Promise~ImportSummary~
+        +buildBackupFile(blobs, meta) BackupFile
+    }
+
+    class BackupFile {
+        <<value object>>
+        +string magic
+        +number version
+        +string exportedAt
+        +string algorithm
+        +number keyVersion
+        +EncryptedBlob[] blobs
+    }
+
+    class KeyRotationService {
+        +StorageAdapter adapter
+        +CryptoService crypto
+        +Clock clock
+        +planRotation(oldMasterKey, newMasterKey) Promise~RotationPlan~
+        +execute(plan, onProgress) Promise~RotationResult~
+        +resume(jobId) Promise~RotationResult~
+    }
+
+    class RotationPlan {
+        <<value object>>
+        +string jobId
+        +number totalRecords
+        +number processedRecords
+        +string state
+    }
+
+    class RotationResult {
+        <<value object>>
+        +string jobId
+        +number rotated
+        +number failed
+        +boolean completed
+    }
+
+    class EncryptedStore {
+        +StorageAdapter adapter
+        +DekProvider dek
+        +put(entityType, record) Promise~void~
+        +get(entityType, id) Promise~StoredRecord~
+        +query(entityType, filter) Promise~StoredRecord[]~
+        +decrypt(entityType, stored) Promise~object~
+    }
+
+    class PlainStore {
+        +StorageAdapter adapter
+        +put(entityType, record) Promise~void~
+        +get(entityType, id) Promise~StoredRecord~
+        +query(entityType, filter) Promise~StoredRecord[]~
+    }
+
+    class MemoryStorageAdapter {
+        +StorageAdapter adapter
+        +open() Promise~void~
+        +get(entityType, id) Promise~StoredRecord~
+        +put(entityType, record) Promise~void~
+        +query(entityType, filter) Promise~StoredRecord[]~
+    }
+
+    class DekProvider {
+        <<interface>>
+        +getDek(entityType) Uint8Array
+        +getKeyVersion() number
+        +isUnlocked() boolean
+    }
+
+    %% ------------------------------------------------------------------
+    %% 仓储 (repositories/)
+    %% ------------------------------------------------------------------
+    class BillRepository {
+        +EncryptedStore store
+        +DekProvider dek
+        +list(query) Promise~Bill[]~
+        +getById(id) Promise~Bill~
+        +put(bill) Promise~void~
+        +putMany(bills) Promise~void~
+        +queryByLocalDateRange(from, to) Promise~Bill[]~
+        +countByDirection(direction) Promise~number~
+        +delete(id) Promise~void~
+    }
+
+    class BillQuery {
+        <<value object>>
+        +string keyword
+        +Direction[] directions
+        +string dateFrom
+        +string dateTo
+        +string categoryId
+        +string orderBy
+        +number limit
+        +number offset
+    }
+
+    class CategoryRepository {
+        +EncryptedStore store
+        +list() Promise~Category[]~
+        +getById(id) Promise~Category~
+        +put(category) Promise~void~
+        +delete(id) Promise~void~
+        +ensureSystemCategories() Promise~void~
+    }
+
+    class RuleTemplateRepository {
+        +EncryptedStore store
+        +list() Promise~RuleTemplate[]~
+        +getById(id) Promise~RuleTemplate~
+        +findBySignature(fileSignature) Promise~RuleTemplate~
+        +save(template) Promise~void~
+        +rename(id, name) Promise~void~
+        +duplicate(id, newName) Promise~RuleTemplate~
+        +delete(id) Promise~void~
+    }
+
+    class ImportBatchRepository {
+        +EncryptedStore store
+        +list(limit) Promise~ImportBatch[]~
+        +getById(id) Promise~ImportBatch~
+        +findByFileHash(fileHash) Promise~ImportBatch~
+        +save(batch) Promise~void~
+    }
+
+    class AuditLogRepository {
+        +EncryptedStore store
+        +append(log) Promise~void~
+        +list(query) Promise~AuditLog[]~
+        +clear() Promise~void~
+    }
+
+    class VaultRepository {
+        +PlainStore store
+        +load() Promise~VaultParams~
+        +save(params) Promise~void~
+        +loadRecoveryMeta() Promise~RecoveryMeta~
+        +saveRecoveryMeta(meta) Promise~void~
+    }
+
+    %% ------------------------------------------------------------------
+    %% 关系
+    %% ------------------------------------------------------------------
+    BaseEntity <|-- Bill
+    BaseEntity <|-- Category
+    BaseEntity <|-- RuleTemplate
+    BaseEntity <|-- ImportBatch
+    BaseEntity <|-- AuditLog
+
+    Bill --> Direction : direction
+    Bill --> CurrencyCode : currency
+    Bill --> Category : categoryId (可空)
+
+    RuleTemplate --> ColumnMapping : columnMapping
+    RuleTemplate --> DirectionRule : directionRule
+    RuleTemplate --> CategoryRule : categoryRules
+
+    VaultParams --> KdfParams : kdf 参数内联
+    VaultParams --> WrappedDek : currentDek / previousDek
+    WrappedDek --> EncryptedPayload : wrapped
+    VaultParams --> EncryptedPayload : verifier
+    RecoveryBundle --> KdfParams : kdfParams
+    RecoveryBundle --> EncryptedPayload : verifier
+
+    EncryptedBlob --> EntityType : entityType
+    StoredRecord --> EntityType : entityType
+    StoredRecord --> EncryptedPayload : payload (kind=encrypted)
+    StoredRecord --> PlainPayload : payload (kind=plain)
+
+    CryptoService ..> CryptoProvider : 依赖注入
+    VaultService ..> CryptoService : 组合
+    VaultService ..> CryptoProvider : 组合
+    VaultService ..> VaultRepository : 组合
+    VaultService ..> AuditLogger : 组合
+
+    CsvParser ..> CsvTable : 产出
+    CsvParser ..> CsvRow : 产出
+    ColumnMapper ..> ColumnMapping : 产出
+    ColumnMapper ..> MappedRow : 产出
+    ColumnMapper ..> MappingValidation : 产出
+    DirectionResolver ..> DirectionResult : 产出
+    RowMapper ..> DirectionResolver : 组合
+    RowMapper ..> ColumnMapper : 组合
+
+    ImportService ..> CsvParser : 组合
+    ImportService ..> ColumnMapper : 组合
+    ImportService ..> RowMapper : 组合
+    ImportService ..> Deduplicator : 组合
+    ImportService ..> BillRepository : 组合
+    ImportService ..> ImportBatchRepository : 组合
+    ImportService ..> RuleTemplateRepository : 组合
+    ImportService ..> AuditLogger : 组合
+    ImportService ..> ImportPlan : 产出
+    ImportService ..> ImportSummary : 产出
+    ImportPlan --> PreviewRow : preview
+    ImportSummary --> ImportError : errors
+
+    AuditLogger ..> AuditLogRepository : 组合
+    AuditLogger ..> AuditLog : 产出
+
+    EncryptedStore ..> StorageAdapter : 组合
+    EncryptedStore ..> DekProvider : 依赖注入
+    PlainStore ..> StorageAdapter : 组合
+    MemoryStorageAdapter ..> StorageAdapter : 实现
+    StorageAdapter ..> StorageQuery : 参数
+    StorageAdapter ..> StoredRecord : 参数
+
+    BillRepository ..> EncryptedStore : 组合
+    BillRepository ..> DekProvider : 依赖注入
+    BillRepository ..> Bill : 产出
+    CategoryRepository ..> EncryptedStore : 组合
+    RuleTemplateRepository ..> EncryptedStore : 组合
+    ImportBatchRepository ..> EncryptedStore : 组合
+    AuditLogRepository ..> EncryptedStore : 组合
+    VaultRepository ..> PlainStore : 组合
+    VaultRepository ..> VaultParams : 产出
+
+    BackupService ..> StorageAdapter : 组合
+    BackupService ..> EncryptedBlob : 产出
+    KeyRotationService ..> CryptoService : 组合
+    KeyRotationService ..> RotationPlan : 产出
+    KeyRotationService ..> RotationResult : 产出

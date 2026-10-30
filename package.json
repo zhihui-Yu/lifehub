@@ -1,0 +1,49 @@
+{
+  "name": "lifehub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LifeHub —— 跨端、本地优先、端到端加密的个人生活数据管理工具（npm workspaces 根清单）",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
+  "workspaces": [
+    "packages/core",
+    "apps/web",
+    "apps/sync-server"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @lifehub/web",
+    "build": "npm run build --workspace @lifehub/web",
+    "build:sync": "npm run build --workspace @lifehub/sync-server",
+    "preview": "npm run preview --workspace @lifehub/web",
+    "test": "npm run test --workspaces --if-present",
+    "test:watch": "npm run test:watch --workspaces --if-present",
+    "coverage": "npm run coverage --workspaces --if-present",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "npm run typecheck:core && npm run typecheck --workspace @lifehub/web && npm run typecheck --workspace @lifehub/sync-server",
+    "typecheck:core": "tsc --noEmit -p packages/core/tsconfig.json",
+    "check:compliance": "node scripts/check-compliance.mjs",
+    "check:no-network": "node scripts/check-no-network-in-crypto.mjs",
+    "check:sync-payload": "node scripts/check-sync-payload.mjs",
+    "bench": "npm run bench --workspace @lifehub/core"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@types/node": "^22.10.2",
+    "@vitest/coverage-v8": "^5.0.5",
+    "eslint": "^9.17.0",
+    "eslint-plugin-react-hooks": "^5.1.0",
+    "eslint-plugin-react-refresh": "^0.4.16",
+    "globals": "^15.14.0",
+    "jsdom": "^25.0.1",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.19.0",
+    "vitest": "^5.0.5"
+  }
+}

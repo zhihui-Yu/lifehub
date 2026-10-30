@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // 【红线 R1】核心层零 DOM：lib 只含 ES2022，不含 DOM / DOM.Iterable。
+    "lib": ["ES2022"],
+    // Node 类型仅用于 node:crypto 子路径导出与测试替身，不进入浏览器产物。
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts"]
+}

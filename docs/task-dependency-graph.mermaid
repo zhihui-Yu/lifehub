@@ -1,0 +1,38 @@
+%% ============================================================================
+%% LifeHub —— Sprint 0 任务依赖图
+%% 配套文档: docs/system_design.md §9 / §7
+%% 硬性约束: 共 5 个任务, T01 必须是「项目基础设施」, 配置文件不分散
+%% ============================================================================
+graph TD
+    T01["T01 项目基础设施<br/><i>monorepo · package.json · tsconfig · vite · vitest · CI · 3个合规断言脚本</i><br/>P0 · 依赖: 无"]
+    T02["T02 核心数据模型与加密层<br/><i>models · money · time · crypto · CryptoProvider/StorageAdapter端口<br/>repositories · VaultService · AuditLogger</i><br/>P0 · 依赖: T01"]
+    T03["T03 核心 CSV 解析与导入域<br/><i>CsvParser · ColumnMapper · DirectionResolver · RowMapper<br/>规则引擎 · 去重 · ImportService · BackupService · mergeRecord</i><br/>P0 · 依赖: T01, T02"]
+    T04["T04 Web 端页面与交互<br/><i>UI-01~UI-04 四页面 · Zustand状态管理 · Dexie接入<br/>响应式布局 · 虚拟化长列表 · 中文文案</i><br/>P0 · 依赖: T01, T02, T03"]
+    T05["T05 测试与项目文档<br/><i>单测 · 集成测试 · 性能基准 · README · 架构说明<br/>6个ADR · 合规自检清单 · CI门禁</i><br/>P1 · 依赖: T01, T02, T03, T04"]
+
+    T01 --> T02
+    T01 --> T03
+    T02 --> T03
+    T01 --> T04
+    T02 --> T04
+    T03 --> T04
+    T01 --> T05
+    T02 --> T05
+    T03 --> T05
+    T04 --> T05
+
+    subgraph S1["阶段 1 · 核心逻辑层"]
+        T01
+        T02
+        T03
+    end
+    subgraph S2["阶段 2 · 表现与交付层"]
+        T04
+        T05
+    end
+
+    style T01 fill:#4F46E5,color:#FFFFFF,stroke:#312E81,stroke-width:3px
+    style T02 fill:#818CF8,color:#1E1B4B,stroke:#3730A3
+    style T03 fill:#818CF8,color:#1E1B4B,stroke:#3730A3
+    style T04 fill:#818CF8,color:#1E1B4B,stroke:#3730A3
+    style T05 fill:#16A34A,color:#FFFFFF,stroke:#166534,stroke-width:2px

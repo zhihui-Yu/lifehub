@@ -1,0 +1,7 @@
+{
+  "// 说明": "根 tsconfig 仅作为 IDE 入口（solution style）；各包自行 typecheck，见 npm run typecheck。",
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "include": [],
+  "exclude": ["node_modules", "**/dist", "**/coverage"]
+}

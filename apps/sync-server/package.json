@@ -1,0 +1,18 @@
+{
+  "name": "@lifehub/sync-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LifeHub 自托管同步服务：只存密文 blob，不接触任何明文业务数据与密钥",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/server.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "node --experimental-strip-types src/server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

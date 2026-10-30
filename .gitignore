@@ -1,0 +1,24 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# 环境变量与本地密钥（严禁入库）
+.env
+.env.*
+*.pem
+*.key
+
+# 编辑器与系统文件
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# 运行期本地数据
+*.log
+tmp/
+.cache/

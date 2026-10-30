@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * LifeHub 全局样式。
+ *
+ * 说明：Tailwind 负责间距 / 栅格 / 响应式，MUI 负责交互组件；
+ * 收支语义色在这里统一定义，保证全站一致（PRD A-09）。
+ */
+
+:root {
+  /* 收入绿 */
+  --lifehub-income: #16a34a;
+  /* 支出红 */
+  --lifehub-expense: #dc2626;
+  /* 退款蓝 */
+  --lifehub-refund: #2563eb;
+  /* 主色 */
+  --lifehub-primary: #4f46e5;
+  --lifehub-bg: #f7f7fb;
+  --lifehub-surface: #ffffff;
+  --lifehub-border: #e5e7eb;
+  --lifehub-text: #111827;
+  --lifehub-text-muted: #6b7280;
+}
+
+.dark {
+  --lifehub-bg: #0f1117;
+  --lifehub-surface: #181b23;
+  --lifehub-border: #2b2f3a;
+  --lifehub-text: #f3f4f6;
+  --lifehub-text-muted: #9ca3af;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background-color: var(--lifehub-bg);
+  color: var(--lifehub-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 金额语义色：收入绿 / 支出红 / 退款蓝 */
+.lifehub-amount-income {
+  color: var(--lifehub-income);
+}
+
+.lifehub-amount-expense {
+  color: var(--lifehub-expense);
+}
+
+.lifehub-amount-refund {
+  color: var(--lifehub-refund);
+}
+
+/* 拖拽中的列 */
+.lifehub-dragging {
+  opacity: 0.5;
+  outline: 2px dashed var(--lifehub-primary);
+}
+
+/* 键盘可达的焦点样式：对比度 ≥ 4.5:1 */
+:focus-visible {
+  outline: 2px solid var(--lifehub-primary);
+  outline-offset: 2px;
+}
+
+/* 桌面端：220px 侧导航 + 1280px 内容区 */
+.lifehub-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.lifehub-sidenav {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--lifehub-border);
+  background-color: var(--lifehub-surface);
+}
+
+.lifehub-content {
+  flex: 1;
+  max-width: 1280px;
+  padding: 24px;
+  overflow-x: hidden;
+}
+
+/* 小屏（<900px）折叠为底部 Tab */
+@media (max-width: 900px) {
+  .lifehub-shell {
+    flex-direction: column;
+  }
+
+  .lifehub-sidenav {
+    width: 100%;
+    border-right: none;
+    border-top: 1px solid var(--lifehub-border);
+    order: 2;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+  }
+
+  .lifehub-content {
+    padding: 16px;
+    padding-bottom: 76px;
+    order: 1;
+  }
+}
