@@ -157,6 +157,7 @@ export class BackupService {
       rowImported,
       rowSkipped,
       rowDuplicated: 0,
+      rowCrossSourceDuplicate: 0,
       errors: [],
       durationMs: this.clock.now().getTime() - startedAt.getTime(),
       duplicateFile: false,

@@ -154,6 +154,40 @@ export class BillRepository {
   }
 
   /**
+   * 按导入批次 ID 删除该批次关联的全部账单。
+   *
+   * 说明：用于按导入文件批次撤销/删除已导入的账单，或覆盖重导同一文件前清理旧批次账单。
+   *
+   * @param sourceFileId 导入批次 ID（对应 `Bill.sourceFileId`）
+   * @returns 实际删除的账单条数
+   * @throws {LifeHubError} `LIFEHUB_E_VAULT_NOT_FOUND` —— 保险库未解锁时抛出
+   */
+  async deleteBySourceFileId(sourceFileId: string): Promise<number> {
+    const bills = await this.store.query<Bill>('bill');
+    const matched = bills.filter((bill) => bill.sourceFileId === sourceFileId);
+    for (const bill of matched) {
+      await this.store.delete('bill', bill.id);
+    }
+    return matched.length;
+  }
+
+  /**
+   * 清空全部账单记录。
+   *
+   * 说明：逐条从加密存储中移除当前所有账单记录，用于用户主动清空账单列表后重新导入。
+   *
+   * @returns 实际删除的账单总条数
+   * @throws {LifeHubError} `LIFEHUB_E_VAULT_NOT_FOUND` —— 保险库未解锁时抛出
+   */
+  async clearAll(): Promise<number> {
+    const bills = await this.store.query<Bill>('bill');
+    for (const bill of bills) {
+      await this.store.delete('bill', bill.id);
+    }
+    return bills.length;
+  }
+
+  /**
    * 在解密后的结果上做语义过滤与排序。
    *
    * 说明：关键词 / 方向 / 分类属于业务语义，**不能**做成明文索引列，

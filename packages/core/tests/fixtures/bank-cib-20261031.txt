@@ -1,0 +1,45 @@
+兴业银行 2026-10-31 00:00:00
+兴业银行交易明细
+Industrial Bank Transaction Details
+2026-08-01-2026-10-31
+支出 ¥6,053.30(3)笔     收入 ¥21,500.00(2)笔 
+说明：交易明细涉及您的个人隐私，请妥善处理，避免信息篡改或泄露。交易明细内容仅供个人参考。
+户          名：张三 账户账号：622908 **** 0000
+Account Name： Account No.：
+币          种：人民币 账户类型：活期储蓄存款-现钞
+Currency： Account Type：
+收支类别：全部 交易类型：全部
+Income and Expenditure Categories： Transaction Type：
+转账金额区间：无 对方户名：无
+Transfer Amount Range： Counterparty's Account Name：
+对方账号：无 用途/备注：无
+Counterparty's Account No： Use/Remark：
+打印日期：2026-10-31 00:00:00
+Print Time：
+交易时间 记账日期 摘要 支/收 交易金额 账户余额 交易用途
+Transaction Time Accounting Date Transaction
+Type
+Expenditure/
+Income
+Transaction
+Amount
+Account Balance Transaction Usage
+2026-08-01
+11:03:18 20260801 快捷支付 支 -6,000.00 ******
+订单
+2026080111010001053461
+0992299674,蚂蚁（杭州
+）基金销售有
+2026-08-01
+11:03:36 20260801 跨行代付 收 6,000.00 ****** 银联转账（云闪付）
+2026-08-02
+19:15:49 20260802 快捷支付 支 -38.00 ******
+订单
+282608020000000000001,
+星巴克咖啡
+2026-08-03
+11:05:31 20260803 无卡快捷支付业务 支 -15.30 ****** 252608030000000000002美团外卖
+2026-08-10
+17:25:04 20260810 代发工资 收 15,500.00 ****** 工资
+2026年10月31日
+第 1 页 / 共 1 页兴业银行 2026-10-31 00:00:00

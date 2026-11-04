@@ -1,0 +1,8 @@
+{
+  "appId": "app.lifehub.local",
+  "appName": "LifeHub",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

@@ -53,6 +53,22 @@ describe('parseFlexibleDate', () => {
     expect(result.localDate).toBe('2024-01-16');
   });
 
+  it('无时区偏移时间（Naive Datetime）在 Asia/Shanghai 下 16:00 后绝不跨天变成次日（T-Date-Timezone-And-BackToTop-1）', () => {
+    const bocFirst = parseFlexibleDate('2026-10-27 16:14:57', { timeZone: 'Asia/Shanghai' });
+    expect(bocFirst.localDate).toBe('2026-10-27');
+    expect(bocFirst.occurredAt).toBe('2026-10-27T08:14:57.000Z');
+    expect(bocFirst.sourceTimeZone).toBe('Asia/Shanghai');
+    expect(toWallClock(new Date(bocFirst.occurredAt), 'Asia/Shanghai')).toBe('16:14');
+
+    const evening1 = parseFlexibleDate('2026-10-24 16:37:16', { timeZone: 'Asia/Shanghai' });
+    expect(evening1.localDate).toBe('2026-10-24');
+    expect(evening1.occurredAt).toBe('2026-10-24T08:37:16.000Z');
+
+    const evening2 = parseFlexibleDate('2026-10-17 23:56:10', { timeZone: 'Asia/Shanghai' });
+    expect(evening2.localDate).toBe('2026-10-17');
+    expect(evening2.occurredAt).toBe('2026-10-17T15:56:10.000Z');
+  });
+
   it('非法日期抛出 LIFEHUB_E_DATE_INVALID', () => {
     expect(() => parseFlexibleDate('not-a-date')).toThrowError(
       expect.objectContaining({ code: 'LIFEHUB_E_DATE_INVALID' }),

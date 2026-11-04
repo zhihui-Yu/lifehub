@@ -7,6 +7,7 @@
  * **不含任何明文业务数据**，也不含主密码（PRD UI-04 交互要点 3）。
  */
 import { Alert, Box, Button, Paper, Typography } from '@mui/material';
+import CloudDownloadOutlined from '@mui/icons-material/CloudDownloadOutlined';
 import type { RecoveryBundle } from '@lifehub/core';
 import { buildDatedFileName, downloadText } from '@/utils/download';
 
@@ -48,7 +49,11 @@ export function SaltBackupPanel({ bundle }: SaltBackupPanelProps) {
 
   return (
     <Paper variant="outlined" sx={{ p: 2.5 }} data-testid="salt-backup-panel">
-      <Typography variant="h6" sx={{ mb: 1, color: 'var(--lifehub-text)' }}>
+      <Typography
+        variant="h6"
+        sx={{ mb: 1, color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 1 }}
+      >
+        <CloudDownloadOutlined fontSize="small" color="primary" />
         盐值备份
       </Typography>
       <Alert severity="info" sx={{ mb: 2 }}>

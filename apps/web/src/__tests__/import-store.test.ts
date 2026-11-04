@@ -22,6 +22,8 @@ function plan(partial: Partial<ImportPlan> = {}): ImportPlan {
     preview: [],
     duplicateFile: false,
     duplicateOf: null,
+    sourceChannel: 'csv',
+    crossSourceCandidates: [],
     ...partial,
   };
 }
@@ -53,6 +55,7 @@ function summary(partial: Partial<ImportSummary> = {}): ImportSummary {
     errors: [],
     durationMs: 12,
     duplicateFile: false,
+    rowCrossSourceDuplicate: 0,
     ...partial,
   };
 }

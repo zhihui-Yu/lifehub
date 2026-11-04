@@ -6,6 +6,7 @@
  */
 import { ISO_UTC_PATTERN } from '../constants';
 import { LifeHubError } from '../errors';
+import { isSourceChannel, type SourceChannel } from './source-channel';
 import type { BaseEntity } from '../types/common';
 
 /** CSV 文件编码类型。 */
@@ -31,6 +32,8 @@ export interface ImportBatch extends BaseEntity {
   rowSkipped: number;
   /** 使用的规则模板 id；未使用模板为 null。 */
   templateId: string | null;
+  /** 来源渠道（微信 / 支付宝 / 银行 / 通用 CSV / 手动 / 其它），用于跨来源去重。 */
+  sourceChannel: SourceChannel;
 }
 
 /**
@@ -65,6 +68,8 @@ export interface ImportSummary {
   rowSkipped: number;
   /** 其中因重复而跳过的行数。 */
   rowDuplicated: number;
+  /** 其中因跨来源重复（微信 / 支付宝 与 银行卡视为同一笔）而跳过的行数。 */
+  rowCrossSourceDuplicate: number;
   /** 错误明细。 */
   errors: ImportError[];
   /** 耗时（毫秒）。 */
@@ -111,6 +116,13 @@ export function validateImportBatch(batch: unknown): ImportBatch {
   const templateId = candidate['templateId'];
   if (templateId !== null && typeof templateId !== 'string') {
     throw new LifeHubError('LIFEHUB_E_VALIDATION', '导入批次模板 id 非法');
+  }
+  // 来源渠道缺失时回落到 'other'，兼容历史批次与测试构造的精简对象；
+  // 显式给出非法值时仍报错，避免脏数据入库。
+  if (candidate['sourceChannel'] === undefined || candidate['sourceChannel'] === null) {
+    candidate['sourceChannel'] = 'other';
+  } else if (!isSourceChannel(candidate['sourceChannel'])) {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '导入批次来源渠道非法');
   }
   if (typeof candidate['createdAt'] !== 'string' || !ISO_UTC_PATTERN.test(candidate['createdAt'])) {
     throw new LifeHubError('LIFEHUB_E_VALIDATION', '导入批次创建时间必须是 ISO 8601 UTC');

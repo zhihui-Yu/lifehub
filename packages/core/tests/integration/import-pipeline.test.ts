@@ -226,4 +226,47 @@ describe('ImportService.run', () => {
     const bills = await runtime.bills.list();
     expect(bills[0]?.localDate).toBe('2024-01-15');
   });
+
+  it('支持 overwriteExisting 覆盖重导同一文件，以及按批次 deleteBatch / clearAll 删除后再次导入', async () => {
+    const runtime = await createUnlockedRuntime();
+    const bytes = toBytes(fixture('simple-with-direction.csv'));
+    const mapping: ColumnMapping = SIMPLE_DIRECTION_MAPPING;
+
+    const first = await runtime.importService.run(
+      { fileName: 'simple-with-direction.csv', sizeBytes: bytes.length, bytes },
+      mapping,
+      { userTimeZone: 'Asia/Shanghai' },
+    );
+    expect(first.rowImported).toBe(3);
+
+    // 显式开启 overwriteExisting 时，先清理旧批次及关联账单，再全量重导 3 条
+    const overwritten = await runtime.importService.run(
+      { fileName: 'simple-with-direction.csv', sizeBytes: bytes.length, bytes },
+      mapping,
+      { userTimeZone: 'Asia/Shanghai', allowDuplicate: true, overwriteExisting: true },
+    );
+    expect(overwritten.duplicateFile).toBe(false);
+    expect(overwritten.rowImported).toBe(3);
+    expect(await runtime.bills.list()).toHaveLength(3);
+    expect(await runtime.batches.list()).toHaveLength(1);
+
+    // 按批次删除后，批次与关联账单均清空，再次导入不再判定为重复文件
+    const delResult = await runtime.importService.deleteBatch(overwritten.batchId);
+    expect(delResult.deletedBills).toBe(3);
+    expect(await runtime.bills.list()).toHaveLength(0);
+    expect(await runtime.batches.list()).toHaveLength(0);
+
+    const reimported = await runtime.importService.run(
+      { fileName: 'simple-with-direction.csv', sizeBytes: bytes.length, bytes },
+      mapping,
+      { userTimeZone: 'Asia/Shanghai' },
+    );
+    expect(reimported.duplicateFile).toBe(false);
+    expect(reimported.rowImported).toBe(3);
+
+    // 全量清空账单
+    const cleared = await runtime.bills.clearAll();
+    expect(cleared).toBe(3);
+    expect(await runtime.bills.list()).toHaveLength(0);
+  });
 });

@@ -1,6 +1,7 @@
 # 依赖与构建产物
 node_modules/
 dist/
+files/
 *.log
 .DS_Store
 
@@ -16,3 +17,9 @@ coverage-*/
 .env
 .env.*
 !.env.example
+
+# 本地打包产物与本地私密账单回归测试（绝不入库）
+*.apk
+apps/web/src/__tests__/real-files-import.test.ts
+.workbuddy/
+TODO.md

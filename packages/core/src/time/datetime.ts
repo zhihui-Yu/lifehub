@@ -153,13 +153,92 @@ export function isIsoUtc(value: string): boolean {
 }
 
 /**
+ * 计算某个 UTC 毫秒时间戳在指定 IANA 时区下的墙钟各分量，并将其按 UTC 历法合成为毫秒数以供偏移量反算。
+ *
+ * @param instantMs UTC 毫秒时间戳
+ * @param timeZone 目标 IANA 时区名
+ * @returns 墙钟各分量按 `Date.UTC` 合成的毫秒数
+ */
+function getWallClockAsUtcMs(instantMs: number, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date(instantMs));
+
+  let year = 1970;
+  let month = 1;
+  let day = 1;
+  let hour = 0;
+  let minute = 0;
+  let second = 0;
+  for (const part of parts) {
+    if (part.type === 'year') year = Number(part.value);
+    else if (part.type === 'month') month = Number(part.value);
+    else if (part.type === 'day') day = Number(part.value);
+    else if (part.type === 'hour') hour = Number(part.value);
+    else if (part.type === 'minute') minute = Number(part.value);
+    else if (part.type === 'second') second = Number(part.value);
+  }
+  if (hour === 24) {
+    hour = 0;
+  }
+  return Date.UTC(year, month - 1, day, hour, minute, second, 0);
+}
+
+/**
+ * 将指定时区（sourceTimeZone）下的无偏移墙上时间反算为对应的 UTC 时刻。
+ *
+ * @param year 年
+ * @param month 月（1-12）
+ * @param day 日（1-31）
+ * @param hour 时（0-23）
+ * @param minute 分（0-59）
+ * @param second 秒（0-59）
+ * @param sourceTimeZone 来源 IANA 时区名
+ * @returns 对应的 UTC Date 实例
+ */
+function buildWallClockUtcDate(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+  sourceTimeZone: string,
+): Date {
+  const targetAsUtcMs = Date.UTC(year, month - 1, day, hour, minute, second, 0);
+  if (!sourceTimeZone || sourceTimeZone === 'UTC') {
+    return new Date(targetAsUtcMs);
+  }
+  try {
+    const offset1 = getWallClockAsUtcMs(targetAsUtcMs, sourceTimeZone) - targetAsUtcMs;
+    const guess1 = targetAsUtcMs - offset1;
+    const offset2 = getWallClockAsUtcMs(guess1, sourceTimeZone) - targetAsUtcMs;
+    return new Date(guess1 - offset2);
+  } catch {
+    return new Date(targetAsUtcMs);
+  }
+}
+
+/**
  * 按单个格式描述符解析日期文本。
  *
  * @param raw 已归一（去空白）的日期文本
  * @param descriptor 格式描述符
+ * @param sourceTimeZone 无显式时区偏移时的来源时区
  * @returns 解析出的 UTC 时刻；不匹配返回 null
  */
-function parseByDescriptor(raw: string, descriptor: DateFormatDescriptor): Date | null {
+function parseByDescriptor(
+  raw: string,
+  descriptor: DateFormatDescriptor,
+  sourceTimeZone: string,
+): Date | null {
   const match = descriptor.pattern.exec(raw);
   if (!match) {
     return null;
@@ -178,7 +257,10 @@ function parseByDescriptor(raw: string, descriptor: DateFormatDescriptor): Date 
   if (hour > 23 || minute > 59 || second > 59) {
     throwDateInvalid(raw);
   }
-  return buildUtcDate(year, month, day, hour, minute, second, offsetMinutes);
+  if (offsetMinutes !== null) {
+    return buildUtcDate(year, month, day, hour, minute, second, offsetMinutes);
+  }
+  return buildWallClockUtcDate(year, month, day, hour, minute, second, sourceTimeZone);
 }
 
 /**
@@ -227,7 +309,7 @@ export function parseFlexibleDate(raw: string, opts?: ParseDateOptions): ParsedD
   ];
 
   for (const descriptor of ordered) {
-    const instant = parseByDescriptor(text, descriptor);
+    const instant = parseByDescriptor(text, descriptor, sourceTimeZone);
     if (instant) {
       return {
         occurredAt: formatIsoUtc(instant),

@@ -42,7 +42,9 @@ export function CategoryRuleEditor({ rules, onChange, categoryOptions = [] }: Ca
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-      <Typography variant="subtitle2">自动分类规则（按优先级从高到低匹配，命中即停）</Typography>
+      <Typography variant="subtitle2" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
+        自动分类规则（按优先级从高到低匹配，命中即停）
+      </Typography>
       {rules.length === 0 ? (
         <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
           尚未添加分类规则，未命中的账单将归入「未分类」。

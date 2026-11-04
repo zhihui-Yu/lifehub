@@ -56,15 +56,217 @@ export interface MappedRow {
 const HEADER_SUGGESTIONS: readonly { field: BillField; keywords: readonly string[] }[] = [
   {
     field: 'occurredAt',
-    keywords: ['交易时间', '交易日期', '记账日期', '日期', '时间', 'date', 'time', '交易创建时间'],
+    keywords: [
+      '交易时间',
+      '记账日期',
+      '日期',
+      '时间',
+      '账单日期',
+      '交易日期',
+      '创建时间',
+      '付款时间',
+      '发生时间',
+      '交易创建时间',
+      'date',
+      'time',
+      'datetime',
+    ],
   },
-  { field: 'amount', keywords: ['金额', '发生额', '交易金额', 'amount', '金额(元)', '收支金额'] },
-  { field: 'counterparty', keywords: ['交易对方', '对方名称', '对方账号', '商户名称', '交易方', 'counterparty', '付款方'] },
-  { field: 'category', keywords: ['交易类型', '分类', '类别', 'category', '交易分类'] },
-  { field: 'direction', keywords: ['收/支', '收支', '收支类型', '收/支类型', '方向', 'direction', '借贷标志'] },
-  { field: 'balance', keywords: ['余额', '账户余额', 'balance', '交易后余额'] },
-  { field: 'note', keywords: ['备注', '商品说明', 'note', 'memo', '摘要', '交易备注'] },
+  {
+    field: 'amount',
+    keywords: [
+      '金额(元)',
+      '金额（元）',
+      '交易金额',
+      '金额',
+      '发生额',
+      '记账金额',
+      '实付金额',
+      '收支金额',
+      'amount',
+      'money',
+      'price',
+    ],
+  },
+  {
+    field: 'counterparty',
+    keywords: [
+      '交易对方',
+      '对方户名',
+      '对方名称',
+      '商户名称',
+      '商家',
+      '商户',
+      '交易用途',
+      '对方账号',
+      '交易方',
+      '付款方',
+      'counterparty',
+      'payee',
+      'merchant',
+    ],
+  },
+  {
+    field: 'category',
+    keywords: ['交易类型', '交易分类', '分类', '类别', '账单分类', '消费类型', 'category'],
+  },
+  {
+    field: 'direction',
+    keywords: [
+      '收/支',
+      '支/收',
+      '收支',
+      '收支方向',
+      '收支类型',
+      '收/支类型',
+      '交易方向',
+      '资金方向',
+      '借贷标志',
+      '方向',
+      'direction',
+      'type',
+    ],
+  },
+  {
+    field: 'balance',
+    keywords: ['账户余额', '余额(元)', '余额（元）', '余额', '可用余额', '本次余额', '交易后余额', 'balance'],
+  },
+  {
+    field: 'note',
+    keywords: [
+      '备注',
+      '商品说明',
+      '商品名称',
+      '商品',
+      '摘要',
+      '说明',
+      '附言',
+      '交易说明',
+      '用途/备注',
+      '交易备注',
+      'note',
+      'memo',
+      'remark',
+      'description',
+    ],
+  },
 ];
+
+/** 样本日期特征正则（支持 YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD / YYYY年MM月DD日 / 8 位数字日期）。 */
+const SAMPLE_DATE_PATTERN = /^(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}|\d{8})$/;
+
+/** 样本金额特征正则（支持可选正负号、可选货币符号、千分位及最多两位小数）。 */
+const SAMPLE_AMOUNT_PATTERN = /^[+-]?[¥￥$]?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$/;
+
+/** 样本方向特征取值集合。 */
+const SAMPLE_DIRECTION_VALUES: ReadonlySet<string> = new Set([
+  '收入',
+  '支出',
+  '收',
+  '支',
+  '/',
+  '不计收支',
+  '中性交易',
+  '借',
+  '贷',
+  '入',
+  '出',
+]);
+
+/** 备注为空时可回退读取的候选商品名/摘要表头名。 */
+const NOTE_FALLBACK_HEADERS: readonly string[] = ['商品', '商品说明', '商品名称', '摘要'];
+
+/**
+ * 判断单元格文本是否为微信/支付宝常见的空占位符（"/" 或 "--"）。
+ *
+ * @param value 单元格原始文本
+ * @returns 是空占位符返回 true
+ */
+function isPlaceholderCell(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed === '/' || trimmed === '--';
+}
+
+/** 表头归一化结果。 */
+export interface NormalizedTable {
+  /** 归一化后的真实表头行。 */
+  headers: string[];
+  /** 剥离前置说明行后的数据行。 */
+  rows: string[][];
+}
+
+/**
+ * 自动定位真实表头行并剥离前置汇总说明行。
+ *
+ * 说明：微信支付等导出的 CSV / XLSX 常在前 16~17 行放置汇总说明（如「微信支付账单明细」），
+ * 第 18 行才是真正的「交易时间,交易类型,交易对方,商品,收/支,金额(元)...」表头行。
+ * 本函数在前 35 行内扫描首个同时命中 `occurredAt` 与 `amount` 的行作为真实表头；
+ * 若当前表头已命中或前 35 行均未命中，则原样返回。
+ *
+ * @param headers 初始首行表头
+ * @param rows 初始数据行
+ * @returns 归一化后的表头与数据行
+ */
+export function normalizeTableHeaders(headers: readonly string[], rows: readonly (readonly string[])[]): NormalizedTable {
+  const hasCoreFields = (mapping: ColumnMapping): boolean => {
+    const fields = new Set(Object.values(mapping));
+    return fields.has('occurredAt') && fields.has('amount');
+  };
+
+  if (hasCoreFields(new ColumnMapper([...headers]).suggest())) {
+    return { headers: [...headers], rows: rows.map((r) => [...r]) };
+  }
+
+  const scanLimit = Math.min(rows.length, 35);
+  for (let i = 0; i < scanLimit; i += 1) {
+    const candidate = (rows[i] ?? []).map((cell) => cell.trim());
+    if (hasCoreFields(new ColumnMapper(candidate).suggest())) {
+      return {
+        headers: candidate,
+        rows: rows.slice(i + 1).map((r) => [...r]),
+      };
+    }
+  }
+
+  return { headers: [...headers], rows: rows.map((r) => [...r]) };
+}
+
+/**
+ * 在样本行中寻找超过半数非空单元格满足谓词的未映射列索引。
+ *
+ * @param mapping 当前已分配的列映射
+ * @param columnCount 总列数
+ * @param samples 样本行列表
+ * @param predicate 单元格文本判定谓词
+ * @returns 命中的 0 基列索引；未命中返回 -1
+ */
+function inferColumnBySamples(
+  mapping: ColumnMapping,
+  columnCount: number,
+  samples: readonly (readonly string[])[],
+  predicate: (value: string) => boolean,
+): number {
+  for (let colIdx = 0; colIdx < columnCount; colIdx += 1) {
+    if (mapping[colIdx] !== undefined) {
+      continue;
+    }
+    let nonEmpty = 0;
+    let matched = 0;
+    for (const row of samples) {
+      const cell = (row[colIdx] ?? '').trim();
+      if (cell !== '') {
+        nonEmpty += 1;
+        if (predicate(cell)) {
+          matched += 1;
+        }
+      }
+    }
+    if (nonEmpty > 0 && matched > nonEmpty / 2) {
+      return colIdx;
+    }
+  }
+  return -1;
+}
 
 /**
  * 列头映射器。
@@ -94,18 +296,20 @@ export class ColumnMapper {
   }
 
   /**
-   * 根据表头关键词自动建议列映射。
+   * 根据表头关键词与可选样本数据特征自动建议列映射。
    *
-   * 说明：同一语义字段只绑定第一个命中的列，避免重复映射。
+   * 说明：同一语义字段只绑定第一个命中的列，避免重复映射；
+   * 若表头未能识别出日期、金额或收支方向且提供了样本行，则按单元格数据特征兜底推断。
    *
+   * @param sampleRows 可选的前若干行数据样本，用于数据特征推断
    * @returns 建议的列映射（0 基列索引 → 语义字段）
    */
-  suggest(): ColumnMapping {
+  suggest(sampleRows?: readonly (readonly string[])[]): ColumnMapping {
     const mapping: ColumnMapping = {};
     const used = new Set<BillField>();
     for (const suggestion of HEADER_SUGGESTIONS) {
       for (let index = 0; index < this.columns.length; index += 1) {
-        if (used.has(suggestion.field)) {
+        if (used.has(suggestion.field) || mapping[index] !== undefined) {
           continue;
         }
         const header = (this.columns[index] ?? '').trim().toLowerCase();
@@ -120,6 +324,41 @@ export class ColumnMapper {
         }
       }
     }
+
+    if (sampleRows && sampleRows.length > 0) {
+      const samples = sampleRows.slice(0, 10);
+      if (!used.has('occurredAt')) {
+        const colIdx = inferColumnBySamples(mapping, this.columns.length, samples, (val) =>
+          SAMPLE_DATE_PATTERN.test(val),
+        );
+        if (colIdx >= 0) {
+          mapping[colIdx] = 'occurredAt';
+          used.add('occurredAt');
+        }
+      }
+      if (!used.has('amount')) {
+        const colIdx = inferColumnBySamples(
+          mapping,
+          this.columns.length,
+          samples,
+          (val) => SAMPLE_AMOUNT_PATTERN.test(val) && !/^\d{8}$/.test(val),
+        );
+        if (colIdx >= 0) {
+          mapping[colIdx] = 'amount';
+          used.add('amount');
+        }
+      }
+      if (!used.has('direction')) {
+        const colIdx = inferColumnBySamples(mapping, this.columns.length, samples, (val) =>
+          SAMPLE_DIRECTION_VALUES.has(val),
+        );
+        if (colIdx >= 0) {
+          mapping[colIdx] = 'direction';
+          used.add('direction');
+        }
+      }
+    }
+
     return mapping;
   }
 
@@ -215,6 +454,31 @@ export class ColumnMapper {
           break;
         default:
           break;
+      }
+    }
+    if (isPlaceholderCell(result.counterparty)) {
+      result.counterparty = '';
+    }
+    if (isPlaceholderCell(result.category)) {
+      result.category = '';
+    }
+    if (isPlaceholderCell(result.note)) {
+      result.note = '';
+    }
+    const hasNoteMapped = Object.values(mapping).includes('note');
+    if (hasNoteMapped && result.note.trim() === '') {
+      for (let i = 0; i < this.columns.length; i += 1) {
+        if (mapping[i] !== undefined) {
+          continue;
+        }
+        const header = (this.columns[i] ?? '').trim().toLowerCase();
+        if (NOTE_FALLBACK_HEADERS.includes(header)) {
+          const candidate = (row[i] ?? '').trim();
+          if (candidate !== '' && !isPlaceholderCell(candidate)) {
+            result.note = candidate;
+            break;
+          }
+        }
       }
     }
     return result;

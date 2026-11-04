@@ -12,6 +12,7 @@ import { act, fireEvent, render as rtlRender, screen, waitFor, within } from '@t
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditLog, RecoveryBundle } from '@lifehub/core';
 import { SecurityPage } from '@/pages/SecurityPage';
+import { SettingsPage } from '@/pages/SettingsPage';
 import { makeAuditLog, makeRecoveryBundle } from '@/__tests__/test-utils/fixtures';
 
 /** 打桩用的钩子替身。 */
@@ -82,12 +83,20 @@ describe('SecurityPage（UI-04）', () => {
     expect(warning.length).toBeGreaterThan(0);
   });
 
-  it('加密状态卡按会话状态展示「已解锁 / 已锁定 / 尚未创建」', () => {
+  it('加密状态卡按会话状态展示「已解锁 / 已锁定 / 尚未创建」，且「实现」等 5 个指标项均为上下垂直对齐的子卡片', () => {
     state.status = 'unlocked';
     render();
     expect(screen.getByTestId('vault-status-card')).toHaveTextContent('已解锁');
     expect(screen.getByTestId('vault-status-card')).toHaveTextContent('AES-256-GCM');
     expect(screen.getByTestId('vault-status-card')).toHaveTextContent('v1');
+
+    const providerField = screen.getByTestId('vault-status-field-provider');
+    expect(providerField).toHaveTextContent('实现');
+    expect(providerField).toHaveTextContent('web-crypto');
+    expect(screen.getByTestId('vault-status-field-status')).toBeInTheDocument();
+    expect(screen.getByTestId('vault-status-field-algorithm')).toBeInTheDocument();
+    expect(screen.getByTestId('vault-status-field-kdf')).toBeInTheDocument();
+    expect(screen.getByTestId('vault-status-field-version')).toBeInTheDocument();
   });
 
   it('恢复码默认不展示明文，只显示打码占位', () => {
@@ -229,6 +238,30 @@ describe('SecurityPage（UI-04）', () => {
     expect(
       screen.getByText(/不采集手机号 \/ 设备号 \/ 定位 \/ 通讯录，不做埋点统计，不直连任何银行接口/),
     ).toBeInTheDocument();
+  });
+
+  it('提供「安全与加密保护总开关」卡片（默认免密不加密，可自由切换），且不再重复挂载远程云存储面板', () => {
+    render();
+
+    expect(screen.getByTestId('security-master-toggle-card')).toBeInTheDocument();
+    const toggle = screen.getByTestId('security-encryption-switch');
+    expect(toggle).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('security-mode-description')).toHaveTextContent(
+      /已开启本地主密码锁|当前已关闭密码锁与强制加密/,
+    );
+
+    expect(screen.queryByTestId('cloud-storage-panel')).not.toBeInTheDocument();
+  });
+
+  it('在「设置」页面（SettingsPage）中唯一保留远程云存储连接与备份面板及云存储服务商下拉选择框', () => {
+    rtlRender(<SettingsPage />);
+
+    expect(screen.getByTestId('settings-page')).toBeInTheDocument();
+    expect(screen.getByTestId('cloud-storage-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('cloud-provider-select')).toBeInTheDocument();
+    expect(screen.queryByTestId('cloud-provider-option-aliyun-oss')).not.toBeInTheDocument();
   });
 });
 

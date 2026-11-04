@@ -2,10 +2,18 @@
  * 分类 Hook。
  *
  * 架构位置：apps/web 的「Hooks」层。
+ *
+ * 说明：封装分类的**列表 + 增删改**。写操作后调用 `reload()` 重新拉取，保证内存态一致。
+ * 系统预置分类不可删除（`CategoryRepository.delete` 会抛错），这里原样向上抛，由调用方提示。
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { Category } from '@lifehub/core';
 import { useVault } from './useVault';
+import {
+  buildCategory,
+  CATEGORY_LOCAL_DEVICE_ID,
+  type CategoryInput,
+} from '@/lib/category-factory';
 
 /** 分类 Hook 的返回值。 */
 export interface UseCategoriesResult {
@@ -17,10 +25,16 @@ export interface UseCategoriesResult {
   error: string | null;
   /** 重新加载。 */
   reload: () => Promise<void>;
+  /** 新增分类。 */
+  addCategory: (input: CategoryInput) => Promise<void>;
+  /** 更新分类。 */
+  updateCategory: (existing: Category, input: CategoryInput) => Promise<void>;
+  /** 删除分类（系统预置会抛错）。 */
+  deleteCategory: (id: string) => Promise<void>;
 }
 
 /**
- * 初始化分类列表。
+ * 初始化分类列表与写操作。
  *
  * @returns 分类 Hook 的返回值
  */
@@ -36,7 +50,13 @@ export function useCategories(): UseCategoriesResult {
     }
     setLoading(true);
     try {
-      const list = await runtime.categoryRepository.list();
+      const list =
+        typeof runtime.categoryRepository.ensureSystemCategories === 'function' && runtime.clock
+          ? await runtime.categoryRepository.ensureSystemCategories(
+              runtime.clock,
+              CATEGORY_LOCAL_DEVICE_ID,
+            )
+          : await runtime.categoryRepository.list();
       setCategories(list);
       setError(null);
     } catch (cause) {
@@ -50,5 +70,43 @@ export function useCategories(): UseCategoriesResult {
     void reload();
   }, [reload]);
 
-  return { categories, loading, error, reload };
+  const addCategory = useCallback(
+    async (input: CategoryInput): Promise<void> => {
+      if (!runtime) {
+        throw new Error('保险库未就绪');
+      }
+      const category = buildCategory(input, {
+        clock: runtime.clock,
+        deviceId: CATEGORY_LOCAL_DEVICE_ID,
+      });
+      await runtime.categoryRepository.save(category);
+      await reload();
+    },
+    [runtime, reload],
+  );
+
+  const updateCategory = useCallback(
+    async (existing: Category, input: CategoryInput): Promise<void> => {
+      if (!runtime) {
+        throw new Error('保险库未就绪');
+      }
+      const category = buildCategory(input, { clock: runtime.clock, deviceId: CATEGORY_LOCAL_DEVICE_ID }, existing);
+      await runtime.categoryRepository.save(category);
+      await reload();
+    },
+    [runtime, reload],
+  );
+
+  const deleteCategory = useCallback(
+    async (id: string): Promise<void> => {
+      if (!runtime) {
+        throw new Error('保险库未就绪');
+      }
+      await runtime.categoryRepository.delete(id);
+      await reload();
+    },
+    [runtime, reload],
+  );
+
+  return { categories, loading, error, reload, addCategory, updateCategory, deleteCategory };
 }

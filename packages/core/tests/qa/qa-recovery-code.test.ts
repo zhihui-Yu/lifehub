@@ -92,7 +92,7 @@ describe('X-03 · 恢复码解锁并解密已有数据', () => {
     // 逐字符替换一个**数据**字符并重算该组校验位 —— 格式合法但内容错误。
     const groups = setup.recoveryBundle.recoveryCode.split('-');
     const first = groups[0] ?? 'ABCDEF';
-    const data = first.slice(0, 5) === 'AAAAA' ? 'B' : 'A';
+    const data = first[0] === 'A' ? 'B' : 'A';
     groups[0] = `${data}${first.slice(1, 5)}${computeGroupCheck(`${data}${first.slice(1, 5)}`)}`;
 
     await expect(runtime.vault.unlockWithRecoveryCode(groups.join('-'))).rejects.toThrowError(

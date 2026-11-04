@@ -136,6 +136,7 @@ export {
   decodeChunks,
   detectEncoding,
   hasBom,
+  normalizeTableHeaders,
   stripBom,
 } from './csv';
 export type {
@@ -145,13 +146,25 @@ export type {
   DirectionResult,
   MappedRow,
   MappingValidation,
+  NormalizedTable,
   ParseOptions,
   PreviewRow,
   RowContext,
 } from './csv';
 
 // ── 规则引擎 ──────────────────────────────────────────────────────────
-export { CategoryRuleEngine, Deduplicator, computeBillFingerprint, computeFileHash, normalizeHeaders } from './rules';
+export {
+  CategoryRuleEngine,
+  Deduplicator,
+  computeBillFingerprint,
+  computeFileHash,
+  detectTransferPairs,
+  inferSystemCategoryName,
+  isInternalTransferBill,
+  isTransferCategory,
+  normalizeHeaders,
+} from './rules';
+export type { CategoryInferenceInput, TransferPair } from './rules';
 
 // ── 存储抽象 ──────────────────────────────────────────────────────────
 export { EncryptedStore, MemoryStorageAdapter, PlainStore } from './storage';
@@ -176,6 +189,7 @@ export {
   BackupService,
   ImportService,
   KeyRotationService,
+  parseBankStatementText,
   SYNC_BLOB_ALLOWED_FIELDS,
   VaultService,
   assertCiphertextOnly,
@@ -184,6 +198,7 @@ export {
 } from './services';
 export type {
   BackupFile,
+  CrossSourceCandidate,
   FieldConflict,
   ImportPlan,
   ImportServiceDeps,
@@ -192,6 +207,7 @@ export type {
   KeyRotationResult,
   MergeResult,
   PlanOptions,
+  RawTable,
   RotationState,
   RotationStatus,
   RunOptions,

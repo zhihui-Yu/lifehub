@@ -54,7 +54,7 @@ describe('DropZone', () => {
 
     fireEvent.drop(zone, { dataTransfer: { files: [new File([''], 'a.csv')] } });
     expect(onFile).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: '选择 CSV 文件' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '选择账单文件' })).toBeDisabled();
   });
 
   it('通过文件选择框选文件同样触发 onFile', () => {
@@ -105,6 +105,7 @@ describe('@/store barrel', () => {
       dateFrom: '',
       dateTo: '',
       categoryId: '',
+      categoryIds: [],
     });
   });
 });

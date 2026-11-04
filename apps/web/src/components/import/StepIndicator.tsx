@@ -30,8 +30,22 @@ export function StepIndicator({ activeStep }: StepIndicatorProps) {
       <Stepper activeStep={activeStep} alternativeLabel>
         {STEPS.map((step) => (
           <Step key={step.title}>
-            <StepLabel>
-              <Typography variant="body2" sx={{ fontWeight: 500 }}>
+            <StepLabel
+              sx={{
+                '& .MuiStepLabel-label': {
+                  color: 'var(--lifehub-text)',
+                  fontWeight: 500,
+                },
+                '& .MuiStepLabel-label.Mui-active': {
+                  color: 'primary.main',
+                  fontWeight: 700,
+                },
+                '& .MuiStepLabel-label.Mui-completed': {
+                  color: 'var(--lifehub-text)',
+                },
+              }}
+            >
+              <Typography variant="body2" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
                 {step.title}
               </Typography>
               <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>

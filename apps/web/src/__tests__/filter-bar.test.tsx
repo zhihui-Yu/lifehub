@@ -51,14 +51,17 @@ describe('BillFilterBar', () => {
     expect(onChange).toHaveBeenCalledWith({ dateTo: '2024-01-31' });
   });
 
-  it('分类下拉回调 categoryId 变更', () => {
+  it('分类下拉支持单选与多选，回调 categoryIds 与 categoryId 变更', () => {
     const onChange = vi.fn();
-    render(
+    const { rerender } = render(
       <BillFilterBar
         filters={EMPTY_FILTERS}
         onChange={onChange}
         onClear={vi.fn()}
-        categoryOptions={[{ id: 'cat-food', name: '餐饮' }]}
+        categoryOptions={[
+          { id: 'cat-food', name: '餐饮' },
+          { id: 'cat-transport', name: '交通' },
+        ]}
       />,
     );
 
@@ -66,7 +69,50 @@ describe('BillFilterBar', () => {
     fireEvent.mouseDown(select);
     fireEvent.click(screen.getByRole('option', { name: '餐饮' }));
 
-    expect(onChange).toHaveBeenCalledWith({ categoryId: 'cat-food' });
+    expect(onChange).toHaveBeenCalledWith({
+      categoryId: 'cat-food',
+      categoryIds: ['cat-food'],
+    });
+
+    // 已选「餐饮」后再勾选「交通」，形成多选数组 ['cat-food', 'cat-transport']
+    onChange.mockClear();
+    rerender(
+      <BillFilterBar
+        filters={{ ...EMPTY_FILTERS, categoryId: 'cat-food', categoryIds: ['cat-food'] }}
+        onChange={onChange}
+        onClear={vi.fn()}
+        categoryOptions={[
+          { id: 'cat-food', name: '餐饮' },
+          { id: 'cat-transport', name: '交通' },
+        ]}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByLabelText('分类'));
+    fireEvent.click(screen.getByRole('option', { name: '交通' }));
+    expect(onChange).toHaveBeenCalledWith({
+      categoryId: '',
+      categoryIds: ['cat-food', 'cat-transport'],
+    });
+
+    // 点击「全部分类」清空多选
+    onChange.mockClear();
+    rerender(
+      <BillFilterBar
+        filters={{ ...EMPTY_FILTERS, categoryIds: ['cat-food', 'cat-transport'] }}
+        onChange={onChange}
+        onClear={vi.fn()}
+        categoryOptions={[
+          { id: 'cat-food', name: '餐饮' },
+          { id: 'cat-transport', name: '交通' },
+        ]}
+      />,
+    );
+    fireEvent.mouseDown(screen.getByLabelText('分类'));
+    fireEvent.click(screen.getByRole('option', { name: '全部分类' }));
+    expect(onChange).toHaveBeenCalledWith({
+      categoryId: '',
+      categoryIds: [],
+    });
   });
 
   it('「清空筛选」按钮触发清空回调', () => {

@@ -11,13 +11,19 @@
  * 而本文件需要导出路由表。
  */
 import { createHashRouter } from 'react-router-dom';
+import { HomeIndexRoute } from '@/components/layout/HomeIndexRoute';
 import { RootLayout } from '@/components/layout/RootLayout';
 import { BillsPage } from '@/pages/BillsPage';
+import { BillStatsPage } from '@/pages/BillStatsPage';
 import { ImportPage } from '@/pages/ImportPage';
 import { MappingPage } from '@/pages/MappingPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 import { SecurityPage } from '@/pages/SecurityPage';
 import { SettingsPage } from '@/pages/SettingsPage';
+import { CategoriesPage } from '@/pages/CategoriesPage';
+import { SchedulePage } from '@/pages/SchedulePage';
+import { HabitsPage } from '@/pages/HabitsPage';
+import { AiAnalysisPage } from '@/pages/AiAnalysisPage';
 
 /**
  * 路由配置。
@@ -27,10 +33,16 @@ export const router = createHashRouter([
     path: '/',
     element: <RootLayout />,
     children: [
-      { index: true, element: <ImportPage /> },
+      { index: true, element: <HomeIndexRoute /> },
       { path: 'import', element: <ImportPage /> },
       { path: 'import/mapping', element: <MappingPage /> },
       { path: 'bills', element: <BillsPage /> },
+      { path: 'bills/stats', element: <BillStatsPage /> },
+      { path: 'stats', element: <BillStatsPage /> },
+      { path: 'categories', element: <CategoriesPage /> },
+      { path: 'schedule', element: <SchedulePage /> },
+      { path: 'habits', element: <HabitsPage /> },
+      { path: 'ai', element: <AiAnalysisPage /> },
       { path: 'security', element: <SecurityPage /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: '*', element: <NotFoundPage /> },

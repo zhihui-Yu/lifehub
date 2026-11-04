@@ -7,8 +7,13 @@
  * 下载内容是**密文或恢复码**，不包含任何明文业务数据。
  */
 
+/** Android WebView 原生文件导出桥接接口（可选注入）。 */
+interface AndroidFileBridge {
+  saveTextFile?: (fileName: string, content: string, mimeType: string) => void;
+}
+
 /**
- * 触发浏览器下载一段文本内容。
+ * 触发浏览器或 Android 原生容器下载一段文本内容。
  *
  * @param fileName 下载文件名
  * @param content 文本内容
@@ -16,6 +21,10 @@
  * @returns 无异常
  */
 export function downloadText(fileName: string, content: string, mimeType = 'application/json'): void {
+  const bridge = (globalThis as { LifeHubAndroid?: AndroidFileBridge }).LifeHubAndroid;
+  if (bridge && typeof bridge.saveTextFile === 'function') {
+    bridge.saveTextFile(fileName, content, mimeType);
+  }
   const blob = new Blob([content], { type: `${mimeType};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');

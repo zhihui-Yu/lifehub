@@ -28,6 +28,7 @@ export const LIFEHUB_ERROR_CODES = [
   'LIFEHUB_E_ROTATION_IN_PROGRESS',
   'LIFEHUB_E_ENTITY_NOT_FOUND',
   'LIFEHUB_E_IMPORT_ROW',
+  'LIFEHUB_E_IMPORT_PARSE_FAILED',
 ] as const;
 
 /** 错误码字面量联合类型。 */
@@ -57,6 +58,7 @@ export const ERROR_MESSAGES: Record<LifeHubErrorCode, string> = {
   LIFEHUB_E_ROTATION_IN_PROGRESS: '密钥轮换尚未完成，请先继续上一次任务',
   LIFEHUB_E_ENTITY_NOT_FOUND: '未找到对应记录',
   LIFEHUB_E_IMPORT_ROW: '该行数据无法导入，已跳过',
+  LIFEHUB_E_IMPORT_PARSE_FAILED: '无法从文件中识别有效的账单记录',
 };
 
 /**

@@ -35,6 +35,15 @@ describe('useVaultStore 状态流转', () => {
     expect(state.vaultCreated).toBe(true);
   });
 
+  it('markNeedsSetup 进入「待设置」态但标记尚未创建（B-12 回归）', () => {
+    useVaultStore.getState().markNeedsSetup();
+
+    const state = useVaultStore.getState();
+    expect(state.status).toBe('needs-setup');
+    // 关键：尚未创建保险库时 vaultCreated 必须为 false，否则守卫会误走 unlock 分支。
+    expect(state.vaultCreated).toBe(false);
+  });
+
   it('setUnlocked 进入「已解锁」态并记录密钥版本，同时清零失败计数', () => {
     useVaultStore.setState({ failedAttempts: 3, cooldownUntil: 999 });
     useVaultStore.getState().setUnlocked(new Uint8Array(32).fill(9), 4);

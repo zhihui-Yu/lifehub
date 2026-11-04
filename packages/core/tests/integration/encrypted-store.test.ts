@@ -132,4 +132,61 @@ describe('EncryptedStore', () => {
     }
     await expect(runtime.vaultRepository.save({ ...params } as never)).resolves.toBeUndefined();
   });
+
+  it('跨 DEK 历史残留记录容错：切换 DEK 后 query 与 getMany 自动跳过旧 DEK 记录，而 get 仍抛出 LIFEHUB_E_CRYPTO_AUTH_FAILED', async () => {
+    const { MemoryStorageAdapter, CryptoService, WebCryptoProvider, EncryptedStore } = await import(
+      '../../src/index'
+    );
+    const adapter = new MemoryStorageAdapter();
+    const provider = new WebCryptoProvider();
+    const cryptoService = new CryptoService(provider);
+
+    let activeDek = new Uint8Array(32).fill(9);
+    const store = new EncryptedStore({
+      adapter,
+      crypto: cryptoService,
+      dek: {
+        isUnlocked: () => true,
+        getDek: () => activeDek,
+        getKeyVersion: () => 1,
+      },
+    });
+
+    // 1. 先用旧密码派生的 DEK（fill(9)）写入一条历史账单记录
+    await store.put(
+      'bill',
+      bill({ id: 'legacy-bill-old-dek', counterparty: '旧密钥历史商户' }) as unknown as Record<
+        string,
+        unknown
+      >,
+    );
+
+    // 2. 切换到免密模式默认 DEK（fill(7)），再写入一条新账单记录
+    activeDek = new Uint8Array(32).fill(7);
+    await store.put(
+      'bill',
+      bill({ id: 'current-bill-new-dek', counterparty: '当前密钥新商户' }) as unknown as Record<
+        string,
+        unknown
+      >,
+    );
+
+    // 3. query() 与 getMany() 应自动跳过旧 DEK 记录，不抛异常，仅返回当前 DEK 可解密记录
+    const queried = await store.query<Bill>('bill');
+    expect(queried).toHaveLength(1);
+    expect(queried[0]?.id).toBe('current-bill-new-dek');
+    expect(queried[0]?.counterparty).toBe('当前密钥新商户');
+
+    const batchLoaded = await store.getMany<Bill>('bill', [
+      'legacy-bill-old-dek',
+      'current-bill-new-dek',
+    ]);
+    expect(batchLoaded).toHaveLength(1);
+    expect(batchLoaded[0]?.id).toBe('current-bill-new-dek');
+
+    // 4. 单条读取 get() 保持严格防篡改校验，抛出 LIFEHUB_E_CRYPTO_AUTH_FAILED
+    await expect(store.get<Bill>('bill', 'legacy-bill-old-dek')).rejects.toThrowError(
+      expect.objectContaining({ code: 'LIFEHUB_E_CRYPTO_AUTH_FAILED' }),
+    );
+  });
 });

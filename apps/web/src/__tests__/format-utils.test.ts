@@ -108,10 +108,19 @@ describe('isSupportedFileType（A-08 文件类型校验）', () => {
     expect(isSupportedFileType(fakeFile('BILLS.CSV', ''))).toBe(true);
   });
 
-  it('非 .csv 文件不受支持', () => {
-    expect(isSupportedFileType(fakeFile('账单.xlsx', 'application/vnd.ms-excel'))).toBe(false);
-    expect(isSupportedFileType(fakeFile('账单.pdf', 'application/pdf'))).toBe(false);
-    expect(isSupportedFileType(fakeFile('账单.txt', 'text/plain'))).toBe(false);
+  it('Excel / PDF / TSV / TXT / ZIP 等账单文件受支持', () => {
+    expect(isSupportedFileType(fakeFile('微信支付.xlsx', ''))).toBe(true);
+    expect(isSupportedFileType(fakeFile('微信支付.xls', ''))).toBe(true);
+    expect(isSupportedFileType(fakeFile('兴业银行.pdf', 'application/pdf'))).toBe(true);
+    expect(isSupportedFileType(fakeFile('流水.tsv', ''))).toBe(true);
+    expect(isSupportedFileType(fakeFile('流水.txt', 'text/plain'))).toBe(true);
+    expect(isSupportedFileType(fakeFile('支付宝交易明细.zip', 'application/zip'))).toBe(true);
+  });
+
+  it('非账单文件不受支持', () => {
+    expect(isSupportedFileType(fakeFile('照片.png', 'image/png'))).toBe(false);
+    expect(isSupportedFileType(fakeFile('文档.docx', 'application/msword'))).toBe(false);
+    expect(isSupportedFileType(fakeFile('程序.exe', 'application/octet-stream'))).toBe(false);
   });
 });
 

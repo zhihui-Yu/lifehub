@@ -20,8 +20,10 @@ export interface BillFilters {
   dateFrom: string;
   /** 日期区间终点 'YYYY-MM-DD'。 */
   dateTo: string;
-  /** 分类 id；空串表示不限。 */
+  /** 分类 id（单选向后兼容）；空串表示不限。 */
   categoryId: string;
+  /** 分类 id 多选集合；空数组或未传表示按 categoryId 或不限。 */
+  categoryIds?: string[];
 }
 
 /** 账单 store 的状态与动作。 */
@@ -55,6 +57,7 @@ export const EMPTY_FILTERS: BillFilters = {
   dateFrom: '',
   dateTo: '',
   categoryId: '',
+  categoryIds: [],
 };
 
 /**
@@ -62,13 +65,25 @@ export const EMPTY_FILTERS: BillFilters = {
  */
 export const useBillStore = create<BillState>((set) => ({
   bills: [],
-  filters: { ...EMPTY_FILTERS },
+  filters: { ...EMPTY_FILTERS, directions: [], categoryIds: [] },
   loading: false,
   error: null,
   setBills: (bills) => set({ bills, error: null }),
   appendBills: (bills) => set((state) => ({ bills: [...state.bills, ...bills] })),
-  setFilters: (filters) => set((state) => ({ filters: { ...state.filters, ...filters } })),
-  clearFilters: () => set({ filters: { ...EMPTY_FILTERS } }),
+  setFilters: (filters) =>
+    set((state) => {
+      const nextFilters: BillFilters = { ...state.filters, ...filters };
+      if (filters.categoryIds !== undefined) {
+        nextFilters.categoryIds = filters.categoryIds;
+        nextFilters.categoryId =
+          filters.categoryIds.length === 1 ? (filters.categoryIds[0] ?? '') : '';
+      } else if (filters.categoryId !== undefined) {
+        nextFilters.categoryId = filters.categoryId;
+        nextFilters.categoryIds = filters.categoryId !== '' ? [filters.categoryId] : [];
+      }
+      return { filters: nextFilters };
+    }),
+  clearFilters: () => set({ filters: { ...EMPTY_FILTERS, directions: [], categoryIds: [] } }),
   setLoading: (loading) => set({ loading }),
   setError: (message) => set({ error: message }),
 }));

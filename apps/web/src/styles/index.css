@@ -18,19 +18,30 @@
   --lifehub-refund: #2563eb;
   /* 主色 */
   --lifehub-primary: #4f46e5;
+  --lifehub-primary-soft: rgba(79, 70, 229, 0.12);
   --lifehub-bg: #f7f7fb;
   --lifehub-surface: #ffffff;
+  --lifehub-surface-hover: #f3f4f6;
   --lifehub-border: #e5e7eb;
   --lifehub-text: #111827;
-  --lifehub-text-muted: #6b7280;
+  --lifehub-text-muted: #4b5563;
+  --lifehub-shadow-sm: 0 1px 3px 0 rgba(15, 23, 42, 0.05), 0 1px 2px -1px rgba(15, 23, 42, 0.04);
+  --lifehub-shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.08), 0 2px 6px -2px rgba(15, 23, 42, 0.04);
+  --lifehub-glass-bg: rgba(255, 255, 255, 0.88);
 }
 
 .dark {
+  --lifehub-primary: #818cf8;
+  --lifehub-primary-soft: rgba(129, 140, 248, 0.18);
   --lifehub-bg: #0f1117;
   --lifehub-surface: #181b23;
-  --lifehub-border: #2b2f3a;
+  --lifehub-surface-hover: #222634;
+  --lifehub-border: #2e3446;
   --lifehub-text: #f3f4f6;
-  --lifehub-text-muted: #9ca3af;
+  --lifehub-text-muted: #cbd5e1;
+  --lifehub-shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.35), 0 1px 2px -1px rgba(0, 0, 0, 0.25);
+  --lifehub-shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.5);
+  --lifehub-glass-bg: rgba(24, 27, 35, 0.88);
 }
 
 html,
@@ -38,6 +49,8 @@ body,
 #root {
   height: 100%;
   margin: 0;
+  -webkit-tap-highlight-color: transparent;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -74,9 +87,10 @@ body {
   outline-offset: 2px;
 }
 
-/* 桌面端：220px 侧导航 + 1280px 内容区 */
+/* 桌面端：220px 侧导航 + 自适应流式全宽内容区（兼容 1080P / 2K / 4K 大屏） */
 .lifehub-shell {
   display: flex;
+  width: 100%;
   min-height: 100vh;
 }
 
@@ -85,16 +99,26 @@ body {
   flex-shrink: 0;
   border-right: 1px solid var(--lifehub-border);
   background-color: var(--lifehub-surface);
+  color: var(--lifehub-text);
 }
 
 .lifehub-content {
   flex: 1;
-  max-width: 1280px;
-  padding: 24px;
+  min-width: 0;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  padding: clamp(20px, 2.2vw, 40px);
   overflow-x: hidden;
+  color: var(--lifehub-text);
 }
 
-/* 小屏（<900px）折叠为底部 Tab */
+.lifehub-content > [data-testid$='-page'] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 小屏（<900px）折叠为底部磨砂玻璃胶囊导航栏（适配全面屏挖孔与手势安全区） */
 @media (max-width: 900px) {
   .lifehub-shell {
     flex-direction: column;
@@ -109,12 +133,247 @@ body {
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 10;
+    z-index: 1000;
+    background-color: var(--lifehub-glass-bg);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.08);
   }
 
-  .lifehub-content {
-    padding: 16px;
-    padding-bottom: 76px;
+  .lifehub-sidenav > div:first-of-type {
+    display: none;
+  }
+
+  .lifehub-sidenav__item--desktop-only,
+  .lifehub-sidenav__link--desktop-only {
+    display: none !important;
+  }
+
+  .lifehub-sidenav__list,
+  .lifehub-sidenav .MuiList-root {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    align-items: stretch;
+    width: 100%;
+    overflow-x: hidden;
+    overflow-y: hidden;
+    padding: 6px 10px calc(8px + env(safe-area-inset-bottom, 0px)) 10px;
+    gap: 6px;
+    box-sizing: border-box;
+    scrollbar-width: none;
+  }
+
+  .lifehub-sidenav .MuiList-root::-webkit-scrollbar {
+    display: none;
+  }
+
+  .lifehub-sidenav .MuiListItemButton-root,
+  .lifehub-sidenav__link {
+    flex: 1 1 0%;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    width: 100%;
+    min-height: 54px;
+    margin: 0 !important;
+    padding: 6px 6px !important;
+    border-radius: 12px !important;
+    text-align: center;
+    transition: background-color 0.2s ease, transform 0.15s ease;
+  }
+
+  .lifehub-sidenav .MuiListItemButton-root:active,
+  .lifehub-sidenav__link:active {
+    transform: scale(0.96);
+  }
+
+  .lifehub-sidenav .MuiListItemIcon-root {
+    min-width: unset !important;
+    margin-bottom: 3px;
+    justify-content: center;
+  }
+
+  .lifehub-sidenav .MuiListItemText-root {
+    margin: 0 !important;
+  }
+
+  .lifehub-sidenav .MuiListItemText-primary {
+    font-size: 11px !important;
+    line-height: 1.2 !important;
+    white-space: nowrap;
+  }
+
+  .lifehub-content,
+  .lifehub-main {
+    padding: 0 16px calc(92px + env(safe-area-inset-bottom, 0px)) 16px;
     order: 1;
   }
 }
+
+/* 账单首页内联可视化看板隐藏（已独立为 #/stats 收支统计专页） */
+.lifehub-bills-inline-dashboard {
+  display: none !important;
+}
+
+/* 全局按钮防折行：确保手机端按钮文字始终单行对齐不折行 */
+.MuiButton-root,
+.MuiToggleButton-root {
+  white-space: nowrap;
+}
+
+/* 移动端 APK（<=768px）：账单表格无侵入式流式原生卡片化布局（保持 <colgroup> 与 7 列 TableCell DOM 不变） */
+@media (max-width: 768px) {
+  [data-testid='bill-virtual-list'] {
+    overflow-x: visible !important;
+  }
+
+  table[data-testid='bill-group-table'],
+  table[data-testid='bill-group-table'] tbody {
+    display: block;
+    width: 100% !important;
+  }
+
+  table[data-testid='bill-group-table'] colgroup,
+  table[data-testid='bill-group-table'] thead {
+    display: none !important;
+  }
+
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--lifehub-border);
+    align-items: center;
+  }
+
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row']:last-child {
+    border-bottom: none;
+  }
+
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td {
+    display: block;
+    padding: 0 !important;
+    border: none !important;
+    width: auto !important;
+    max-width: none !important;
+  }
+
+  /* 第 3 列：交易对方 — 卡片左上主标题 */
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td.lifehub-bill-cell-counterparty,
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td:nth-child(3) {
+    grid-column: 1;
+    grid-row: 1;
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--lifehub-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 第 2 列：金额 — 卡片右上醒目金额 */
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td.lifehub-bill-cell-amount,
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td:nth-child(2) {
+    grid-column: 2;
+    grid-row: 1;
+    text-align: right !important;
+    font-size: 16px;
+    font-weight: 700;
+  }
+
+  /* 第 4 列：账单内容 / 备注 — 卡片第 2 行完整展示，支持自然折行 */
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td.lifehub-bill-cell-note,
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td:nth-child(4) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    font-size: 13px;
+    line-height: 1.45;
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    color: var(--lifehub-text-muted);
+  }
+
+  /* 第 5 列：分类 Chip — 卡片第 3 行左 */
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td.lifehub-bill-cell-category,
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td:nth-child(5) {
+    grid-column: 1;
+    grid-row: 3;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  /* 第 7 列：操作按钮 — 卡片第 3 行右 */
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td.lifehub-bill-cell-actions,
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td:nth-child(7) {
+    grid-column: 2;
+    grid-row: 3;
+    justify-self: end;
+  }
+
+  /* 第 1 列（日期）与第 6 列（来源文件）合并展示为底部辅助小字信息 */
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td.lifehub-bill-cell-date,
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td:nth-child(1) {
+    grid-column: 1;
+    grid-row: 4;
+    font-size: 11px !important;
+    color: var(--lifehub-text-muted);
+    opacity: 0.85;
+  }
+
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td.lifehub-bill-cell-source,
+  table[data-testid='bill-group-table'] tr[data-testid='bill-row'] td:nth-child(6) {
+    grid-column: 2;
+    grid-row: 4;
+    justify-self: end;
+    font-size: 11px !important;
+    max-width: 160px !important;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.8;
+  }
+}
+
+/* 课表卡片默认防跨页切分（B-04） */
+.lifehub-schedule-card,
+.lifehub-print-avoid-break {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* B-04：A4 纸张打印与导出 PDF 专用样式 */
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+
+  body,
+  .lifehub-shell,
+  .lifehub-content {
+    background-color: #ffffff !important;
+    color: #111827 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+  }
+
+  .lifehub-sidenav,
+  .lifehub-no-print {
+    display: none !important;
+  }
+
+  .lifehub-schedule-card,
+  .lifehub-print-avoid-break {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    border: 1px solid #9ca3af !important;
+    box-shadow: none !important;
+  }
+}
+

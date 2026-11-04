@@ -39,8 +39,11 @@ const DIRECTION_LABEL: Record<Direction, string> = {
 /**
  * 渲染金额文本。
  *
+ * 启用 `tabular-nums` 等宽数字与单行不折行样式，确保全站金额列垂直对齐。
+ *
  * @param props 组件属性
  * @returns React 节点
+ * @throws 无显式抛出
  */
 export const AmountText = memo(function AmountText({
   amountMinor,
@@ -49,7 +52,11 @@ export const AmountText = memo(function AmountText({
   showLabel = true,
 }: AmountTextProps) {
   return (
-    <span className={`font-medium tabular-nums ${DIRECTION_CLASS[direction]}`} data-direction={direction}>
+    <span
+      className={`font-medium tabular-nums ${DIRECTION_CLASS[direction]}`}
+      style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}
+      data-direction={direction}
+    >
       {showLabel ? `${DIRECTION_LABEL[direction]} ` : ''}¥{formatAmount(amountMinor, currency as 'CNY')}
     </span>
   );

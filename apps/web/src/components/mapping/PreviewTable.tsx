@@ -18,8 +18,11 @@ export interface PreviewTableProps {
 /**
  * 渲染预览表格。
  *
+ * 所有业务数据列（含金额列）统一左对齐，确保表头「金额」与每行数值左边缘笔直对齐。
+ *
  * @param props 组件属性
  * @returns React 节点
+ * @throws 无显式抛出
  */
 export function PreviewTable({ rows }: PreviewTableProps) {
   if (rows.length === 0) {
@@ -34,23 +37,46 @@ export function PreviewTable({ rows }: PreviewTableProps) {
       <Table size="small">
         <TableHead>
           <TableRow>
-            <TableCell>日期</TableCell>
-            <TableCell align="right">金额</TableCell>
-            <TableCell>方向</TableCell>
-            <TableCell>交易对方</TableCell>
-            <TableCell>备注</TableCell>
-            <TableCell>状态</TableCell>
+            <TableCell sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>日期</TableCell>
+            <TableCell align="left" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
+              金额
+            </TableCell>
+            <TableCell sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>方向</TableCell>
+            <TableCell sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>交易对方</TableCell>
+            <TableCell sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>备注</TableCell>
+            <TableCell sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>状态</TableCell>
           </TableRow>
         </TableHead>
         <TableBody>
           {rows.map((row) => (
             <TableRow key={row.rowIndex}>
-              <TableCell>{row.localDate || '—'}</TableCell>
-              <TableCell align="right">¥{formatAmount(row.amountMinor)}</TableCell>
-              <TableCell>{row.direction ?? '—'}</TableCell>
-              <TableCell>{row.counterparty || '—'}</TableCell>
-              <TableCell>{row.note || '—'}</TableCell>
-              <TableCell>{row.error ?? '正常'}</TableCell>
+              <TableCell sx={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', color: 'var(--lifehub-text)' }}>
+                {row.localDate || '—'}
+              </TableCell>
+              <TableCell
+                align="left"
+                sx={{
+                  fontVariantNumeric: 'tabular-nums',
+                  fontFamily: 'var(--lifehub-font-mono, monospace)',
+                  fontWeight: 600,
+                  color:
+                    row.direction === 'income'
+                      ? 'success.main'
+                      : row.direction === 'expense'
+                        ? 'var(--lifehub-text)'
+                        : 'var(--lifehub-text-muted)',
+                }}
+              >
+                ¥{formatAmount(row.amountMinor)}
+              </TableCell>
+              <TableCell sx={{ color: 'var(--lifehub-text)' }}>
+                {row.direction === 'expense' ? '支出' : row.direction === 'income' ? '收入' : '—'}
+              </TableCell>
+              <TableCell sx={{ color: 'var(--lifehub-text)' }}>{row.counterparty || '—'}</TableCell>
+              <TableCell sx={{ color: 'var(--lifehub-text-muted)' }}>{row.note || '—'}</TableCell>
+              <TableCell sx={{ color: row.error ? 'warning.main' : 'success.main' }}>
+                {row.error ?? '正常'}
+              </TableCell>
             </TableRow>
           ))}
         </TableBody>

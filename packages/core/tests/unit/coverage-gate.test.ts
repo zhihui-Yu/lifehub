@@ -89,7 +89,7 @@ import {
 } from '../../src/crypto/recovery-code';
 
 // ── csv ──────────────────────────────────────────────────────────────────
-import { ColumnMapper } from '../../src/csv/column-mapper';
+import { ColumnMapper, normalizeTableHeaders } from '../../src/csv/column-mapper';
 import { DirectionResolver } from '../../src/csv/direction';
 import type { MappedRow } from '../../src/csv/column-mapper';
 import type { DirectionRule } from '../../src/models/rule-template';
@@ -663,6 +663,56 @@ describe('csv · 列映射的边界与异常（补齐 100%）', () => {
       expect.objectContaining({ code: 'LIFEHUB_E_MAPPING_CONFLICT' }),
     );
   });
+
+  it('normalizeTableHeaders 自动跳过前置说明行定位真实表头，或原样保留已命中/未命中表头', () => {
+    const direct = normalizeTableHeaders(['交易时间', '金额'], [['2026-10-01', '12.00']]);
+    expect(direct.headers).toEqual(['交易时间', '金额']);
+    expect(direct.rows).toHaveLength(1);
+
+    const shifted = normalizeTableHeaders(
+      ['微信支付账单明细', ''],
+      [
+        ['----------------------', ''],
+        ['交易时间', '金额(元)'],
+        ['2026-10-01 10:00:00', '¥35.50'],
+      ],
+    );
+    expect(shifted.headers).toEqual(['交易时间', '金额(元)']);
+    expect(shifted.rows).toEqual([['2026-10-01 10:00:00', '¥35.50']]);
+
+    const unmatched = normalizeTableHeaders(['A', 'B'], [['1', '2']]);
+    expect(unmatched.headers).toEqual(['A', 'B']);
+    expect(unmatched.rows).toEqual([['1', '2']]);
+  });
+
+  it('suggest 结合样本数据特征自动推断未知表头的日期、金额与收支方向列', () => {
+    const mapper = new ColumnMapper(['col_a', 'col_b', 'col_c', 'col_d']);
+    const suggestion = mapper.suggest([
+      ['2026-10-01', '¥35.50', '支出', '其他'],
+      ['2026-10-02', '120.00', '收入', ''],
+    ]);
+    expect(suggestion[0]).toBe('occurredAt');
+    expect(suggestion[1]).toBe('amount');
+    expect(suggestion[2]).toBe('direction');
+
+    const noHit = new ColumnMapper(['col_x', 'col_y']).suggest([['foo', 'bar']]);
+    expect(noHit).toEqual({});
+  });
+
+  it('mapRow 将 "/" 与 "--" 占位符归一化为空串，并在备注为空时自动回退读取未映射的商品列', () => {
+    const mapper = new ColumnMapper(['交易时间', '金额(元)', '交易对方', '分类', '商品', '备注']);
+    const mapping = {
+      0: 'occurredAt',
+      1: 'amount',
+      2: 'counterparty',
+      3: 'category',
+      5: 'note',
+    } as const;
+    const mapped = mapper.mapRow(['2026-10-01', '18.00', '/', '--', '生椰拿铁', '/'], mapping);
+    expect(mapped.counterparty).toBe('');
+    expect(mapped.category).toBe('');
+    expect(mapped.note).toBe('生椰拿铁');
+  });
 });
 
 describe('csv · 收支方向推断的各条策略（补齐 100%）', () => {
@@ -780,6 +830,28 @@ describe('csv · 收支方向推断的各条策略（补齐 100%）', () => {
     // ③ 前两级都没证据时用关键词。
     const byKeyword = resolver.resolve(mapped({ cells: ['星巴克消费'], counterparty: '星巴克消费' }));
     expect(byKeyword.source).toBe('keyword');
+    // ④ 收/支列为 "/" 等中性交易标记时，非退款直接返回 null（不计收支），含退款关键词则返回 refund。
+    const neutral = resolver.resolve(
+      mapped({
+        cells: ['/', '转入零钱通-来自零钱'],
+        direction: '/',
+        category: '转入零钱通-来自零钱',
+        amount: '6.50',
+      }),
+    );
+    expect(neutral.direction).toBeNull();
+    expect(neutral.reason).toContain('中性交易');
+
+    const neutralRefund = resolver.resolve(
+      mapped({
+        cells: ['/', '商户退款'],
+        direction: '/',
+        category: '商户退款',
+        amount: '15.00',
+      }),
+    );
+    expect(neutralRefund.direction).toBe('refund');
+    expect(neutralRefund.source).toBe('column');
   });
 });
 

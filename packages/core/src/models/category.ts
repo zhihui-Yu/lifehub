@@ -40,18 +40,19 @@ export type SystemCategorySeed = Omit<Category, 'id' | 'createdAt' | 'updatedAt'
  * 覆盖国内用户最常见的收支分类，后续由 A-20 规则引擎做自动归类。
  */
 export const SYSTEM_CATEGORIES: readonly SystemCategorySeed[] = [
-  { name: '餐饮', kind: 'expense', parentId: null, color: '#DC2626', icon: 'restaurant', isSystem: true, sortOrder: 100 },
-  { name: '交通', kind: 'expense', parentId: null, color: '#EA580C', icon: 'commute', isSystem: true, sortOrder: 200 },
-  { name: '购物', kind: 'expense', parentId: null, color: '#D97706', icon: 'shopping', isSystem: true, sortOrder: 300 },
-  { name: '居住', kind: 'expense', parentId: null, color: '#CA8A04', icon: 'home', isSystem: true, sortOrder: 400 },
-  { name: '娱乐', kind: 'expense', parentId: null, color: '#16A34A', icon: 'movie', isSystem: true, sortOrder: 500 },
-  { name: '医疗', kind: 'expense', parentId: null, color: '#0D9488', icon: 'medical', isSystem: true, sortOrder: 600 },
-  { name: '教育', kind: 'expense', parentId: null, color: '#2563EB', icon: 'school', isSystem: true, sortOrder: 700 },
-  { name: '通讯', kind: 'expense', parentId: null, color: '#4F46E5', icon: 'phone', isSystem: true, sortOrder: 800 },
-  { name: '工资', kind: 'income', parentId: null, color: '#16A34A', icon: 'salary', isSystem: true, sortOrder: 900 },
-  { name: '奖金', kind: 'income', parentId: null, color: '#059669', icon: 'bonus', isSystem: true, sortOrder: 1000 },
-  { name: '理财', kind: 'income', parentId: null, color: '#0891B2', icon: 'investment', isSystem: true, sortOrder: 1100 },
-  { name: '其他', kind: 'both', parentId: null, color: '#6B7280', icon: 'more', isSystem: true, sortOrder: 1200 },
+  { name: '餐饮美食', kind: 'expense', parentId: null, color: '#DC2626', icon: 'restaurant', isSystem: true, sortOrder: 100 },
+  { name: '交通出行', kind: 'expense', parentId: null, color: '#EA580C', icon: 'commute', isSystem: true, sortOrder: 200 },
+  { name: '购物消费', kind: 'expense', parentId: null, color: '#D97706', icon: 'shopping', isSystem: true, sortOrder: 300 },
+  { name: '居家住房', kind: 'expense', parentId: null, color: '#CA8A04', icon: 'home', isSystem: true, sortOrder: 400 },
+  { name: '医疗健康', kind: 'expense', parentId: null, color: '#0D9488', icon: 'medical', isSystem: true, sortOrder: 500 },
+  { name: '工资薪水', kind: 'income', parentId: null, color: '#16A34A', icon: 'salary', isSystem: true, sortOrder: 600 },
+  { name: '投资理财', kind: 'both', parentId: null, color: '#0891B2', icon: 'investment', isSystem: true, sortOrder: 700 },
+  { name: '内部转账', kind: 'both', parentId: null, color: '#6366F1', icon: 'transfer', isSystem: true, sortOrder: 800 },
+  { name: '娱乐休闲', kind: 'expense', parentId: null, color: '#16A34A', icon: 'movie', isSystem: true, sortOrder: 900 },
+  { name: '教育培训', kind: 'expense', parentId: null, color: '#2563EB', icon: 'school', isSystem: true, sortOrder: 1000 },
+  { name: '通讯话费', kind: 'expense', parentId: null, color: '#4F46E5', icon: 'phone', isSystem: true, sortOrder: 1100 },
+  { name: '奖金补贴', kind: 'income', parentId: null, color: '#059669', icon: 'bonus', isSystem: true, sortOrder: 1200 },
+  { name: '其他', kind: 'both', parentId: null, color: '#6B7280', icon: 'more', isSystem: true, sortOrder: 1300 },
 ];
 
 /**
@@ -114,7 +115,67 @@ export function validateCategory(category: unknown): Category {
  *
  * @param name 原始分类名
  * @returns 归一后的判重键
+ * @throws 无；纯字符串处理不抛出异常
  */
 export function normalizeCategoryName(name: string): string {
   return name.trim().toLowerCase();
 }
+
+/** 用户手动分类记忆规则模板固定 ID。 */
+export const USER_CATEGORY_MEMORY_TEMPLATE_ID = 'sys-user-category-memory';
+
+/** 用户手动分类记忆规则模板固定签名。 */
+export const USER_CATEGORY_MEMORY_SIGNATURE = '__user_category_memory__';
+
+/** 视为无效占位符的交易对方或备注文本集合。 */
+const INVALID_BILL_ITEM_PLACEHOLDERS: ReadonlySet<string> = new Set([
+  '',
+  '-',
+  '—',
+  '--',
+  '/',
+  '无',
+  '***',
+]);
+
+/**
+ * 提取账单「相同项」的可读展示文本（优先取有效交易对方，退化取有效备注）。
+ *
+ * 说明：用于「记住分类选择」横幅提示与规则名称展示；保留原始大小写但去除首尾空白，
+ * 并自动忽略 `'-'`、`'—'`、`'/'`、`'无'`、`'***'` 等无效占位符。
+ *
+ * @param input 包含交易对方 `counterparty` 与备注 `note` 的对象
+ * @returns 有效展示文本；若交易对方与备注均为空或占位符则返回空串 `''`
+ * @throws 无；纯字符串提取不抛出异常
+ */
+export function extractBillItemLabel(input: {
+  counterparty?: string | null;
+  note?: string | null;
+}): string {
+  const cp = typeof input.counterparty === 'string' ? input.counterparty.trim() : '';
+  if (!INVALID_BILL_ITEM_PLACEHOLDERS.has(cp)) {
+    return cp;
+  }
+  const note = typeof input.note === 'string' ? input.note.trim() : '';
+  if (!INVALID_BILL_ITEM_PLACEHOLDERS.has(note)) {
+    return note;
+  }
+  return '';
+}
+
+/**
+ * 提取账单「相同项」的归一化匹配键（去首尾空白 + 转小写，优先取有效交易对方，退化取有效备注）。
+ *
+ * 说明：用于跨账单判定「是否为同一交易对方/同一备注项」以及构建自动分类记忆索引。
+ *
+ * @param input 包含交易对方 `counterparty` 与备注 `note` 的对象
+ * @returns 归一化小写匹配键；若均为空或无效占位符则返回空串 `''`
+ * @throws 无；纯字符串归一化不抛出异常
+ */
+export function extractBillItemKey(input: {
+  counterparty?: string | null;
+  note?: string | null;
+}): string {
+  return extractBillItemLabel(input).toLowerCase();
+}
+

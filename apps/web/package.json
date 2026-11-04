@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "build:android": "npm run build && npx cap sync android && cd android && ./gradlew assembleDebug",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -15,19 +16,24 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@lifehub/core": "^0.1.0",
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
+    "@lifehub/core": "^0.1.0",
     "@mui/icons-material": "^6.3.1",
     "@mui/material": "^6.3.1",
     "@tanstack/react-virtual": "^3.11.2",
     "dexie": "^4.0.10",
+    "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.1.1",
+    "xlsx": "^0.18.5",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
     "@testing-library/user-event": "^14.5.2",

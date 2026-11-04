@@ -152,16 +152,26 @@ export class EncryptedStore {
   /**
    * 批量读取并解密业务实体。
    *
+   * 说明：若某条历史记录由其他 DEK 加密而无法被当前 DEK 解密，则跳过该条记录，避免阻断批量读取。
+   *
    * @param entityType 实体类型
    * @param ids 实体 id 列表
    * @returns 业务实体列表
+   * @throws {LifeHubError} `LIFEHUB_E_VAULT_NOT_FOUND` —— 未解锁
    */
   async getMany<T>(entityType: EntityType, ids: readonly string[]): Promise<T[]> {
     this.assertUnlocked();
     const records = await this.adapter.getMany(entityType, ids);
     const out: T[] = [];
     for (const record of records) {
-      out.push(await this.decryptRecord<T>(entityType, record));
+      try {
+        out.push(await this.decryptRecord<T>(entityType, record));
+      } catch (err) {
+        if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
+          continue;
+        }
+        throw err;
+      }
     }
     return out;
   }
@@ -171,17 +181,26 @@ export class EncryptedStore {
    *
    * 说明：范围过滤与排序在存储层用**索引明文列**完成，只有返回的页内记录才解密，
    * 因此 10 万行场景下不会全量解密（系统设计 §4.3 关键点 5）。
+   * 若存在无法被当前 DEK 解密的历史残留记录，自动跳过而不中断整个查询。
    *
    * @param entityType 实体类型
    * @param filter 查询条件
    * @returns 业务实体列表
+   * @throws {LifeHubError} `LIFEHUB_E_VAULT_NOT_FOUND` —— 未解锁
    */
   async query<T>(entityType: EntityType, filter?: StorageQueryLike): Promise<T[]> {
     this.assertUnlocked();
     const records = await this.adapter.query(entityType, filter);
     const out: T[] = [];
     for (const record of records) {
-      out.push(await this.decryptRecord<T>(entityType, record));
+      try {
+        out.push(await this.decryptRecord<T>(entityType, record));
+      } catch (err) {
+        if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
+          continue;
+        }
+        throw err;
+      }
     }
     return out;
   }

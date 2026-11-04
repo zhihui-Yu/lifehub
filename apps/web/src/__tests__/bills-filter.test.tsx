@@ -285,6 +285,28 @@ describe('BillsPage 筛选与分组（A-09）', () => {
       { timeout: 2000 },
     );
     expect(screen.getByText('星巴克')).toBeInTheDocument();
+
+    // 金额、日期、方向关键词同样可搜索命中。
+    act(() => {
+      useBillStore.getState().setFilters({ keyword: '50.00' });
+    });
+    await waitFor(
+      () => {
+        expect(screen.getByText('工资')).toBeInTheDocument();
+        expect(screen.queryByText('星巴克')).not.toBeInTheDocument();
+      },
+      { timeout: 2000 },
+    );
+
+    act(() => {
+      useBillStore.getState().setFilters({ keyword: '支出' });
+    });
+    await waitFor(
+      () => {
+        expect(screen.getByText(/共 3 条账单/)).toBeInTheDocument();
+      },
+      { timeout: 2000 },
+    );
   });
 
   /**
@@ -381,6 +403,6 @@ describe('BillsPage 筛选与分组（A-09）', () => {
     await waitFor(() => {
       expect(screen.getByText('还没有账单')).toBeInTheDocument();
     });
-    expect(screen.getByText(/导入一个 CSV 账单文件后/)).toBeInTheDocument();
+    expect(screen.getByText(/导入一个 CSV 账单文件/)).toBeInTheDocument();
   });
 });

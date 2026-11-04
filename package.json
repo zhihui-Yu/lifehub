@@ -18,6 +18,7 @@
     "dev": "npm run dev --workspace @lifehub/web",
     "build": "npm run build --workspace @lifehub/web",
     "build:sync": "npm run build --workspace @lifehub/sync-server",
+    "build:android": "npm run build:android --workspace @lifehub/web",
     "preview": "npm run preview --workspace @lifehub/web",
     "test": "npm run test --workspaces --if-present",
     "test:watch": "npm run test:watch --workspaces --if-present",

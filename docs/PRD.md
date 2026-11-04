@@ -1,7 +1,7 @@
 # LifeHub PRD —— 跨端私有数据生活管理工具
 
-> 文档版本：v1.0 ｜ 日期：2026-10-30 ｜ 作者：许清楚（产品经理）
-> 状态：待主理人评审。本文档为全项目需求总纲 + Sprint 0 交付定义。
+> 文档版本：v1.3 ｜ 日期：2026-11-03 ｜ 作者：许清楚（产品经理）
+> 状态：已迭代生效。本文档为全项目需求总纲 + Sprint 0 ~ S6、移动端 / Android APK 响应式体验、手机端极简模式（Mobile Lite）与全量生活数据 OSS 加密备份交付定义。
 
 ---
 
@@ -448,6 +448,37 @@
 | 日记列表页、日记编辑页 | D | S6 | P1（D-01） |
 | AI 分析配置页、分析结果页 | E | S6 | P1（E-01 ~ E-03） |
 | 同步设置页（阶段 5） | X | S5 | P1（X-11、X-10） |
+
+---
+
+### 5.6 移动端与 Android APK 响应式卡片化与触控体验规范（`UI-M-01 ~ UI-M-05`）
+
+针对 Android APK WebView 及手机窄屏视口（`360px ~ 412px` / `< 768px` / `< 900px`），严禁将桌面端多列宽表直接等比塞入窄屏导致文字挤压变形，必须执行以下原生级移动端卡片化与触控体验规范：
+
+| 规范编号 | 维度 | 核心设计与交互验收标准（可测） |
+| --- | --- | --- |
+| **UI-M-01** | **账单列表移动端卡片流（Mobile Card Row）** | ① **桌面端零破坏**：在 `> 768px` 视口下保持 7 列固定列宽 `tableLayout: 'fixed'` + `<colgroup>` 垂直对齐契约不变；② **窄屏卡片化重构（`@media (max-width: 768px)`）**：隐藏桌面表头 `thead` 与 `colgroup`，每条 `tr[data-testid="bill-row"]` 转为 CSS Grid 圆角卡片（圆角 `12px~14px`、柔和边框、内边距 `12px 14px`、卡片间距 `10px`）；③ **三层视觉信息架构**：第 1 行左展示「交易对方（加粗）」、右展示「收支金额徽章」；第 2 行展示「账单内容 / 备注」（支持自然多行折行，严禁挤压成单字竖排或 0px）；第 3 行左展示「分类胶囊 + 日期时间 + 来源文件标签」、右展示「内部转账切换 / 编辑 / 删除」操作按钮；④ 各 `<TableCell>` 挂载语义化类名（`lifehub-bill-cell-date`、`lifehub-bill-cell-amount`、`lifehub-bill-cell-counterparty`、`lifehub-bill-cell-note`、`lifehub-bill-cell-category`、`lifehub-bill-cell-source`、`lifehub-bill-cell-actions`）实现精准 Grid 区域映射。 |
+| **UI-M-02** | **毛玻璃悬浮底部导航栏（Frosted Glass Bottom Bar）** | ① 在 `< 900px` 下固定于视口底部，启用 `backdrop-filter: blur(16px)` 半透明毛玻璃质感与柔和顶部分隔阴影；② 8 个一级模块入口采用 `scroll-snap-type: x proximity` 丝滑横向滚动，单项最小触控宽度 `≥ 68px`、最小高度 `≥ 52px`、胶囊态圆角 `12px`，激活态具备明显主色背景高亮；③ 完整适配 Android 全面屏手势导航栏安全区 `env(safe-area-inset-bottom, 0px)`，主内容区底部留白 `calc(92px + env(safe-area-inset-bottom, 0px))` 确保底栏绝不遮挡正文与「回到顶部」悬浮按钮。 |
+| **UI-M-03** | **账单可视化看板与筛选栏移动端网格化** | ① **核心指标卡片 2×2 网格**：`BillVisualDashboard` 顶部 4 张汇总卡片在手机端（`xs`）采用 `repeat(2, minmax(0, 1fr))` 双列等宽网格（桌面端 `md` 保持 4 列），告别单列連排占满首屏；② **筛选工具栏双列对齐**：`BillFilterBar` 在移动端（`xs`）采用 CSS Grid 布局——搜索框独占首行，`收支方向 + 分类` 双列等宽并排，`开始日期 + 结束日期` 双列等宽并排，操作按钮自适应对齐，消除参差空白。 |
+| **UI-M-04** | **全站页面头部、课表/习惯/AI 模块移动端触控精修** | ① 页面顶栏 `TopBar` 具备吸顶毛玻璃效果与安全区内边距；② 页面标题栏与操作按钮组在窄屏下自动折行对齐（`flexWrap: 'wrap'`），卡片内边距统一为响应式 `p: { xs: 2, sm: 2.5 }`；③ 习惯打卡页（`HabitsPage`）统计面板在手机端采用 2×2 网格，年度热力图与审计记录表提供平滑横向滚动容器；④ 课表页（`SchedulePage`）周视图支持横向 `scroll-snap` 顺滑滑动。 |
+| **UI-M-05** | **MUI 主题质感与原生触控反馈** | ① 全局设置 `-webkit-tap-highlight-color: transparent` 消除生硬点击蓝框；② `MuiPaper` 圆角升级为 `14px`、`MuiButton` 圆角 `10px` 且 `fontWeight: 600`、`MuiDialog` 在移动端预留 `12px` 呼吸边距与 `16px` 圆角，呈现精致现代的原生 App 视觉品质。 |
+
+---
+
+### 5.7 手机端极简模式（Mobile Lite）与全量生活数据 OSS 加密备份规范（`ML-01 ~ ML-06`, `OSS-FULL-01 ~ OSS-FULL-03`）
+
+针对用户手机端高频记账、查看今日日程、习惯打卡与一键 AI 小结的轻量化核心诉求，同时确保手机与桌面端通过云存储（OSS/COS/OBS/WebDAV/S3）同步全量生活数据，制定以下**手机端极简模式（Mobile Lite）**与**全量生活数据 OSS 加密备份**规范：
+
+| 规范编号 | 维度 | 核心设计与交互验收标准（可测） |
+| --- | --- | --- |
+| **ML-01** | **移动端底部 4 固定 Tab 极简导航与默认首屏（`<= 900px`）** | ① **桌面端（`> 900px`）与 DOM 保留全部 8 个 `NavLink`**（确保 `layout-components.test.tsx` 100% 兼容）；② 对 `/import`、`/categories`、`/habits`、`/security` 4 个入口挂载 `lifehub-sidenav__item--desktop-only` / `lifehub-sidenav__link--desktop-only` 类名，在 `@media (max-width: 900px)` 下设为 `display: none !important;`，并将 `.lifehub-sidenav__list` 设为 `display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; overflow: hidden;`，手机端底部固定等宽展示 **4 个核心 Tab**：**「账单」**（`/bills`）、**「日程」**（`/schedule`）、**「小结」**（`/ai`）、**「我的」**（`/settings`）；③ **手机端默认直达账单页**：当处于根路径 `/` 且 `window.innerWidth <= 900` 时，自动重定向至 `/bills`（桌面端 `> 900px` 及 JSDOM 默认 `1024px` 仍默认展示 `ImportPage`）。 |
+| **ML-02** | **账单页（`/bills`）手机端首屏极简化（折叠图表与高级筛选）** | ① `BillsPage.tsx`：手机端顶部主操作区只突出展示 **「+ 新增一笔」** 与 **「导入账单」**（`data-testid="mobile-go-import-button"`，点击跳转 `/import`），将低频按钮设为 `display: { xs: 'none', sm: 'inline-flex' }`（DOM 保留）；② `BillVisualDashboard.tsx`：新增 `chartsExpanded` 状态（初始值 `typeof window === 'undefined' ? true : window.innerWidth >= 768`），手机端默认只展示 2×2 核心收支指标与预算条，提供 `data-testid="toggle-dashboard-charts"` 按钮按需展开/收起图表区（折叠时 `display: 'none'` 保留 DOM）；③ `BillFilterBar.tsx`：新增 `mobileExpanded` 状态（初始值 `typeof window === 'undefined' ? true : window.innerWidth >= 768`），手机端默认仅展示关键词搜索框 + `data-testid="toggle-mobile-filters"` 筛选切换按钮（折叠时 `display: 'none'` 保留 DOM）。 |
+| **ML-03** | **日程页（`/schedule`）与习惯页（`/habits`）手机端聚合与默认日视图** | ① **两页顶部快捷互切胶囊**：`SchedulePage.tsx` 与 `HabitsPage.tsx` 顶部均提供 `data-testid="schedule-habits-switcher"`（**「📅 课表日程」** / **「🔥 习惯打卡」**），方便从底部「日程」Tab 一键互切；② **日程页手机端默认「今日日视图（`'day'`）」**：`SchedulePage.tsx` 在 `typeof window !== 'undefined' && window.innerWidth < 768` 时默认初始化为 `'day'`，桌面端（`>= 768`）保持默认 `'week'`。 |
+| **ML-04** | **AI 小结页（`/ai`）手机端零门槛改造** | ① 将 **「生成本地智能总结（零网络）」**（`data-testid="ai-local-summary-button"`）按钮与分析结果输出卡片提升到页面最顶部首屏；② 将 `ai-config-card`、`ai-redacted-preview`、`ai-request-history` 收纳进可折叠的 **「高级：外部大模型配置与脱敏审计 ▾」** 区域（按钮 `data-testid="ai-advanced-toggle"`，初始状态 `typeof window === 'undefined' ? true : window.innerWidth >= 768`，折叠时 `display: 'none'` 保留 DOM 节点以 100% 兼容 `modules-ai.test.tsx`）。 |
+| **ML-05** | **「我的 / 设置」页（`/settings`）手机端聚合功能导航宫格** | ① 在 `SettingsPage.tsx` 顶部新增 **「常用功能快捷宫格」**（`data-testid="mobile-settings-quick-nav"`），提供 **「导入账单（`/import`）」「分类管理（`/categories`）」「习惯打卡（`/habits`）」「安全与加密（`/security`）」** 4 宫格快捷导航入口，确保精简为 4 主 Tab 后所有二级模块在手机端 1 次点击直达。 |
+| **OSS-FULL-01** | **全量生活数据（账单+分类+课表+习惯）统一打包加密进入 OSS 备份** | ① 升级 [`cloud-storage.ts`](file:///D:/code/myapps/apps/web/src/lib/cloud-storage.ts) 与 `CloudStoragePanel.tsx`：保持 `format: 'lifehub-cloud-backup-v1'` 与 `objectKey`（`${bucket}/lifehub-bills-backup.json.enc`）不变（100% 兼容既有单测），扩展 `uploadBillsToCloud(config, bills, password, extraData?)` 支持在加密 JSON 载荷中一并打包：<br>• **账单数据**：`bills`（`Bill[]`）<br>• **分类数据**：`categories`（`Category[]`）<br>• **课表数据**：`scheduleSlots`（兼容别名 `scheduleEvents`）与 `completionEvents`（兼容别名 `scheduleCompletions`）<br>• **习惯数据**：`habits` 与 `habitCheckIns`（兼容别名 `habitCheckins`）；<br>② 点击「加密上传至云端」时自动从 `runtime.categoryRepository.listAll()` 及 `LifeHubDatabase`（`scheduleSlots`、`habits`、`habitCheckIns`、`completionEvents`）读取全量生活数据，统一经登录密码加密上传至 OSS / COS / OBS / WebDAV / S3。 |
+| **OSS-FULL-02** | **全量云端备份一键解密恢复与向后兼容** | ① `restoreBillsFromCloud(config, password)` 在保持原有返回字段（`bills`, `record` 等）的基础上，一并返回恢复出的 `categories`、`scheduleSlots`（/`scheduleEvents`）、`habits`、`habitCheckIns`（/`habitCheckins`）、`completionEvents`（/`scheduleCompletions`）；② 点击「从云端解密恢复」时自动将全量生活数据写回 `runtime.billRepository`、`runtime.categoryRepository` 与本地 `LifeHubDatabase` 对应表，并在恢复成功提示中展示恢复的数据概况；100% 兼容旧版仅含 `bills` 的备份快照。 |
+| **OSS-FULL-03** | **AI API Key 零外发安全红线（`X-12`）** | ① 全量云端备份载荷中 **严禁包含 `aiSettings`（外部 AI API Key 密文或明文）**，从代码构造层与自动化单测双重断言杜绝 API Key 随云端备份外泄。 |
 
 ---
 

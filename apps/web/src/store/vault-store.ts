@@ -26,6 +26,8 @@ export interface VaultState {
   cooldownUntil: number;
   /** 设置保险库：写入 DEK 并进入已解锁态。 */
   setUnlocked: (dek: Uint8Array, keyVersion: number) => void;
+  /** 标记**尚未**创建保险库（首次进入引导，等待用户设置主密码）。 */
+  markNeedsSetup: () => void;
   /** 标记保险库已创建（等待用户解锁）。 */
   markCreated: () => void;
   /** 标记已创建但处于锁定态。 */
@@ -54,6 +56,7 @@ export const useVaultStore = create<VaultState>((set, get) => ({
     void dek;
     set({ status: 'unlocked', vaultCreated: true, keyVersion, failedAttempts: 0, cooldownUntil: 0 });
   },
+  markNeedsSetup: () => set({ status: 'needs-setup', vaultCreated: false }),
   markCreated: () => set({ status: 'needs-setup', vaultCreated: true }),
   markLocked: () => set({ status: 'locked', vaultCreated: true }),
   recordFailedAttempt: () => set({ failedAttempts: get().failedAttempts + 1 }),
@@ -111,10 +114,23 @@ export class InMemoryDekProvider implements DekProvider {
    * @param dek DEK 字节数组
    * @param keyVersion 密钥版本
    * @returns 无异常
+   * @throws 无
    */
   setDek(dek: Uint8Array, keyVersion: number): void {
     this.dek = dek;
     this.version = keyVersion;
+  }
+
+  /**
+   * 解锁并写入 DEK（与 `setDek` 等价的语义化别名）。
+   *
+   * @param dek DEK 字节数组
+   * @param keyVersion 密钥版本（默认 1）
+   * @returns 无异常
+   * @throws 无
+   */
+  unlock(dek: Uint8Array, keyVersion = 1): void {
+    this.setDek(dek, keyVersion);
   }
 
   /**

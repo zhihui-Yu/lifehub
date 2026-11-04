@@ -56,6 +56,21 @@ describe('useBillStore', () => {
     expect(filters.dateFrom).toBe('2024-01-01');
     expect(filters.dateTo).toBe('2024-01-31');
     expect(filters.categoryId).toBe('');
+    expect(filters.categoryIds).toEqual([]);
+  });
+
+  it('setFilters 支持分类多选（categoryIds）与单选（categoryId）双向同步', () => {
+    useBillStore.getState().setFilters({ categoryIds: ['cat-food', 'cat-shopping'] });
+    expect(useBillStore.getState().filters.categoryIds).toEqual(['cat-food', 'cat-shopping']);
+    expect(useBillStore.getState().filters.categoryId).toBe('');
+
+    useBillStore.getState().setFilters({ categoryIds: ['cat-food'] });
+    expect(useBillStore.getState().filters.categoryIds).toEqual(['cat-food']);
+    expect(useBillStore.getState().filters.categoryId).toBe('cat-food');
+
+    useBillStore.getState().setFilters({ categoryId: 'cat-transport' });
+    expect(useBillStore.getState().filters.categoryId).toBe('cat-transport');
+    expect(useBillStore.getState().filters.categoryIds).toEqual(['cat-transport']);
   });
 
   it('clearFilters 一键清空全部过滤条件', () => {

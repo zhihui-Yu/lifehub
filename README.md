@@ -42,9 +42,23 @@ npm run dev        # 启动 Web 端开发服务器
 
 ```bash
 npm run build      # 构建 Web 产物到 apps/web/dist
-npm run test       # 运行全部 workspace 的测试（core + web）
+npm run build:sync # 编译自托管同步服务到 apps/sync-server/dist
+npm run test       # 运行全部 workspace 的测试（core + web + sync-server）
 npm run typecheck  # 三个包的类型检查
 ```
+
+### 1.2.1 多端编译与打包速览（Web / Android APK / iOS IPA / 微信小程序）
+
+完整的多端编译步骤参见 [**`docs/build-and-packaging.md`（多端构建与打包指南）**](docs/build-and-packaging.md)：
+
+| 目标平台 | 构建方式简述 | 产物位置 / 运行方式 |
+| --- | --- | --- |
+| **Web 生产包** | 根目录执行 `npm run build` | `apps/web/dist/`（部署至任意 HTTPS 静态服务器） |
+| **同步服务 (Node / Docker)** | `npm run build:sync` 或 `docker compose up -d --build` | `apps/sync-server/dist/` 或 Docker 容器（默认端口 `8787`） |
+| **Android APK** | 在 `apps/web` 中接入 Capacitor（`npx cap add android` → `npm run build && npx cap sync android` → `cd android && .\gradlew.bat assembleDebug`） | `apps/web/android/app/build/outputs/apk/debug/app-debug.apk` |
+| **iOS IPA** | 在 macOS 下执行 `npx cap add ios` → `npm run build && npx cap sync ios` → `npx cap open ios` 使用 Xcode 签名归档 | Xcode 真机安装或 Archive 导出 `.ipa` |
+| **手机 PWA** | 将 `apps/web/dist` 部署在 HTTPS 下，用手机 Chrome / Safari 打开并点击「添加到主屏幕」 | 独立全屏离线运行 |
+| **微信小程序** | 企业主体可直接用 `<web-view>` 嵌入 HTTPS Web 端；个人/企业主体可用 Taro 构建表现层并直接复用零 DOM 的 `@lifehub/core`（实现小程序版 `StorageAdapter` 与 `CryptoProvider`） | 微信开发者工具编译预览与上传 |
 
 ### 1.3 首次进入的引导流程
 
@@ -103,6 +117,7 @@ lifehub/
 │       ├── Dockerfile         # 多阶段构建；构建上下文为仓库根目录
 │       └── .env.example       # 环境变量示例（含设备令牌说明）
 ├── docs/
+│   ├── build-and-packaging.md # 多端构建与打包指南（Web / 同步服务 / Android APK / iOS IPA / 微信小程序）
 │   ├── PRD.md                 # 产品需求文档（需求池与追踪索引）
 │   ├── system_design.md       # 系统设计（类图、时序、任务列表、共享约定）
 │   ├── architecture.md        # 架构说明（分层、数据流、加密边界、同步协议、移植路径）
@@ -424,6 +439,7 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 
 | 文档 | 内容 |
 | --- | --- |
+| [`docs/build-and-packaging.md`](docs/build-and-packaging.md) | **多端构建与打包指南**：Web 静态编译、同步服务 Docker 打包、Android APK / iOS IPA（Capacitor）、PWA 及微信小程序构建说明 |
 | [`docs/PRD.md`](docs/PRD.md) | 产品需求文档：需求池、UI 稿描述、约束与假设、需求追踪索引 |
 | [`docs/system_design.md`](docs/system_design.md) | 系统设计：类图、时序、数据结构、任务列表、共享约定（注释与文档规范） |
 | [`docs/architecture.md`](docs/architecture.md) | 架构说明：分层图、数据流、加密边界详版、索引列取舍、**同步协议与密文 blob 格式**、Flutter 移植路径评估 |

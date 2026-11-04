@@ -35,6 +35,7 @@ const { service, vaultState } = vi.hoisted(() => ({
 
 vi.mock('@/platform', () => ({
   createImportService: vi.fn(() => service),
+  createPlatformRuntime: vi.fn(() => null),
 }));
 
 vi.mock('@/hooks/useVault', () => ({
@@ -73,7 +74,7 @@ describe('useImportFlow 流程编排（A-10 / A-11 / A-12）', () => {
 
     let returned: ImportPlan | null = null;
     await act(async () => {
-      returned = await result.current.plan('微信支付.csv', BYTES);
+      returned = await result.current.plan({ fileName: '微信支付.csv', sizeBytes: BYTES.length, bytes: BYTES });
     });
 
     expect(service.plan).toHaveBeenCalledTimes(1);
@@ -94,7 +95,7 @@ describe('useImportFlow 流程编排（A-10 / A-11 / A-12）', () => {
 
     let returned: ImportPlan | null = null;
     await act(async () => {
-      returned = await result.current.plan('坏文件.csv', BYTES);
+      returned = await result.current.plan({ fileName: '坏文件.csv', sizeBytes: BYTES.length, bytes: BYTES });
     });
 
     expect(returned).toBeNull();
@@ -109,7 +110,7 @@ describe('useImportFlow 流程编排（A-10 / A-11 / A-12）', () => {
     const { result } = renderHook(() => useImportFlow());
 
     await act(async () => {
-      await result.current.plan('a.csv', BYTES);
+      await result.current.plan({ fileName: 'a.csv', sizeBytes: BYTES.length, bytes: BYTES });
     });
 
     const next: ColumnMapping = { 0: 'occurredAt', 1: 'amount' };
@@ -130,7 +131,7 @@ describe('useImportFlow 流程编排（A-10 / A-11 / A-12）', () => {
     const { result } = renderHook(() => useImportFlow());
 
     await act(async () => {
-      await result.current.plan('a.csv', BYTES);
+      await result.current.plan({ fileName: 'a.csv', sizeBytes: BYTES.length, bytes: BYTES });
     });
 
     let returned: ImportSummary | null = null;
@@ -151,7 +152,7 @@ describe('useImportFlow 流程编排（A-10 / A-11 / A-12）', () => {
     const { result } = renderHook(() => useImportFlow());
 
     await act(async () => {
-      await result.current.plan('a.csv', BYTES);
+      await result.current.plan({ fileName: 'a.csv', sizeBytes: BYTES.length, bytes: BYTES });
     });
 
     let returned: ImportSummary | null = null;
@@ -170,7 +171,7 @@ describe('useImportFlow 流程编排（A-10 / A-11 / A-12）', () => {
 
     let returned: ImportPlan | null = null;
     await act(async () => {
-      returned = await result.current.plan('a.csv', BYTES);
+      returned = await result.current.plan({ fileName: 'a.csv', sizeBytes: BYTES.length, bytes: BYTES });
     });
 
     expect(returned).toBeNull();

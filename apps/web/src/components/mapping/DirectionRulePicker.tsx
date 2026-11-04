@@ -34,7 +34,9 @@ export function DirectionRulePicker({ rule, onChange }: DirectionRulePickerProps
   return (
     <Box>
       <FormControl>
-        <FormLabel id="direction-rule-label">收支方向判定方式</FormLabel>
+        <FormLabel id="direction-rule-label" sx={{ color: 'var(--lifehub-text)', fontWeight: 600, mb: 0.5 }}>
+          收支方向判定方式
+        </FormLabel>
         <RadioGroup
           aria-labelledby="direction-rule-label"
           value={rule.mode}
@@ -42,24 +44,28 @@ export function DirectionRulePicker({ rule, onChange }: DirectionRulePickerProps
         >
           <FormControlLabel
             value="auto"
+            sx={{ color: 'var(--lifehub-text)' }}
             control={<Radio size="small" />}
             label={MODE_HINTS.auto}
             data-testid="direction-mode-auto"
           />
           <FormControlLabel
             value="sign"
+            sx={{ color: 'var(--lifehub-text)' }}
             control={<Radio size="small" />}
             label={MODE_HINTS.sign}
             data-testid="direction-mode-sign"
           />
           <FormControlLabel
             value="column"
+            sx={{ color: 'var(--lifehub-text)' }}
             control={<Radio size="small" />}
             label={MODE_HINTS.column}
             data-testid="direction-mode-column"
           />
           <FormControlLabel
             value="keyword"
+            sx={{ color: 'var(--lifehub-text)' }}
             control={<Radio size="small" />}
             label={MODE_HINTS.keyword}
             data-testid="direction-mode-keyword"

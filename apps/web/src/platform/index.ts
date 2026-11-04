@@ -146,6 +146,7 @@ export function createImportService(runtime: PlatformRuntime, deviceId: string):
     templates: runtime.ruleTemplateRepository,
     batches: runtime.importBatchRepository,
     bills: runtime.billRepository,
+    categories: runtime.categoryRepository,
     audit: runtime.auditLogger,
     clock: runtime.clock,
     deviceId,

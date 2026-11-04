@@ -34,9 +34,14 @@ describe('useSettingsStore', () => {
     expect(fresh.timezone.length).toBeGreaterThan(0);
   });
 
-  it('setTimezone 修改默认时区', () => {
+  it('setTimezone 修改默认时区并持久化到 localStorage（T-Timezone-Unify-1）', () => {
     useSettingsStore.getState().setTimezone('Asia/Tokyo');
     expect(useSettingsStore.getState().timezone).toBe('Asia/Tokyo');
+    expect(window.localStorage.getItem('lifehub.settings.timezone')).toBe('Asia/Tokyo');
+
+    useSettingsStore.getState().setTimezone('America/New_York');
+    expect(useSettingsStore.getState().timezone).toBe('America/New_York');
+    expect(window.localStorage.getItem('lifehub.settings.timezone')).toBe('America/New_York');
   });
 
   it('setCurrency 修改默认币种', () => {
@@ -65,5 +70,16 @@ describe('useSettingsStore', () => {
     expect(state.theme).toBe('dark');
     // 未覆盖的字段保持原值。
     expect(state.currency).toBe('CNY');
+  });
+
+  it('支持月度预算（monthlyBudgetCents）与安全加密总开关（securityEnabled）读写及持久化', () => {
+    useSettingsStore.getState().setMonthlyBudgetCents(350000);
+    expect(useSettingsStore.getState().monthlyBudgetCents).toBe(350000);
+
+    useSettingsStore.getState().setSecurityEnabled(true);
+    expect(useSettingsStore.getState().securityEnabled).toBe(true);
+
+    useSettingsStore.getState().setSecurityEnabled(false);
+    expect(useSettingsStore.getState().securityEnabled).toBe(false);
   });
 });

@@ -11,12 +11,14 @@ import type {
   AuditLog,
   Bill,
   ColumnMapping,
+  CrossSourceCandidate,
   Direction,
   ImportBatch,
   ImportPlan,
   ImportSummary,
   PreviewRow,
   RecoveryBundle,
+  SourceChannel,
 } from '@lifehub/core';
 
 /** 账单实体的默认构造参数。 */
@@ -68,8 +70,10 @@ export function makePlan(partial: Partial<ImportPlan> = {}): ImportPlan {
     preview: [],
     duplicateFile: false,
     duplicateOf: null,
+    sourceChannel: 'csv' as SourceChannel,
+    crossSourceCandidates: [] as CrossSourceCandidate[],
     ...partial,
-  };
+  } as ImportPlan;
 }
 
 /**
@@ -109,8 +113,9 @@ export function makeSummary(partial: Partial<ImportSummary> = {}): ImportSummary
     errors: [],
     durationMs: 12,
     duplicateFile: false,
+    rowCrossSourceDuplicate: 0,
     ...partial,
-  };
+  } as ImportSummary;
 }
 
 /**
@@ -130,12 +135,13 @@ export function makeBatch(partial: Partial<ImportBatch> = {}): ImportBatch {
     rowImported: 118,
     rowSkipped: 2,
     templateId: null,
+    sourceChannel: 'wechat' as SourceChannel,
     createdAt: '2024-01-15T08:12:00.000Z',
     updatedAt: '2024-01-15T08:12:00.000Z',
     version: 1,
     deviceId: 'test-device',
     ...partial,
-  };
+  } as ImportBatch;
 }
 
 /**

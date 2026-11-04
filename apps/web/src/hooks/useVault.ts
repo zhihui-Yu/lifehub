@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LifeHubError, type RecoveryBundle, type VaultSetup } from '@lifehub/core';
 import { createVaultService, createPlatformRuntime, type PlatformRuntime } from '@/platform';
-import { dekProvider, useVaultStore } from '@/store';
+import { dekProvider, useSettingsStore, useVaultStore } from '@/store';
 
 /** 保险库会话 Hook 的返回值。 */
 export interface UseVaultResult {
@@ -49,6 +49,7 @@ export function useVault(): UseVaultResult {
   const setUnlocked = useVaultStore((state) => state.setUnlocked);
   const markCreated = useVaultStore((state) => state.markCreated);
   const markLocked = useVaultStore((state) => state.markLocked);
+  const markNeedsSetup = useVaultStore((state) => state.markNeedsSetup);
   const recordFailedAttempt = useVaultStore((state) => state.recordFailedAttempt);
   const clearFailedAttempts = useVaultStore((state) => state.clearFailedAttempts);
   const lockStore = useVaultStore((state) => state.lock);
@@ -60,6 +61,11 @@ export function useVault(): UseVaultResult {
   // 首次挂载时打开数据库并探测保险库是否已存在。
   useEffect(() => {
     let cancelled = false;
+    if (!useSettingsStore.getState().securityEnabled && !dekProvider.isUnlocked()) {
+      const defaultDek = new Uint8Array(32).fill(7);
+      dekProvider.unlock(defaultDek, 1);
+      setUnlocked(defaultDek, 1);
+    }
     void (async () => {
       const platform = createPlatformRuntime(dekProvider);
       try {
@@ -69,10 +75,28 @@ export function useVault(): UseVaultResult {
           return;
         }
         setRuntime(platform);
+        if (!useSettingsStore.getState().securityEnabled) {
+          if (!dekProvider.isUnlocked()) {
+            const defaultDek = new Uint8Array(32).fill(7);
+            dekProvider.unlock(defaultDek, 1);
+          }
+          if (created) {
+            markCreated();
+          }
+          setUnlocked(dekProvider.getDek('bill'), dekProvider.getKeyVersion());
+          return;
+        }
         if (created) {
-          markLocked();
-        } else {
           markCreated();
+          if (dekProvider.isUnlocked()) {
+            setUnlocked(dekProvider.getDek('bill'), dekProvider.getKeyVersion());
+          } else {
+            markLocked();
+          }
+        } else {
+          // 尚未创建保险库：进入「待设置」态，但 vaultCreated 必须为 false，
+          // 否则 App 会误判为「已创建」而走 unlock 分支，导致无法设置主密码（B-12）。
+          markNeedsSetup();
         }
       } catch {
         if (!cancelled) {
@@ -83,7 +107,7 @@ export function useVault(): UseVaultResult {
     return () => {
       cancelled = true;
     };
-  }, [markCreated, markLocked]);
+  }, [markCreated, markLocked, markNeedsSetup, setUnlocked]);
 
   const createVault = useCallback(
     async (password: string): Promise<boolean> => {

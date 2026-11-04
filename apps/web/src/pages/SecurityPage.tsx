@@ -7,10 +7,13 @@
  */
 import { useState } from 'react';
 import { Alert, Box, Button, Paper, Typography } from '@mui/material';
+import LockOutlined from '@mui/icons-material/LockOutlined';
+import PrivacyTipOutlined from '@mui/icons-material/PrivacyTipOutlined';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { AuditLogTable } from '@/components/security/AuditLogTable';
 import { RecoveryCodePanel } from '@/components/security/RecoveryCodePanel';
 import { SaltBackupPanel } from '@/components/security/SaltBackupPanel';
+import { SecurityMasterToggleCard } from '@/components/security/SecurityMasterToggleCard';
 import { SetPasswordDialog } from '@/components/security/SetPasswordDialog';
 import { VaultStatusCard } from '@/components/security/VaultStatusCard';
 import { useAuditLog } from '@/hooks/useAuditLog';
@@ -19,7 +22,11 @@ import { useVault } from '@/hooks/useVault';
 /**
  * 渲染安全与加密页面。
  *
+ * 说明：顶部提供「安全与加密保护总开关」（默认免密直入不加密），下方展示加密状态、常驻风险提示与高级主密码/恢复码/审计日志设置。
+ *
+ * @param _props 页面无外部入参
  * @returns React 节点
+ * @throws 无；组件内部捕获异常并安全降级
  */
 export function SecurityPage() {
   const { status, vaultCreated, recoveryBundle, regenerateRecoveryCode, runtime, createVault, unlock, error } =
@@ -30,11 +37,13 @@ export function SecurityPage() {
 
   return (
     <div data-testid="security-page">
-      <Alert severity="warning" sx={{ mb: 2 }}>
+      <SecurityMasterToggleCard />
+
+      <Alert severity="warning" sx={{ mb: 2, width: '100%', boxSizing: 'border-box' }}>
         忘记主密码且没有恢复码时，数据将永久无法恢复。
       </Alert>
 
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, width: '100%' }}>
         <VaultStatusCard
           created={vaultCreated}
           unlocked={status === 'unlocked'}
@@ -43,8 +52,12 @@ export function SecurityPage() {
           providerName={runtime?.cryptoProvider.name ?? 'web-crypto'}
         />
 
-        <Paper variant="outlined" sx={{ p: 2.5 }}>
-          <Typography variant="h6" sx={{ mb: 1, color: 'var(--lifehub-text)' }}>
+        <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, width: '100%', borderRadius: 3 }}>
+          <Typography
+            variant="h6"
+            sx={{ mb: 1, color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 1 }}
+          >
+            <LockOutlined fontSize="small" color="primary" />
             主密码
           </Typography>
           <Typography variant="body2" sx={{ mb: 1.5, color: 'var(--lifehub-text-muted)' }}>
@@ -65,8 +78,12 @@ export function SecurityPage() {
 
         <AuditLogTable logs={logs} onClear={() => setClearDialogOpen(true)} />
 
-        <Paper variant="outlined" sx={{ p: 2.5 }}>
-          <Typography variant="h6" sx={{ mb: 1, color: 'var(--lifehub-text)' }}>
+        <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, width: '100%', borderRadius: 3 }}>
+          <Typography
+            variant="h6"
+            sx={{ mb: 1, color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 1 }}
+          >
+            <PrivacyTipOutlined fontSize="small" color="primary" />
             隐私说明
           </Typography>
           <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>

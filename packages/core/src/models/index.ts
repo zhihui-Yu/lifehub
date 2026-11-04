@@ -6,7 +6,15 @@
 export { DIRECTIONS, isDirection, validateBill } from './bill';
 export type { Bill, Direction } from './bill';
 
-export { SYSTEM_CATEGORIES, normalizeCategoryName, validateCategory } from './category';
+export {
+  SYSTEM_CATEGORIES,
+  USER_CATEGORY_MEMORY_SIGNATURE,
+  USER_CATEGORY_MEMORY_TEMPLATE_ID,
+  extractBillItemKey,
+  extractBillItemLabel,
+  normalizeCategoryName,
+  validateCategory,
+} from './category';
 export type { Category, CategoryKind, SystemCategorySeed } from './category';
 
 export {
@@ -27,6 +35,14 @@ export type {
 
 export { validateImportBatch } from './import-batch';
 export type { ImportBatch, ImportEncoding, ImportError, ImportSummary } from './import-batch';
+
+export {
+  SOURCE_CHANNELS,
+  SOURCE_CHANNEL_LABELS,
+  classifySourceChannel,
+  isSourceChannel,
+} from './source-channel';
+export type { SourceChannel } from './source-channel';
 
 export { validateRecoveryMeta, validateVaultParams } from './vault';
 export type { RecoveryBundle, RecoveryMeta, VaultKdfParams, VaultParams, WrappedDek } from './vault';

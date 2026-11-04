@@ -28,6 +28,41 @@ export interface DirectionResult {
 /** 退款相关关键词（独立于收支，因为退款在统计上属于收入侧但语义不同）。 */
 const REFUND_KEYWORDS: readonly string[] = ['退款', '退货', '返现', '退回', '已退款'];
 
+/** 微信 / 支付宝导出中显式表示「中性交易 / 不计收支」的收支列标记。 */
+const NEUTRAL_DIRECTION_MARKERS: readonly string[] = ['/', '不计收支', '中性交易', '其他', '其它'];
+
+/**
+ * 投资理财语义关键词。
+ *
+ * 说明：用于识别支付宝等渠道中「收/支 = 不计收支」但实际属于基金申购、定投、黄金 ETF 买入或余额宝收益发放的理财流水；
+ * 严禁包含「零钱通」，以保持微信账单「转入零钱通-来自零钱（收/支 = /）」作为中性交易跳过的既有契约。
+ */
+const INVESTMENT_CONTEXT_KEYWORDS: readonly string[] = [
+  '投资理财',
+  '蚂蚁财富',
+  '基金',
+  '黄金etf',
+  '收益发放',
+  '理财收益',
+  '分红',
+  '申购',
+  '定投',
+  '赎回',
+];
+
+/** 投资理财场景下代表收益入账或赎回回流的关键词。 */
+const INVESTMENT_INCOME_KEYWORDS: readonly string[] = [
+  '收益发放',
+  '收益',
+  '分红',
+  '利息',
+  '结息',
+  '赎回',
+  '卖出',
+  '派息',
+  '转出',
+];
+
 /**
  * 收支方向推断器。
  */
@@ -74,6 +109,20 @@ export class DirectionResolver {
     const column = this.resolveByColumn(row);
     if (column.direction !== null) {
       return column;
+    }
+    const dirCell = (row.direction ?? '').trim();
+    if (NEUTRAL_DIRECTION_MARKERS.includes(dirCell)) {
+      const text = [row.counterparty, row.category, row.note].filter((part) => part !== '').join(' ');
+      if (matchesAny(text, REFUND_KEYWORDS)) {
+        return { direction: 'refund', source: 'column', reason: '命中退款关键词' };
+      }
+      if (matchesAny(text, INVESTMENT_CONTEXT_KEYWORDS)) {
+        if (matchesAny(text, INVESTMENT_INCOME_KEYWORDS)) {
+          return { direction: 'income', source: 'keyword', reason: '投资理财收益或赎回' };
+        }
+        return { direction: 'expense', source: 'keyword', reason: '投资理财买入或转入' };
+      }
+      return { direction: null, source: 'column', reason: '中性交易（不计收支）' };
     }
     // 自动模式下要求「显式负号」：无符号的正数金额不构成方向证据。
     const sign = this.resolveBySign(row, true);

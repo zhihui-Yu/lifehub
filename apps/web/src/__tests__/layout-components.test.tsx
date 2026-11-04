@@ -51,7 +51,7 @@ describe('TopBar', () => {
 });
 
 describe('SideNav', () => {
-  it('展示四个页面入口', () => {
+  it('展示核心页面与生活模块（课表 / 习惯 / AI 分析）导航入口', () => {
     render(
       <MemoryRouter initialEntries={['/import']}>
         <SideNav />
@@ -60,6 +60,10 @@ describe('SideNav', () => {
 
     expect(screen.getByText('导入账单')).toBeInTheDocument();
     expect(screen.getByText('账单列表')).toBeInTheDocument();
+    expect(screen.getByText('分类管理')).toBeInTheDocument();
+    expect(screen.getByText('生活课表')).toBeInTheDocument();
+    expect(screen.getByText('习惯打卡')).toBeInTheDocument();
+    expect(screen.getByText('AI 分析')).toBeInTheDocument();
     expect(screen.getByText('安全与加密')).toBeInTheDocument();
     expect(screen.getByText('设置')).toBeInTheDocument();
     expect(screen.getByText('本地优先 · 端到端加密')).toBeInTheDocument();

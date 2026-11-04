@@ -87,7 +87,7 @@ export function ColumnMappingBoard({ headers, mapping, onChange }: ColumnMapping
     <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 2 }}>
       {/* 左栏：源列 */}
       <Box>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: 'var(--lifehub-text)' }}>
           源列（可拖拽到右侧字段）
         </Typography>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -100,14 +100,19 @@ export function ColumnMappingBoard({ headers, mapping, onChange }: ColumnMapping
               onClick={() => unassign(index)}
               sx={{
                 p: 1.2,
-                border: '1px solid var(--lifehub-border)',
+                border: mapping[index]
+                  ? '1px solid var(--lifehub-primary)'
+                  : '1px solid var(--lifehub-border)',
                 borderRadius: 1.5,
-                backgroundColor: 'var(--lifehub-surface)',
+                backgroundColor: mapping[index]
+                  ? 'rgba(99, 102, 241, 0.10)'
+                  : 'var(--lifehub-surface)',
+                color: 'var(--lifehub-text)',
                 cursor: 'grab',
               }}
               data-testid={`source-column-${index}`}
             >
-              <Typography variant="body2" sx={{ fontWeight: 500 }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
                 {header || `第 ${index + 1} 列`}
               </Typography>
               <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
@@ -120,12 +125,13 @@ export function ColumnMappingBoard({ headers, mapping, onChange }: ColumnMapping
 
       {/* 右栏：语义字段 */}
       <Box>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
+        <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600, color: 'var(--lifehub-text)' }}>
           语义字段（可从左侧拖入，或用下拉选择）
         </Typography>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           {BILL_FIELDS.map((field) => {
             const columnIndex = columnOfField(field);
+            const isMapped = columnIndex !== null;
             return (
               <Box
                 key={field}
@@ -133,19 +139,41 @@ export function ColumnMappingBoard({ headers, mapping, onChange }: ColumnMapping
                 onDrop={(event) => handleDropOnField(event, field)}
                 sx={{
                   p: 1.2,
-                  border: '1px solid var(--lifehub-border)',
+                  border: isMapped
+                    ? '1px solid var(--lifehub-primary)'
+                    : '1px solid var(--lifehub-border)',
                   borderRadius: 1.5,
-                  backgroundColor: 'var(--lifehub-surface)',
+                  backgroundColor: isMapped
+                    ? 'rgba(99, 102, 241, 0.10)'
+                    : 'var(--lifehub-surface)',
+                  color: 'var(--lifehub-text)',
                 }}
                 data-testid={`field-slot-${field}`}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
-                  <Chip size="small" label={FIELD_LABELS[field]} />
+                  <Chip
+                    size="small"
+                    label={FIELD_LABELS[field]}
+                    color={isMapped ? 'primary' : 'default'}
+                    variant={isMapped ? 'filled' : 'outlined'}
+                    sx={{
+                      fontWeight: 600,
+                      color: isMapped ? '#ffffff' : 'var(--lifehub-text)',
+                      borderColor: 'var(--lifehub-border)',
+                    }}
+                  />
                   <FormControl size="small" sx={{ minWidth: 200 }}>
                     <Select
                       value={columnIndex === null ? '' : String(columnIndex)}
                       displayEmpty
                       inputProps={{ 'aria-label': `${FIELD_LABELS[field]} 对应的列` }}
+                      sx={{
+                        color: 'var(--lifehub-text)',
+                        backgroundColor: 'var(--lifehub-bg)',
+                        '& .MuiSelect-icon': {
+                          color: 'var(--lifehub-text-muted)',
+                        },
+                      }}
                       onChange={(event) => {
                         const value = event.target.value;
                         if (value === '') {

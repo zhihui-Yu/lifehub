@@ -6,6 +6,7 @@
  * 说明：展示时间 / 动作 / 对象 / 结果；「清除日志」需二次确认（X-07 ④）。
  */
 import { Box, Button, Paper, Table, TableBody, TableCell, TableHead, TableRow, Typography } from '@mui/material';
+import HistoryOutlined from '@mui/icons-material/HistoryOutlined';
 import type { AuditLog } from '@lifehub/core';
 import { AUDIT_ACTION_LABELS } from '@lifehub/core';
 import { formatRelativeTime } from '@/utils/format';
@@ -26,9 +27,10 @@ export interface AuditLogTableProps {
  */
 export function AuditLogTable({ logs, onClear }: AuditLogTableProps) {
   return (
-    <Paper variant="outlined" sx={{ p: 2.5 }} data-testid="audit-log-table">
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
-        <Typography variant="h6" sx={{ color: 'var(--lifehub-text)' }}>
+    <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 3, overflowX: 'auto' }} data-testid="audit-log-table">
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
+        <Typography variant="h6" sx={{ color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 1 }}>
+          <HistoryOutlined fontSize="small" color="primary" />
           审计日志
         </Typography>
         <Button size="small" color="error" onClick={onClear}>
@@ -40,26 +42,28 @@ export function AuditLogTable({ logs, onClear }: AuditLogTableProps) {
           暂无审计日志。
         </Typography>
       ) : (
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>时间</TableCell>
-              <TableCell>动作</TableCell>
-              <TableCell>对象</TableCell>
-              <TableCell>结果</TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {logs.map((log) => (
-              <TableRow key={log.id}>
-                <TableCell>{formatRelativeTime(log.at)}</TableCell>
-                <TableCell>{AUDIT_ACTION_LABELS[log.action]}</TableCell>
-                <TableCell>{log.target || '—'}</TableCell>
-                <TableCell>{log.success ? '成功' : '失败'}</TableCell>
+        <Box sx={{ overflowX: 'auto' }}>
+          <Table size="small" sx={{ minWidth: 360 }}>
+            <TableHead>
+              <TableRow>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>时间</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>动作</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>对象</TableCell>
+                <TableCell sx={{ whiteSpace: 'nowrap' }}>结果</TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHead>
+            <TableBody>
+              {logs.map((log) => (
+                <TableRow key={log.id}>
+                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{formatRelativeTime(log.at)}</TableCell>
+                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{AUDIT_ACTION_LABELS[log.action]}</TableCell>
+                  <TableCell>{log.target || '—'}</TableCell>
+                  <TableCell sx={{ whiteSpace: 'nowrap' }}>{log.success ? '成功' : '失败'}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Box>
       )}
     </Paper>
   );

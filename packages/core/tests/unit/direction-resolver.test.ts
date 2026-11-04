@@ -108,6 +108,60 @@ describe('DirectionResolver · auto 优先级', () => {
     expect(result.direction).toBe('income');
     expect(result.source).toBe('keyword');
   });
+
+  it('支付宝「收/支 = 不计收支」且属投资理财：余额宝收益发放判定为收入（T-Alipay-Investment-1）', () => {
+    const result = resolver.resolve(
+      row({
+        direction: '不计收支',
+        category: '投资理财',
+        counterparty: '中欧基金管理有限公司',
+        note: '余额宝-2026.10.30-收益发放',
+        amount: '0.73',
+      }),
+    );
+    expect(result.direction).toBe('income');
+    expect(result.source).toBe('keyword');
+  });
+
+  it('支付宝「收/支 = 不计收支」且属投资理财：基金买入与余额宝单次转入判定为支出（T-Alipay-Investment-1）', () => {
+    const buyFund = resolver.resolve(
+      row({
+        direction: '不计收支',
+        category: '投资理财',
+        counterparty: '蚂蚁（杭州）基金销售有限公司',
+        note: '蚂蚁财富-广发医疗保健股票A-买入',
+        amount: '10.00',
+      }),
+    );
+    expect(buyFund.direction).toBe('expense');
+    expect(buyFund.source).toBe('keyword');
+
+    const yuebaoIn = resolver.resolve(
+      row({
+        direction: '不计收支',
+        category: '投资理财',
+        counterparty: '天弘基金管理有限公司',
+        note: '余额宝-单次转入',
+        amount: '6.35',
+      }),
+    );
+    expect(yuebaoIn.direction).toBe('expense');
+    expect(yuebaoIn.source).toBe('keyword');
+  });
+
+  it('微信「收/支 = /」且为转入零钱通时保持中性交易跳过契约（direction = null）', () => {
+    const wechatNeutral = resolver.resolve(
+      row({
+        direction: '/',
+        category: '转入零钱通-来自零钱',
+        counterparty: '/',
+        note: '转入零钱通-来自零钱',
+        amount: '38.79',
+      }),
+    );
+    expect(wechatNeutral.direction).toBeNull();
+    expect(wechatNeutral.source).toBe('column');
+  });
 });
 
 describe('DirectionResolver · 默认关键词表', () => {

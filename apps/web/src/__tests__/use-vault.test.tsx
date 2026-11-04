@@ -12,6 +12,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecoveryBundle } from '@lifehub/core';
 import { useVault } from '@/hooks/useVault';
+import { useSettingsStore } from '@/store';
 import { dekProvider, useVaultStore } from '@/store/vault-store';
 import { makeRecoveryBundle } from '@/__tests__/test-utils/fixtures';
 
@@ -38,6 +39,7 @@ vi.mock('@/platform', () => ({
 
 describe('useVault 会话生命周期', () => {
   beforeEach(() => {
+    useSettingsStore.getState().setSecurityEnabled(true);
     useVaultStore.setState({
       status: 'uninitialized',
       vaultCreated: false,
@@ -55,17 +57,33 @@ describe('useVault 会话生命周期', () => {
     fakeVaultService.generateRecoveryBundle.mockReset();
   });
 
-  it('首次挂载时打开数据库并探测保险库是否存在', async () => {
+  it('免密模式（securityEnabled=false）首次挂载自动解锁 DEK 并保持 unlocked 态', async () => {
+    useSettingsStore.getState().setSecurityEnabled(false);
+    fakeRuntime.vaultRepository.load.mockResolvedValue({ kdf: 'scrypt' });
+
     const { result } = renderHook(() => useVault());
 
     await waitFor(() => {
       expect(fakeRuntime.storageAdapter.open).toHaveBeenCalled();
     });
-    expect(useVaultStore.getState().status).toBe('needs-setup');
-    expect(result.current.vaultCreated).toBe(true);
+    expect(dekProvider.isUnlocked()).toBe(true);
+    expect(result.current.status).toBe('unlocked');
+    expect(useVaultStore.getState().status).toBe('unlocked');
   });
 
-  it('已存在保险库时进入「已锁定」态', async () => {
+  it('首次挂载（无保险库）进入「待设置」态且 vaultCreated 为 false', async () => {
+    const { result } = renderHook(() => useVault());
+
+    await waitFor(() => {
+      expect(fakeRuntime.storageAdapter.open).toHaveBeenCalled();
+    });
+    // 回归 B-12：首次进入必须让 vaultCreated=false，否则 App 会误走 unlock 分支，
+    // 导致「一直提示解锁却永远解不开、无法设置主密码」。
+    expect(useVaultStore.getState().status).toBe('needs-setup');
+    expect(result.current.vaultCreated).toBe(false);
+  });
+
+  it('已存在保险库且内存 DEK 未解锁时进入「已锁定」态', async () => {
     fakeRuntime.vaultRepository.load.mockResolvedValue({ kdf: 'scrypt' });
     const { result } = renderHook(() => useVault());
 
@@ -73,6 +91,22 @@ describe('useVault 会话生命周期', () => {
       expect(result.current.status).toBe('locked');
     });
     expect(result.current.vaultCreated).toBe(true);
+  });
+
+  it('已解锁态下重新挂载 useVault（如路由切换到 /bills）时保持 unlocked 而不重置为 locked', async () => {
+    fakeRuntime.vaultRepository.load.mockResolvedValue({ kdf: 'scrypt' });
+    const dek = new Uint8Array(32).fill(9);
+    dekProvider.setDek(dek, 3);
+    useVaultStore.setState({ status: 'unlocked', vaultCreated: true, keyVersion: 3 });
+
+    const { result } = renderHook(() => useVault());
+
+    await waitFor(() => {
+      expect(fakeRuntime.storageAdapter.open).toHaveBeenCalled();
+    });
+    expect(result.current.status).toBe('unlocked');
+    expect(result.current.vaultCreated).toBe(true);
+    expect(useVaultStore.getState().keyVersion).toBe(3);
   });
 
   it('createVault 成功后把 DEK 装入供给器并进入「已解锁」态', async () => {

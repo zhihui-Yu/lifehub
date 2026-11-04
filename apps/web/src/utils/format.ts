@@ -106,3 +106,34 @@ export function formatBytes(bytes: number): string {
   }
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
+
+/**
+ * 将整数分格式化为适合柱状图顶部展示的紧凑人民币金额文本。
+ *
+ * 说明：全程使用整数算术，严禁 `parseFloat`；大于等于 10,000 元（1,000,000 分）时折算为「¥X.XX万」，否则展示「¥X」或「¥X.XX」。
+ *
+ * @param cents 金额（整数分，非负）
+ * @returns 紧凑金额字符串（如 `¥1.33万`、`¥328.50`、`¥328`）
+ * @throws 无；纯整数格式化函数不抛出异常
+ */
+export function formatCompactYuan(cents: number): string {
+  const safeCents = Math.max(0, Math.trunc(cents));
+  if (safeCents >= 1_000_000) {
+    const scaledWan = Math.round(safeCents / 10_000);
+    const wanInt = Math.floor(scaledWan / 100);
+    const wanDec = scaledWan % 100;
+    if (wanDec === 0) {
+      return `¥${wanInt}万`;
+    }
+    if (wanDec % 10 === 0) {
+      return `¥${wanInt}.${wanDec / 10}万`;
+    }
+    return `¥${wanInt}.${String(wanDec).padStart(2, '0')}万`;
+  }
+  const yuan = Math.floor(safeCents / 100);
+  const fen = safeCents % 100;
+  if (fen === 0) {
+    return `¥${yuan}`;
+  }
+  return `¥${yuan}.${String(fen).padStart(2, '0')}`;
+}

@@ -13,6 +13,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '@/App';
 import { SetPasswordDialog } from '@/components/security/SetPasswordDialog';
+import { useSettingsStore } from '@/store';
 // 说明：jsdom 未实现 window.matchMedia，App 的主题跟随逻辑需要它，这里补齐。
 import '@/__tests__/test-utils/polyfills';
 
@@ -157,6 +158,17 @@ describe('App 阻断式首次引导（X-02 ②）', () => {
     vaultState.createVault.mockReset();
     vaultState.unlock.mockReset();
     vaultState.createVault.mockResolvedValue(true);
+    useSettingsStore.getState().setSecurityEnabled(true);
+  });
+
+  it('当安全与加密总开关默认关闭（securityEnabled=false）时，免密直入不弹出主密码对话框', async () => {
+    useSettingsStore.getState().setSecurityEnabled(false);
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('route-placeholder')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('设置主密码')).not.toBeInTheDocument();
   });
 
   it('未创建保险库时进入任何页面都会弹出设置主密码对话框', async () => {
@@ -208,5 +220,45 @@ describe('App 阻断式首次引导（X-02 ②）', () => {
       expect(screen.getByTestId('route-placeholder')).toBeInTheDocument();
     });
     expect(screen.queryByText('设置主密码')).not.toBeInTheDocument();
+  });
+
+  it('保险库处于锁定态（status=locked）时自动弹出解锁保险库对话框', async () => {
+    vaultState.status = 'locked';
+    vaultState.vaultCreated = true;
+    vaultState.unlock.mockResolvedValue(true);
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText('解锁保险库')).toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText('主密码'), { target: { value: 'correct-password' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: '解锁' }));
+    });
+    await waitFor(() => {
+      expect(vaultState.unlock).toHaveBeenCalledWith('correct-password');
+    });
+  });
+
+  it('切换深浅色主题时同步更新 html.dark 与 MUI 主题', async () => {
+    const { useSettingsStore } = await import('@/store');
+    vaultState.status = 'unlocked';
+    vaultState.vaultCreated = true;
+
+    act(() => {
+      useSettingsStore.getState().setTheme('dark');
+    });
+    render(<App />);
+
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains('dark')).toBe(true);
+    });
+
+    act(() => {
+      useSettingsStore.getState().setTheme('light');
+    });
+    await waitFor(() => {
+      expect(document.documentElement.classList.contains('dark')).toBe(false);
+    });
   });
 });

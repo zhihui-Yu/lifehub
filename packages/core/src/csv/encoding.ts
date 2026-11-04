@@ -48,6 +48,9 @@ export function stripBom(bytes: Uint8Array): Uint8Array {
  * @returns 解码文本；编码非法时返回 null
  */
 function decodeStrict(bytes: Uint8Array, label: string): string | null {
+  if (bytes.includes(0xff)) {
+    return null;
+  }
   try {
     const decoder = new TextDecoder(label, { fatal: true });
     return decoder.decode(bytes);

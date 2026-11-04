@@ -45,6 +45,8 @@ function plan(partial: Partial<ImportPlan> = {}): ImportPlan {
     preview: [],
     duplicateFile: false,
     duplicateOf: null,
+    sourceChannel: 'csv',
+    crossSourceCandidates: [],
     ...partial,
   };
 }
@@ -158,6 +160,7 @@ describe('MappingPage', () => {
       errors: [],
       durationMs: 5,
       duplicateFile: false,
+      rowCrossSourceDuplicate: 0,
     });
     useImportStore.setState({
       plan: plan(),
@@ -172,8 +175,97 @@ describe('MappingPage', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('成功导入 2 条，跳过 0 条（重复）')).toBeInTheDocument();
+      expect(screen.getByText('成功导入 2 条')).toBeInTheDocument();
     });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('自动识别全部必填字段后展示零配置横幅与字段摘要 Chip，支持顶部「直接开始导入」一键入库', async () => {
+    run.mockResolvedValue({
+      batchId: 'batch-quick',
+      rowTotal: 64,
+      rowImported: 63,
+      rowSkipped: 1,
+      rowDuplicated: 0,
+      errors: [],
+      durationMs: 8,
+      duplicateFile: false,
+      rowCrossSourceDuplicate: 0,
+    });
+    useImportStore.setState({
+      plan: plan({ rowCount: 64 }),
+      mapping: { 0: 'occurredAt', 1: 'amount', 2: 'counterparty' },
+      stage: 'mapping',
+    });
+    renderPage();
+
+    const banner = screen.getByTestId('auto-mapping-banner');
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent('系统已自动识别并完成全部字段匹配（共 64 行待导入），无需手动选择字段！');
+    expect(banner).toHaveTextContent('日期 ← 日期');
+    expect(banner).toHaveTextContent('金额 ← 金额');
+    expect(banner).toHaveTextContent('交易对方 ← 对方');
+
+    const quickBtn = screen.getByTestId('quick-commit-button');
+    expect(quickBtn).toBeEnabled();
+    await act(async () => {
+      quickBtn.click();
+    });
+
+    await waitFor(() => {
+      expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('支持通过「收起字段映射 / 展开字段映射」按钮折叠或展开映射看板并同步更新 aria-expanded', async () => {
+    useImportStore.setState({
+      plan: plan(),
+      mapping: { 0: 'occurredAt', 1: 'amount', 2: 'counterparty' },
+      stage: 'mapping',
+    });
+    renderPage();
+
+    const toggleBtn = screen.getByTestId('toggle-mapping-details');
+    expect(toggleBtn).toHaveTextContent('收起字段映射');
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'true');
+
+    await act(async () => {
+      toggleBtn.click();
+    });
+    expect(toggleBtn).toHaveTextContent('展开字段映射');
+    expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('检测到重复文件时展示覆盖重导复选框与「立即重新导入」按钮，点击后传入 allowDuplicate 与 overwriteExisting', async () => {
+    run.mockResolvedValue({
+      batchId: 'batch-reimport',
+      rowTotal: 10,
+      rowImported: 10,
+      rowSkipped: 0,
+      rowDuplicated: 0,
+      errors: [],
+      durationMs: 6,
+      duplicateFile: false,
+      rowCrossSourceDuplicate: 0,
+    });
+    const mapping: ColumnMapping = { 0: 'occurredAt', 1: 'amount', 2: 'counterparty' };
+    useImportStore.setState({
+      plan: plan({ duplicateFile: true, duplicateOf: '2024-01-15T08:00:00.000Z' }),
+      mapping,
+      stage: 'mapping',
+    });
+    renderPage();
+
+    expect(screen.getByTestId('duplicate-file-alert')).toBeInTheDocument();
+    const reimportBtn = screen.getByTestId('reimport-button');
+    expect(reimportBtn).toBeEnabled();
+
+    await act(async () => {
+      reimportBtn.click();
+    });
+
+    await waitFor(() => {
+      expect(run).toHaveBeenCalledWith(mapping, { allowDuplicate: true, overwriteExisting: true });
+    });
   });
 });

@@ -8,6 +8,7 @@
  */
 import { useState } from 'react';
 import { Alert, Box, Button, Paper, Typography } from '@mui/material';
+import VpnKeyOutlined from '@mui/icons-material/VpnKeyOutlined';
 import type { RecoveryBundle } from '@lifehub/core';
 
 /** 恢复码面板的属性。 */
@@ -31,7 +32,11 @@ export function RecoveryCodePanel({ bundle, onRegenerate, onDownloadSalt }: Reco
 
   return (
     <Paper variant="outlined" sx={{ p: 2.5 }} data-testid="recovery-code-panel">
-      <Typography variant="h6" sx={{ mb: 1, color: 'var(--lifehub-text)' }}>
+      <Typography
+        variant="h6"
+        sx={{ mb: 1, color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 1 }}
+      >
+        <VpnKeyOutlined fontSize="small" color="primary" />
         恢复码
       </Typography>
       <Alert severity="warning" sx={{ mb: 2 }}>
