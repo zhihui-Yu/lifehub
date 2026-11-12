@@ -710,3 +710,403 @@ export function restoreBillsFromCloud(
     extraModules,
   };
 }
+
+/**
+ * 计算 UTF-8 字符串的 SHA-1 十六进制摘要（用于腾讯云 COS 签名）。
+ */
+async function sha1Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-1', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * 计算 HMAC-SHA1 并返回 Base64 字符串（用于阿里云 OSS / 华为云 OBS / S3 V2 预签名）。
+ */
+async function hmacSha1Base64(secret: string, message: string): Promise<string> {
+  const keyBytes = new TextEncoder().encode(secret);
+  const msgBytes = new TextEncoder().encode(message);
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'HMAC', hash: 'SHA-1' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('sign', cryptoKey, msgBytes);
+  const arr = new Uint8Array(sig);
+  let binary = '';
+  for (let i = 0; i < arr.length; i++) {
+    binary += String.fromCharCode(arr[i] ?? 0);
+  }
+  return typeof btoa === 'function' ? btoa(binary) : Buffer.from(binary, 'binary').toString('base64');
+}
+
+/**
+ * 计算 HMAC-SHA1 并返回小写十六进制字符串（用于腾讯云 COS 签名）。
+ */
+async function hmacSha1Hex(secret: string, message: string): Promise<string> {
+  const keyBytes = new TextEncoder().encode(secret);
+  const msgBytes = new TextEncoder().encode(message);
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    keyBytes,
+    { name: 'HMAC', hash: 'SHA-1' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('sign', cryptoKey, msgBytes);
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * 解析存储桶名称与子目录前缀。
+ */
+function parseBucketAndObjectPath(
+  rawBucket: string,
+  fileName = 'lifehub-bills-backup.json.enc',
+): { bucketName: string; objectPath: string } {
+  const cleaned = rawBucket.trim().replace(/^\/+|\/+$/g, '');
+  const parts = cleaned.split('/').filter(Boolean);
+  const bucketName = parts[0] || 'lifehub-backup';
+  const prefix = parts.slice(1).join('/');
+  const objectPath = prefix ? `${prefix}/${fileName}` : fileName;
+  return { bucketName, objectPath };
+}
+
+/**
+ * 根据云存储配置构造真实带签名的 HTTP 请求信息（支持阿里云 OSS、腾讯云 COS、华为云 OBS、S3 与坚果云 WebDAV）。
+ */
+export async function buildSignedCloudHttpRequest(
+  config: CloudStorageConfig,
+  method: 'PUT' | 'GET',
+  fileName = 'lifehub-bills-backup.json.enc',
+  overrideEndpoint?: string,
+): Promise<{
+  url: string;
+  headers: Record<string, string>;
+  effectiveProvider: CloudProviderId;
+}> {
+  const rawEndpoint = (overrideEndpoint ?? config.endpoint).trim().replace(/\/+$/, '');
+  const accessKey = config.accessKey.trim();
+  const secretKey = config.secretKey.trim();
+  const { bucketName, objectPath } = parseBucketAndObjectPath(config.bucket, fileName);
+
+  // 根据 Endpoint 域名或密钥特征自动识别真实云厂商协议
+  let effectiveProvider: CloudProviderId = config.provider;
+  if (rawEndpoint.includes('myqcloud.com')) {
+    effectiveProvider = 'tencent-cos';
+  } else if (rawEndpoint.includes('aliyuncs.com')) {
+    effectiveProvider = 'aliyun-oss';
+  } else if (rawEndpoint.includes('myhuaweicloud.com')) {
+    effectiveProvider = 'huawei-obs';
+  } else if (rawEndpoint.includes('jianguoyun.com') || rawEndpoint.endsWith('/dav')) {
+    effectiveProvider = 'jianguoyun-webdav';
+  }
+
+  // WebDAV Basic Auth
+  if (effectiveProvider === 'jianguoyun-webdav') {
+    const authB64 =
+      typeof btoa === 'function'
+        ? btoa(`${accessKey}:${secretKey}`)
+        : Buffer.from(`${accessKey}:${secretKey}`, 'utf8').toString('base64');
+    const url = `${rawEndpoint}/${bucketName}/${objectPath}`;
+    const headers: Record<string, string> = {
+      Authorization: `Basic ${authB64}`,
+    };
+    if (method === 'PUT') {
+      headers['Content-Type'] = 'application/octet-stream';
+    }
+    return { url, headers, effectiveProvider };
+  }
+
+  const urlObj = new URL(rawEndpoint.startsWith('http') ? rawEndpoint : `https://${rawEndpoint}`);
+  const protocol = urlObj.protocol;
+  const endpointHost = urlObj.host;
+  const host = endpointHost.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)
+    ? endpointHost
+    : `${bucketName}.${endpointHost}`;
+
+  // 腾讯云 COS XML 预签名算法
+  if (effectiveProvider === 'tencent-cos') {
+    const nowSec = Math.floor(Date.now() / 1000) - 60;
+    const expSec = nowSec + 900;
+    const keyTime = `${nowSec};${expSec}`;
+    const signKey = await hmacSha1Hex(secretKey, keyTime);
+    const httpString = `${method.toLowerCase()}\n/${objectPath}\n\nhost=${host.toLowerCase()}\n`;
+    const sha1Http = await sha1Hex(httpString);
+    const stringToSign = `sha1\n${keyTime}\n${sha1Http}\n`;
+    const signature = await hmacSha1Hex(signKey, stringToSign);
+    const query = [
+      'q-sign-algorithm=sha1',
+      `q-ak=${encodeURIComponent(accessKey)}`,
+      `q-sign-time=${encodeURIComponent(keyTime)}`,
+      `q-key-time=${encodeURIComponent(keyTime)}`,
+      'q-header-list=host',
+      'q-url-param-list=',
+      `q-signature=${signature}`,
+    ].join('&');
+    const headers: Record<string, string> = {};
+    if (method === 'PUT') {
+      headers['Content-Type'] = 'application/octet-stream';
+    }
+    return {
+      url: `${protocol}//${host}/${objectPath}?${query}`,
+      headers,
+      effectiveProvider,
+    };
+  }
+
+  // 阿里云 OSS / 华为云 OBS / AWS S3 V2 URL Query 预签名算法
+  const expires = Math.floor(Date.now() / 1000) + 900;
+  const contentType = method === 'PUT' ? 'application/octet-stream' : '';
+  const canonicalResource = `/${bucketName}/${objectPath}`;
+  const stringToSign = `${method}\n\n${contentType}\n${expires}\n${canonicalResource}`;
+  const signature = await hmacSha1Base64(secretKey, stringToSign);
+
+  const keyParamName =
+    effectiveProvider === 'aliyun-oss'
+      ? 'OSSAccessKeyId'
+      : effectiveProvider === 'huawei-obs'
+        ? 'AccessKeyId'
+        : 'AWSAccessKeyId';
+
+  const query = `${keyParamName}=${encodeURIComponent(accessKey)}&Expires=${expires}&Signature=${encodeURIComponent(signature)}`;
+  const headers: Record<string, string> = {};
+  if (contentType) {
+    headers['Content-Type'] = contentType;
+  }
+
+  return {
+    url: `${protocol}//${host}/${objectPath}?${query}`,
+    headers,
+    effectiveProvider,
+  };
+}
+
+/**
+ * 通过本地宿主云代理（免 CORS）或浏览器直连发送云存储 HTTP 请求。
+ */
+async function executeCloudHttpRequest(
+  url: string,
+  method: 'PUT' | 'GET' | 'MKCOL',
+  headers: Record<string, string>,
+  bodyText?: string,
+): Promise<{ status: number; body: string }> {
+  // 1. 优先尝试通过本地宿主代理（Windows 桌面版或 Vite 开发服内置代理，100% 免除 OSS/COS 跨域 CORS 限制）
+  try {
+    const proxyResp = await fetch('/__lifehub_desktop__/cloud-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        method,
+        headers,
+        body: bodyText ?? '',
+      }),
+    });
+    if (proxyResp.ok) {
+      const data = (await proxyResp.json()) as {
+        proxied?: boolean;
+        status?: number;
+        body?: string;
+      };
+      if (data && data.proxied === true && typeof data.status === 'number') {
+        return { status: data.status, body: data.body ?? '' };
+      }
+    }
+  } catch {
+    // 非桌面或无本地代理环境，回退至浏览器直连 fetch
+  }
+
+  // 2. 浏览器 / 移动端直连 fetch
+  const resp = await fetch(url, {
+    method,
+    headers,
+    ...(method === 'PUT' && bodyText !== undefined ? { body: bodyText } : {}),
+  });
+  const respText = await resp.text();
+  return { status: resp.status, body: respText };
+}
+
+/**
+ * 从 OSS / COS / OBS 错误 XML 中提取可读错误信息与正确 Region Endpoint。
+ */
+function parseCloudXmlError(xml: string): {
+  code?: string;
+  message?: string;
+  recommendedEndpoint?: string;
+} {
+  const codeMatch = /<Code>([^<]+)<\/Code>/i.exec(xml);
+  const msgMatch = /<Message>([^<]+)<\/Message>/i.exec(xml);
+  const endpointMatch = /<Endpoint>([^<]+)<\/Endpoint>/i.exec(xml);
+  return {
+    code: codeMatch?.[1]?.trim(),
+    message: msgMatch?.[1]?.trim(),
+    recommendedEndpoint: endpointMatch?.[1]?.trim(),
+  };
+}
+
+/**
+ * 将本地已生成的加密备份快照真正通过 HTTP PUT 上传至远程 OSS / COS / OBS / WebDAV / S3 存储桶。
+ *
+ * 说明：
+ * - 自动对请求进行 HMAC-SHA1 预签名；
+ * - 若阿里云 OSS 返回跨地域 `<Endpoint>` 重定向提示，自动修正 Endpoint 并重签上传；
+ * - 若发现桶名为腾讯云格式（如 `xxx-1308298144`）或密钥为 `AKID` 开头但誤选了阿里云 OSS，也会给出明确指引。
+ */
+export async function pushSnapshotToRemoteCloud(
+  config: CloudStorageConfig,
+): Promise<{
+  remoteUrl: string;
+  correctedEndpoint?: string;
+}> {
+  const accessKey = config.accessKey.trim();
+  const secretKey = config.secretKey.trim();
+  if (!accessKey || !secretKey) {
+    throw new LifeHubError(
+      'LIFEHUB_E_VALIDATION',
+      '尚未填写 AccessKey ID 或 AccessKey Secret，无法上传至远程 OSS/COS 存储桶（仅保存在本机缓存）。请填写完整的密钥后重试。',
+    );
+  }
+
+  const rawSnapshot =
+    typeof window !== 'undefined' && window.localStorage
+      ? window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY)
+      : null;
+  if (!rawSnapshot) {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '本地尚无待上传的加密备份快照');
+  }
+
+  // 智能检测：若用户桶名带有腾讯云 10 位 APPID 后缀（如 lifehub-1308298144）或密钥以 AKID 开头，但仍使用阿里云默认域名
+  if (
+    config.provider === 'aliyun-oss' &&
+    config.endpoint.includes('aliyuncs.com') &&
+    (accessKey.startsWith('AKID') || /-\d{10}$/.test(config.bucket.trim()))
+  ) {
+    // 先尝试按当前配置请求，若 403/404 则在错误中明确提示是否属于腾讯云 COS
+  }
+
+  const signed = await buildSignedCloudHttpRequest(config, 'PUT', 'lifehub-bills-backup.json.enc');
+
+  // 若为 WebDAV，先尝试创建目录（MKCOL）
+  if (signed.effectiveProvider === 'jianguoyun-webdav') {
+    const dirUrl = signed.url.replace(/\/lifehub-bills-backup\.json\.enc$/, '/');
+    try {
+      await executeCloudHttpRequest(dirUrl, 'MKCOL', signed.headers);
+    } catch {
+      // 目录已存在时忽略
+    }
+  }
+
+  let result = await executeCloudHttpRequest(signed.url, 'PUT', signed.headers, rawSnapshot);
+  let correctedEndpoint: string | undefined;
+
+  // 若阿里云 OSS 提示 Bucket 位于其他地域（如 oss-cn-shanghai / oss-cn-beijing），自动切换至正确地域 Endpoint 重试
+  if (result.status >= 300) {
+    const errInfo = parseCloudXmlError(result.body);
+    if (errInfo.recommendedEndpoint) {
+      const { bucketName } = parseBucketAndObjectPath(config.bucket);
+      let cleanEndpointHost = errInfo.recommendedEndpoint;
+      if (cleanEndpointHost.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)) {
+        cleanEndpointHost = cleanEndpointHost.slice(bucketName.length + 1);
+      }
+      correctedEndpoint = `https://${cleanEndpointHost}`;
+      const retrySigned = await buildSignedCloudHttpRequest(
+        config,
+        'PUT',
+        'lifehub-bills-backup.json.enc',
+        correctedEndpoint,
+      );
+      result = await executeCloudHttpRequest(
+        retrySigned.url,
+        'PUT',
+        retrySigned.url ? retrySigned.headers : signed.headers,
+        rawSnapshot,
+      );
+      if (result.status >= 200 && result.status < 300) {
+        saveCloudConfig({ ...config, endpoint: correctedEndpoint });
+        return {
+          remoteUrl: retrySigned.url.split('?')[0] ?? retrySigned.url,
+          correctedEndpoint,
+        };
+      }
+    }
+  }
+
+  if (result.status < 200 || result.status >= 300) {
+    const errInfo = parseCloudXmlError(result.body);
+    const cosHint =
+      config.provider === 'aliyun-oss' && /-\d{10}$/.test(config.bucket.trim())
+        ? '（提示：您的 Bucket 名称带有 10 位数字后缀如 -1308298144，这通常是「腾讯云 COS」的命名格式，若您使用的是腾讯云，请在上方将云服务商切换为「腾讯云 COS」并填写所属地域 Endpoint）'
+        : '';
+    const detail = errInfo.code
+      ? `${errInfo.code}: ${errInfo.message ?? ''}`
+      : result.body.slice(0, 160) || `HTTP ${result.status}`;
+    throw new LifeHubError(
+      'LIFEHUB_E_STORAGE',
+      `远程对象存储拒绝了上传请求（HTTP ${result.status} · ${detail}）${cosHint}`,
+    );
+  }
+
+  return {
+    remoteUrl: signed.url.split('?')[0] ?? signed.url,
+    ...(correctedEndpoint ? { correctedEndpoint } : {}),
+  };
+}
+
+/**
+ * 从远程 OSS / COS / OBS / WebDAV / S3 存储桶拉取最新的加密备份快照并写入本地缓存。
+ */
+export async function pullSnapshotFromRemoteCloud(config: CloudStorageConfig): Promise<void> {
+  const accessKey = config.accessKey.trim();
+  const secretKey = config.secretKey.trim();
+  if (!accessKey || !secretKey) {
+    return;
+  }
+
+  const signed = await buildSignedCloudHttpRequest(config, 'GET', 'lifehub-bills-backup.json.enc');
+  let result = await executeCloudHttpRequest(signed.url, 'GET', signed.headers);
+
+  if (result.status >= 300) {
+    const errInfo = parseCloudXmlError(result.body);
+    if (errInfo.recommendedEndpoint) {
+      const { bucketName } = parseBucketAndObjectPath(config.bucket);
+      let cleanEndpointHost = errInfo.recommendedEndpoint;
+      if (cleanEndpointHost.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)) {
+        cleanEndpointHost = cleanEndpointHost.slice(bucketName.length + 1);
+      }
+      const correctedEndpoint = `https://${cleanEndpointHost}`;
+      const retrySigned = await buildSignedCloudHttpRequest(
+        config,
+        'GET',
+        'lifehub-bills-backup.json.enc',
+        correctedEndpoint,
+      );
+      result = await executeCloudHttpRequest(retrySigned.url, 'GET', retrySigned.headers);
+      if (result.status >= 200 && result.status < 300) {
+        saveCloudConfig({ ...config, endpoint: correctedEndpoint });
+      }
+    }
+  }
+
+  if (result.status >= 200 && result.status < 300 && result.body.trim().startsWith('{')) {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(CLOUD_SNAPSHOT_STORAGE_KEY, result.body.trim());
+    }
+  } else if (result.status >= 400) {
+    const errInfo = parseCloudXmlError(result.body);
+    const detail = errInfo.code
+      ? `${errInfo.code}: ${errInfo.message ?? ''}`
+      : `HTTP ${result.status}`;
+    throw new LifeHubError(
+      'LIFEHUB_E_STORAGE',
+      `从远程云存储拉取备份文件失败（${detail}）`,
+    );
+  }
+}
+

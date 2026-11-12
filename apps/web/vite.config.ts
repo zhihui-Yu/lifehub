@@ -73,6 +73,52 @@ function lifehubDesktopNativePlugin(): Plugin {
         return;
       }
 
+      if (req.url === '/__lifehub_desktop__/cloud-proxy' && req.method === 'POST') {
+        let rawBody = '';
+        req.on('data', (chunk: Buffer) => {
+          rawBody += chunk.toString('utf8');
+        });
+        req.on('end', () => {
+          void (async () => {
+            try {
+              const parsed = JSON.parse(rawBody) as {
+                url?: string;
+                method?: string;
+                headers?: Record<string, string>;
+                body?: string;
+              };
+              const targetUrl = parsed.url || '';
+              const method = (parsed.method || 'GET').toUpperCase();
+              const headers = parsed.headers ?? {};
+              const upstream = await fetch(targetUrl, {
+                method,
+                headers,
+                ...(method === 'PUT' && parsed.body !== undefined ? { body: parsed.body } : {}),
+              });
+              const text = await upstream.text();
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(
+                JSON.stringify({
+                  proxied: true,
+                  status: upstream.status,
+                  body: text,
+                }),
+              );
+            } catch (e) {
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(
+                JSON.stringify({
+                  proxied: true,
+                  status: 502,
+                  body: e instanceof Error ? e.message : 'proxy failed',
+                }),
+              );
+            }
+          })();
+        });
+        return;
+      }
+
       next();
     });
   };

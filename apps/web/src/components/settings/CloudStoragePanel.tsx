@@ -31,6 +31,8 @@ import {
   getCloudProviderPreset,
   loadCloudConfig,
   loadLatestCloudSyncRecord,
+  pullSnapshotFromRemoteCloud,
+  pushSnapshotToRemoteCloud,
   restoreBillsFromCloud,
   saveCloudConfig,
   testCloudConnection,
@@ -176,33 +178,51 @@ export function CloudStoragePanel() {
       const record = uploadBillsToCloud(config, bills, encryptionPassword, extraModulesState);
       setLastRecord(record);
       setDecryptedSource(null);
-      setBanner({
-        severity: 'success',
-        text: `已使用登录密码加密并将 ${record.billCount} 条账单及全量生活数据上传至「${record.providerName}」（路径：${record.objectKey}）`,
-      });
+
+      const hasCredentials =
+        config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0;
+      if (!hasCredentials) {
+        setBanner({
+          severity: 'warning',
+          text: `已在本地生成加密快照（${record.objectKey}），但尚未填写 AccessKey ID 与 AccessKey Secret，文件尚未推送到远程「${record.providerName}」存储桶！请在上方填入密钥后再点击上传。`,
+        });
+      } else {
+        setBanner({
+          severity: 'info',
+          text: `正在将加密备份推送至远程「${record.providerName}」（${record.objectKey}）…`,
+        });
+      }
+
       void (async () => {
         try {
           const freshExtra = await loadLocalExtraModules();
           setExtraModulesState(freshExtra);
-          const hasExtraDiff =
-            (freshExtra.categories?.length ?? 0) !== (extraModulesState.categories?.length ?? 0) ||
-            (freshExtra.scheduleSlots?.length ?? 0) !== (extraModulesState.scheduleSlots?.length ?? 0) ||
-            (freshExtra.habits?.length ?? 0) !== (extraModulesState.habits?.length ?? 0) ||
-            (freshExtra.habitCheckIns?.length ?? 0) !== (extraModulesState.habitCheckIns?.length ?? 0) ||
-            (freshExtra.diaryEntries?.length ?? 0) !== (extraModulesState.diaryEntries?.length ?? 0) ||
-            (freshExtra.completionEvents?.length ?? 0) !==
-              (extraModulesState.completionEvents?.length ?? 0);
-          if (hasExtraDiff) {
-            const refreshedRecord = uploadBillsToCloud(
-              config,
-              bills,
-              encryptionPassword,
-              freshExtra,
-            );
-            setLastRecord(refreshedRecord);
+          const refreshedRecord = uploadBillsToCloud(
+            config,
+            bills,
+            encryptionPassword,
+            freshExtra,
+          );
+          setLastRecord(refreshedRecord);
+
+          if (hasCredentials) {
+            const remoteRes = await pushSnapshotToRemoteCloud(config);
+            if (remoteRes.correctedEndpoint) {
+              updateConfig({ endpoint: remoteRes.correctedEndpoint });
+            }
+            setBanner({
+              severity: 'success',
+              text: `已使用登录密码加密并将 ${refreshedRecord.billCount} 条账单及全量生活数据真实上传至「${refreshedRecord.providerName}」（远程地址：${remoteRes.remoteUrl}）`,
+            });
           }
-        } catch {
-          // 忽略后台异步刷新异常
+        } catch (remoteErr) {
+          setBanner({
+            severity: 'error',
+            text:
+              remoteErr instanceof Error
+                ? remoteErr.message
+                : '推送至远程对象存储失败，请检查 Endpoint、Bucket 与密钥权限',
+          });
         }
       })();
     } catch (err) {
@@ -215,6 +235,9 @@ export function CloudStoragePanel() {
 
   const handleRestore = async (): Promise<void> => {
     try {
+      if (config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0) {
+        await pullSnapshotFromRemoteCloud(config);
+      }
       const {
         bills: restoredBills,
         record,
