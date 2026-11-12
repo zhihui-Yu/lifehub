@@ -1,6 +1,6 @@
 {
   "name": "@lifehub/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "LifeHub Web 表现层：Vite + React 18 + MUI v6 + Tailwind CSS",
   "type": "module",

@@ -28,10 +28,12 @@ import { extname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
+const ROOT_PKG = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+const APP_VERSION = ROOT_PKG.version || '0.2.0';
 const WEB_DIST_DIR = join(REPO_ROOT, 'apps', 'web', 'dist');
 const VENDOR_WEBVIEW2_DIR = join(REPO_ROOT, 'scripts', 'vendor', 'webview2');
 const BUILD_TMP_DIR = join(REPO_ROOT, 'apps', 'web', '.desktop-build');
-const OUTPUT_EXE_PATH = join(REPO_ROOT, 'LifeHub-Desktop-win-x64.exe');
+const OUTPUT_EXE_PATH = join(REPO_ROOT, `LifeHub-Desktop-win-x64-v${APP_VERSION}.exe`);
 const CSC_PATH = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
 
 const MIME_MAP = {
@@ -133,9 +135,9 @@ function main() {
   csLines.push(`using Microsoft.Web.WebView2.Core;`);
   csLines.push(`using Microsoft.Web.WebView2.WinForms;`);
   csLines.push(``);
-  csLines.push(`[assembly: AssemblyTitle("LifeHub Desktop")]`);
+  csLines.push(`[assembly: AssemblyTitle("LifeHub Desktop v${APP_VERSION}")]`);
   csLines.push(`[assembly: AssemblyProduct("LifeHub")]`);
-  csLines.push(`[assembly: AssemblyVersion("0.2.0.0")]`);
+  csLines.push(`[assembly: AssemblyVersion("${APP_VERSION}.0")]`);
   csLines.push(``);
   csLines.push(`namespace LifeHubDesktop {`);
   csLines.push(`    internal sealed class AssetEntry {`);
@@ -240,7 +242,7 @@ function main() {
   csLines.push(`            Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--proxy-bypass-list=<-loopback>;127.0.0.1;localhost");`);
   csLines.push(``);
   csLines.push(`            Form form = new Form();`);
-  csLines.push(`            form.Text = "LifeHub · 个人生活与财务管理桌面版";`);
+  csLines.push(`            form.Text = "LifeHub v${APP_VERSION} · 个人生活与财务管理桌面版";`);
   csLines.push(`            form.Width = 1340;`);
   csLines.push(`            form.Height = 860;`);
   csLines.push(`            form.MinimumSize = new Size(960, 640);`);
