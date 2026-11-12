@@ -12,7 +12,9 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
+  FormControlLabel,
   Paper,
   TextField,
   Typography,
@@ -27,6 +29,7 @@ import LockOutlined from '@mui/icons-material/LockOutlined';
 import type { Category } from '@lifehub/core';
 import {
   CLOUD_PROVIDERS,
+  computePasswordFingerprint,
   decryptCloudSourceJson,
   getCloudProviderPreset,
   loadCloudConfig,
@@ -68,7 +71,10 @@ export function CloudStoragePanel() {
   const setBills = useBillStore((state) => state.setBills);
 
   const [config, setConfig] = useState<CloudStorageConfig>(() => loadCloudConfig());
-  const [encryptionPassword, setEncryptionPassword] = useState<string>('');
+  const [encryptionPassword, setEncryptionPassword] = useState<string>(
+    () => loadCloudConfig().savedPassword ?? '',
+  );
+  const [allowPasswordChange, setAllowPasswordChange] = useState<boolean>(false);
   const [decryptedSource, setDecryptedSource] = useState<string | null>(null);
   const [extraModulesState, setExtraModulesState] = useState<CloudBackupExtraModules>({});
   const [lastRecord, setLastRecord] = useState<CloudSyncRecord | null>(() =>
@@ -175,21 +181,28 @@ export function CloudStoragePanel() {
 
   const handleUpload = (): void => {
     try {
-      const record = uploadBillsToCloud(config, bills, encryptionPassword, extraModulesState);
+      const record = uploadBillsToCloud(config, bills, encryptionPassword, extraModulesState, {
+        allowPasswordChange,
+      });
       setLastRecord(record);
       setDecryptedSource(null);
+      setAllowPasswordChange(false);
 
+      const sizeKbText =
+        typeof record.sizeBytes === 'number'
+          ? `（体积 ${(record.sizeBytes / 1024).toFixed(1)} KB）`
+          : '';
       const hasCredentials =
         config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0;
       if (!hasCredentials) {
         setBanner({
           severity: 'warning',
-          text: `已在本地生成加密快照（${record.objectKey}），但尚未填写 AccessKey ID 与 AccessKey Secret，文件尚未推送到远程「${record.providerName}」存储桶！请在上方填入密钥后再点击上传。`,
+          text: `已在本地生成压缩加密快照（${record.objectKey}）${sizeKbText}，但尚未填写 AccessKey ID 与 AccessKey Secret，文件尚未推送到远程「${record.providerName}」存储桶！请在上方填入密钥后再点击上传。`,
         });
       } else {
         setBanner({
           severity: 'info',
-          text: `正在将加密备份推送至远程「${record.providerName}」（${record.objectKey}）…`,
+          text: `正在将压缩加密备份推送至远程「${record.providerName}」（${record.objectKey}）${sizeKbText}…`,
         });
       }
 
@@ -202,8 +215,13 @@ export function CloudStoragePanel() {
             bills,
             encryptionPassword,
             freshExtra,
+            { allowPasswordChange: true },
           );
           setLastRecord(refreshedRecord);
+          const refreshedSizeKb =
+            typeof refreshedRecord.sizeBytes === 'number'
+              ? ` · 压缩后体积 ${(refreshedRecord.sizeBytes / 1024).toFixed(1)} KB`
+              : '';
 
           if (hasCredentials) {
             const remoteRes = await pushSnapshotToRemoteCloud(config);
@@ -212,7 +230,7 @@ export function CloudStoragePanel() {
             }
             setBanner({
               severity: 'success',
-              text: `已使用登录密码加密并将 ${refreshedRecord.billCount} 条账单及全量生活数据真实上传至「${refreshedRecord.providerName}」（远程地址：${remoteRes.remoteUrl}）`,
+              text: `已使用登录密码压缩加密并将 ${refreshedRecord.billCount} 条账单及全量生活数据真实上传至「${refreshedRecord.providerName}」（远程地址：${remoteRes.remoteUrl}${refreshedSizeKb}）`,
             });
           }
         } catch (remoteErr) {
@@ -320,10 +338,38 @@ export function CloudStoragePanel() {
     if (!decryptedSource) {
       return;
     }
-    downloadText('lifehub-bills-source-restored.json', decryptedSource, 'application/json');
+    downloadText('lifehub-backup-restored.json', decryptedSource, 'application/json');
   };
 
   const activePreset = getCloudProviderPreset(config.provider);
+  const rememberPasswordChecked = config.rememberPassword !== false;
+  const trimmedPwd = encryptionPassword.trim();
+  const currentFingerprint = trimmedPwd ? computePasswordFingerprint(trimmedPwd) : '';
+  const hasPreviousFingerprint = Boolean(lastRecord?.passwordFingerprint);
+  const hasPasswordMismatch = Boolean(
+    hasPreviousFingerprint &&
+      currentFingerprint &&
+      lastRecord?.passwordFingerprint !== currentFingerprint,
+  );
+  const isPasswordMatched = Boolean(
+    hasPreviousFingerprint &&
+      currentFingerprint &&
+      lastRecord?.passwordFingerprint === currentFingerprint,
+  );
+
+  const handlePasswordChange = (nextPwd: string): void => {
+    setEncryptionPassword(nextPwd);
+    if (rememberPasswordChecked) {
+      updateConfig({ rememberPassword: true, savedPassword: nextPwd });
+    }
+  };
+
+  const handleToggleRememberPassword = (checked: boolean): void => {
+    updateConfig({
+      rememberPassword: checked,
+      savedPassword: checked ? encryptionPassword : '',
+    });
+  };
 
   return (
     <Paper
@@ -454,30 +500,96 @@ export function CloudStoragePanel() {
           border: '1px solid var(--lifehub-border)',
           display: 'flex',
           flexDirection: 'column',
-          gap: 1.5,
+          gap: 1.25,
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
           <Box>
             <Typography variant="body2" sx={{ fontWeight: 600, color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
               <KeyOutlined fontSize="small" color="primary" />
-              登录密码加密与源文件还原保护（强制开启）
+              登录密码加密与源文件还原保护（必填 · 强制开启）
             </Typography>
             <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              上传云端时固定使用下方登录密码进行加密；从云端恢复账单或需要查看原始 JSON 源文件内容时，输入同一登录密码即可解密还原。
+              上传云端时先执行 LZ77 字典无损压缩，再使用下方登录密码加密；勾选「记住加密密码」后自动保存在本机，避免每次手输或前后密码不一致。
             </Typography>
           </Box>
+          {isPasswordMatched ? (
+            <Chip
+              size="small"
+              color="success"
+              variant="outlined"
+              label="与上次云端备份密码一致"
+              data-testid="cloud-password-matched-chip"
+            />
+          ) : null}
+          {hasPasswordMismatch ? (
+            <Chip
+              size="small"
+              color="warning"
+              label="与上次备份密码不一致"
+              data-testid="cloud-password-mismatch-chip"
+            />
+          ) : null}
         </Box>
         <TextField
           size="small"
           type="password"
+          required
           fullWidth
-          label="登录密码（加密上传与还原凭证）"
+          label="登录密码（必填 · 加密上传与还原凭证）"
           value={encryptionPassword}
-          onChange={(e) => setEncryptionPassword(e.target.value)}
+          onChange={(e) => handlePasswordChange(e.target.value)}
           placeholder="请输入登录密码用于加密上传或还原源文件内容"
           inputProps={{ 'data-testid': 'cloud-encryption-password-input' }}
         />
+        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
+          <FormControlLabel
+            control={
+              <Checkbox
+                size="small"
+                checked={rememberPasswordChecked}
+                onChange={(e) => handleToggleRememberPassword(e.target.checked)}
+                inputProps={
+                  { 'data-testid': 'cloud-remember-password-checkbox' } as Record<string, unknown>
+                }
+              />
+            }
+            label={
+              <Typography variant="caption" sx={{ color: 'var(--lifehub-text)' }}>
+                记住加密密码（保存在本机，自动填充，免重复输入与记忆）
+              </Typography>
+            }
+          />
+          {hasPreviousFingerprint ? (
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  color="warning"
+                  checked={allowPasswordChange}
+                  onChange={(e) => setAllowPasswordChange(e.target.checked)}
+                  inputProps={
+                    { 'data-testid': 'cloud-allow-password-change-checkbox' } as Record<
+                      string,
+                      unknown
+                    >
+                  }
+                />
+              }
+              label={
+                <Typography
+                  variant="caption"
+                  sx={{
+                    color: hasPasswordMismatch ? 'warning.main' : 'var(--lifehub-text-muted)',
+                    fontWeight: hasPasswordMismatch ? 600 : 400,
+                  }}
+                >
+                  允许使用新密码覆盖云端备份（仅在更换加密密码时勾选）
+                </Typography>
+              }
+            />
+          ) : null}
+        </Box>
       </Box>
 
       {/* 操作按钮组 */}
@@ -591,6 +703,9 @@ export function CloudStoragePanel() {
           <Typography variant="caption" sx={{ color: 'var(--lifehub-text)', display: 'block' }}>
             最近云端同步：{lastRecord.providerName} · 共 {lastRecord.billCount} 条账单 · 模式：
             强制加密上传（登录密码保护） · 路径：{lastRecord.objectKey}
+            {typeof lastRecord.sizeBytes === 'number'
+              ? ` · 压缩后体积 ${(lastRecord.sizeBytes / 1024).toFixed(1)} KB`
+              : ''}
           </Typography>
         ) : (
           <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', display: 'block' }}>

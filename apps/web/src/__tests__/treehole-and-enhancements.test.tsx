@@ -279,7 +279,7 @@ describe('DeepSeek API Key 配置与远程调用支持', () => {
       },
       'PUT',
     );
-    expect(ossSigned.url).toContain('https://lifehub-demo-1250000000.oss-cn-hangzhou.aliyuncs.com/lifehub-bills-backup.json.enc');
+    expect(ossSigned.url).toContain('https://lifehub-demo-1250000000.oss-cn-hangzhou.aliyuncs.com/lifehub-backup.json.enc');
     expect(ossSigned.url).toContain('OSSAccessKeyId=LTAI_TEST_KEY');
     expect(ossSigned.url).toContain('Signature=');
 
@@ -294,7 +294,7 @@ describe('DeepSeek API Key 配置与远程调用支持', () => {
       },
       'PUT',
     );
-    expect(cosSigned.url).toContain('https://lifehub-demo-1250000000.cos.ap-shanghai.myqcloud.com/lifehub-bills-backup.json.enc');
+    expect(cosSigned.url).toContain('https://lifehub-demo-1250000000.cos.ap-shanghai.myqcloud.com/lifehub-backup.json.enc');
     expect(cosSigned.url).toContain('q-sign-algorithm=sha1');
     expect(cosSigned.url).toContain('q-signature=');
   });

@@ -1,6 +1,6 @@
 {
   "name": "lifehub",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "LifeHub —— 跨端、本地优先、端到端加密的个人生活数据管理工具（npm workspaces 根清单）",
   "type": "module",

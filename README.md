@@ -47,15 +47,17 @@ npm run test       # 运行全部 workspace 的测试（core + web + sync-server
 npm run typecheck  # 三个包的类型检查
 ```
 
-### 1.2.1 多端编译与打包速览（Web / Android APK / iOS IPA / 微信小程序）
+### 1.2.1 多端编译与打包速览（Windows EXE / Android APK / Web / iOS IPA / 微信小程序）
 
 完整的多端编译步骤参见 [**`docs/build-and-packaging.md`（多端构建与打包指南）**](docs/build-and-packaging.md)：
 
-| 目标平台 | 构建方式简述 | 产物位置 / 运行方式 |
+| 目标平台 | 一键构建命令 / 方式简述 | 产物位置 / 运行方式 |
 | --- | --- | --- |
+| **双端一键发版（EXE + APK）** | 根目录执行 `npm run release`（自动递增版本号并清理旧包） | 根目录生成 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 `LifeHub-xiaomi15-v<版本>.apk` |
+| **Windows 桌面版 (.exe)** | 根目录执行 `npm run build:desktop`（见 `scripts/build-desktop-windows.mjs`） | 根目录生成单文件免安装 `LifeHub-Desktop-win-x64-v<版本>.exe`（基于 WebView2 + .NET 原生窗体） |
+| **Android 手机端 (.apk)** | 根目录执行 `npm run build:android`（或 `cd apps/web && npx cap sync android && cd android && .\gradlew.bat assembleDebug`） | `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`（`npm run release` 会同步复制到根目录） |
 | **Web 生产包** | 根目录执行 `npm run build` | `apps/web/dist/`（部署至任意 HTTPS 静态服务器） |
 | **同步服务 (Node / Docker)** | `npm run build:sync` 或 `docker compose up -d --build` | `apps/sync-server/dist/` 或 Docker 容器（默认端口 `8787`） |
-| **Android APK** | 在 `apps/web` 中接入 Capacitor（`npx cap add android` → `npm run build && npx cap sync android` → `cd android && .\gradlew.bat assembleDebug`） | `apps/web/android/app/build/outputs/apk/debug/app-debug.apk` |
 | **iOS IPA** | 在 macOS 下执行 `npx cap add ios` → `npm run build && npx cap sync ios` → `npx cap open ios` 使用 Xcode 签名归档 | Xcode 真机安装或 Archive 导出 `.ipa` |
 | **手机 PWA** | 将 `apps/web/dist` 部署在 HTTPS 下，用手机 Chrome / Safari 打开并点击「添加到主屏幕」 | 独立全屏离线运行 |
 | **微信小程序** | 企业主体可直接用 `<web-view>` 嵌入 HTTPS Web 端；个人/企业主体可用 Taro 构建表现层并直接复用零 DOM 的 `@lifehub/core`（实现小程序版 `StorageAdapter` 与 `CryptoProvider`） | 微信开发者工具编译预览与上传 |
@@ -276,6 +278,9 @@ IndexedDB（密文 payload + 7 个索引明文列）
 | --- | --- | --- |
 | `npm run dev` | 启动 Web 开发服务器（`http://localhost:4180`） | `apps/web` |
 | `npm run build` | 类型检查 + 构建生产产物到 `apps/web/dist` | `apps/web` |
+| `npm run build:desktop` | 打包 Windows 原生单文件桌面端 `.exe`（`scripts/build-desktop-windows.mjs`） | 根目录 |
+| `npm run build:android` | 构建 Web 并同步打包 Android `.apk` | `apps/web/android` |
+| `npm run release` | 自动递增版本号，一键打包最新 Windows `.exe` 与 Android `.apk` 到根目录（`scripts/release-packages.mjs`） | 根目录 |
 | `npm run build:sync` | 编译同步服务到 `apps/sync-server/dist` | `apps/sync-server` |
 | `npm run preview` | 预览生产构建产物 | `apps/web` |
 | `npm run test` | 运行全部测试（core + web + sync-server） | 全部 workspace |

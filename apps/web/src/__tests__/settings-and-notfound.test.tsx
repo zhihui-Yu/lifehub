@@ -13,6 +13,7 @@ import { HomeIndexRoute } from '@/components/layout/HomeIndexRoute';
 import {
   createDefaultCloudConfig,
   decryptCloudSourceJson,
+  loadCloudConfig,
   restoreBillsFromCloud,
   uploadBillsToCloud,
 } from '@/lib/cloud-storage';
@@ -120,7 +121,7 @@ describe('SettingsPage', () => {
       '强制加密上传（登录密码保护）',
     );
     expect(screen.getByTestId('cloud-sync-status')).toHaveTextContent(
-      'LifeHubBackup/lifehub-bills-backup.json.enc',
+      'LifeHubBackup/lifehub-backup.json.enc',
     );
 
     // 清空本地账单，准备测试云端拉取恢复与源文件还原
@@ -158,7 +159,7 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('cloud-download-source-button')).toBeInTheDocument();
   });
 
-  it('展示移动端快捷功能中心（导入账单 / 分类管理 / 习惯打卡 / 安全与加密）并支持一键跳转', () => {
+  it('展示移动端快捷功能中心（导入账单 / 分类管理 / 习惯打卡）并支持一键跳转，不再暴露多余的安全与加密入口', () => {
     render(<SettingsPage />);
 
     expect(screen.getByTestId('mobile-quick-hub-card')).toBeInTheDocument();
@@ -173,8 +174,7 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByTestId('quick-nav-habits'));
     expect(window.location.hash).toBe('#/habits');
 
-    fireEvent.click(screen.getByTestId('quick-nav-security'));
-    expect(window.location.hash).toBe('#/security');
+    expect(screen.queryByTestId('quick-nav-security')).not.toBeInTheDocument();
   });
 
   it('支持在设置页一键导出全部数据（JSON）与通用账单表格（CSV），方便迁移至其他应用', async () => {
@@ -298,6 +298,34 @@ describe('SettingsPage', () => {
     expect(restored.habitCheckins).toHaveLength(1);
     expect(restored.completionEvents).toHaveLength(1);
     expect(restored.scheduleCompletions).toHaveLength(1);
+  });
+
+  it('强制校验加密密码必填、自动记住密码免手输，且拦截误改密码覆盖（勾选允许更换后放行）', () => {
+    window.localStorage.clear();
+    const config = createDefaultCloudConfig('aliyun-oss');
+    const bills = [makeBill({ id: 'pwd-b1', counterparty: '密码校验商店', amountMinor: 3500 })];
+
+    // 1. 空密码上传直接报错拦截
+    expect(() => uploadBillsToCloud(config, bills, '   ')).toThrow(/加密密码为必填项/);
+
+    // 2. 首次使用 PasswordA 上传成功，且默认记住密码（本地混淆存储，读取时自动还原）
+    const rec1 = uploadBillsToCloud(config, bills, 'PasswordA#2026');
+    expect(rec1.passwordFingerprint).toBeTruthy();
+    expect(typeof rec1.sizeBytes).toBe('number');
+    expect(loadCloudConfig().savedPassword).toBe('PasswordA#2026');
+
+    // 3. 第二次若误输为不一致的 PasswordB 且未开启 allowPasswordChange，则主动拦截报错
+    expect(() => uploadBillsToCloud(config, bills, 'PasswordB#9999')).toThrow(
+      /与上次云端备份密码不一致/,
+    );
+
+    // 4. 勾选 allowPasswordChange: true 后允许更换新密码覆盖
+    const rec2 = uploadBillsToCloud(config, bills, 'PasswordB#9999', undefined, {
+      allowPasswordChange: true,
+    });
+    expect(rec2.passwordFingerprint).not.toBe(rec1.passwordFingerprint);
+    const restored = restoreBillsFromCloud(loadCloudConfig());
+    expect(restored.bills[0]?.counterparty).toBe('密码校验商店');
   });
 
   it('HomeIndexRoute 在手机窄屏（<= 900px）打开根路径 / 时自动重定向至 /bills', () => {

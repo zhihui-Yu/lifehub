@@ -14,7 +14,6 @@ import TaskAltOutlined from '@mui/icons-material/TaskAltOutlined';
 import ParkOutlined from '@mui/icons-material/ParkOutlined';
 import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
-import ShieldOutlined from '@mui/icons-material/ShieldOutlined';
 import { NavLink, useLocation } from 'react-router-dom';
 
 /** 侧导航项定义。 */
@@ -26,7 +25,6 @@ const NAV_ITEMS = [
   { path: '/habits', label: '习惯打卡', icon: <TaskAltOutlined fontSize="small" />, desktopOnly: true },
   { path: '/treehole', label: '树洞', icon: <ParkOutlined fontSize="small" />, desktopOnly: false },
   { path: '/ai', label: 'AI 分析', icon: <AutoAwesomeOutlined fontSize="small" />, desktopOnly: false },
-  { path: '/security', label: '安全与加密', icon: <ShieldOutlined fontSize="small" />, desktopOnly: true },
   { path: '/settings', label: '设置', icon: <SettingsOutlined fontSize="small" />, desktopOnly: false },
 ];
 

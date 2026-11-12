@@ -270,5 +270,15 @@ describe('Module E —— AiAnalysisPage 页面交互测试', () => {
         'LifeHub 本地智能复盘报告',
       );
     });
+
+    // 模型配置中不再展示冗余的 DeepSeek 快捷模型选项
+    expect(screen.queryByTestId('ai-deepseek-model-presets')).not.toBeInTheDocument();
+
+    // 验证 AI 请求审计指标支持一键清空
+    const clearBtn = await screen.findByTestId('ai-clear-audits-button');
+    fireEvent.click(clearBtn);
+    await waitFor(() => {
+      expect(screen.queryByTestId('ai-clear-audits-button')).not.toBeInTheDocument();
+    });
   });
 });

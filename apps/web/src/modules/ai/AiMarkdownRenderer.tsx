@@ -399,7 +399,15 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
   }
 
   return (
-    <Box sx={{ width: '100%' }}>
+    <Box
+      sx={{
+        width: '100%',
+        minWidth: 0,
+        maxWidth: '100%',
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
+      }}
+    >
       {reasoningText && (
         <Paper
           variant="outlined"

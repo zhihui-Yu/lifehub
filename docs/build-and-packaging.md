@@ -1,11 +1,12 @@
-# 多端构建与打包指南（Web / 同步服务 / Android APK / iOS IPA / 微信小程序）
+# 多端构建与打包指南（Windows EXE / Android APK / Web / 同步服务 / iOS IPA / 微信小程序）
 
-> **适用范围**：指导开发者与后续维护者将 LifeHub 编译为 **Web 静态站点**、**Docker 自托管同步服务**、**Android APK / iOS IPA 原生安装包**，以及 **微信小程序版**。
+> **适用范围**：指导开发者与后续维护者将 LifeHub 编译为 **Windows 单文件桌面应用 (.exe)**、**Android APK / iOS IPA 原生安装包**、**Web 静态站点**、**Docker 自托管同步服务**，以及 **微信小程序版**。
 
 ---
 
 ## 目录
 
+0. [一键打包 Windows EXE 与 Android APK（最快方式）](#0-一键打包-windows-exe-与-android-apk最快方式)
 1. [前置环境要求](#1-前置环境要求)
 2. [Web 端与核心层构建](#2-web-端与核心层构建)
 3. [自托管同步服务构建与部署](#3-自托管同步服务构建与部署)
@@ -13,6 +14,48 @@
 5. [手机端轻量化方案（PWA 渐进式 Web 应用）](#5-手机端轻量化方案pwa-渐进式-web-应用)
 6. [微信小程序版构建方案](#6-微信小程序版构建方案)
 7. [发布前质量门禁检查](#7-发布前质量门禁检查)
+
+---
+
+## 0. 一键打包 Windows EXE 与 Android APK（最快方式）
+
+项目根目录下内置了自动化打包脚本，无需手动进入子目录逐步执行：
+
+### 0.1 双端一键自动升版并打包（同时生成 `.exe` + `.apk`）
+
+在仓库根目录执行：
+
+```bash
+npm run release
+```
+
+- **对应脚本**：[`scripts/release-packages.mjs`](../scripts/release-packages.mjs)
+- **执行流程**：
+  1. 自动递增版本号（同步更新根 `package.json`、`apps/web/package.json` 及 `apps/web/android/app/build.gradle` 的 `versionCode` / `versionName`）；
+  2. 清理根目录下旧版本的 `.exe` 与 `.apk` 文件；
+  3. 调用 `scripts/build-desktop-windows.mjs` 编译前端并封装为单文件免安装 Windows 桌面版：
+     `LifeHub-Desktop-win-x64-v<版本号>.exe`
+  4. 执行 `npx cap sync android` 与 `.\gradlew.bat assembleDebug`，并将生成的 APK 复制到仓库根目录：
+     `LifeHub-xiaomi15-v<版本号>.apk`
+
+### 0.2 单独打包 Windows 桌面端（`.exe`）
+
+```bash
+npm run build:desktop
+```
+
+- **对应脚本**：[`scripts/build-desktop-windows.mjs`](../scripts/build-desktop-windows.mjs)
+- **原理与环境**：无需额外安装 Electron 或重型 C++ 编译链，直接将 `apps/web/dist` 与 `scripts/vendor/webview2` 注入 C# WinForms 宿主，并调用 Windows 系统自带的 `.NET Framework 4.x` 编译器（`C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`）生成单文件免安装 `.exe`。
+- **产物路径**：仓库根目录 `LifeHub-Desktop-win-x64-v<版本号>.exe`。
+
+### 0.3 单独打包 Android 手机端（`.apk`）
+
+```bash
+npm run build:android
+```
+
+- **执行流程**：编译 `@lifehub/web` → `npx cap sync android` → 调用 Gradle 构建 Debug APK。
+- **产物路径**：`apps/web/android/app/build/outputs/apk/debug/app-debug.apk`。
 
 ---
 

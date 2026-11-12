@@ -174,7 +174,7 @@ function SystemPromptContextCard({ content }: { content: string }) {
           </Stack>
           <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
             <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 600, fontSize: 11.5 }}>
-              {expanded ? '收起脱敏 Prompt' : '查看发送给 AI 的脱敏 Prompt'}
+              {expanded ? '收起 Prompt' : '脱敏 Prompt'}
             </Typography>
             {expanded ? (
               <ExpandLess sx={{ fontSize: 16, color: 'primary.main' }} />
@@ -255,10 +255,12 @@ export function AiAnalysisPage() {
   const [auditHistory, setAuditHistory] = useState<AIAnalysisRequestRecord[]>([]);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [showPromptDrawer, setShowPromptDrawer] = useState(false);
+  const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
 
   // 自动滚动到底部的引用
   const chatScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const chatBottomAnchorRef = useRef<HTMLDivElement | null>(null);
+  const advancedSectionRef = useRef<HTMLDivElement | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -713,6 +715,25 @@ export function AiAnalysisPage() {
     }
   };
 
+  const handleDeleteAuditRecord = async (id: string) => {
+    try {
+      await aiStorage.deleteRequestAudit(id);
+      const audits = await aiStorage.listRequestAudits();
+      setAuditHistory(audits);
+    } catch {
+      // 忽略删除异常
+    }
+  };
+
+  const handleClearAuditHistory = async () => {
+    try {
+      await aiStorage.clearRequestAudits();
+      setAuditHistory([]);
+    } catch {
+      // 忽略清空异常
+    }
+  };
+
   const isReasonerModel = model === 'deepseek-reasoner';
 
   return (
@@ -729,57 +750,136 @@ export function AiAnalysisPage() {
         </Alert>
       )}
 
-      {/* 1:1 DeepSeek 网页风格固定视口高度聊天主容器（内部独立滚动，绝不撑长整个网页） */}
+      {/* 1:1 DeepSeek 风格固定视口高度聊天主容器（大留白、轻边框、内部独立平滑滚动） */}
       <Paper
         variant="outlined"
         data-testid="ai-quick-summary-card"
         sx={{
           display: 'flex',
           flexDirection: { xs: 'column', md: 'row' },
-          height: { xs: 'calc(100vh - 135px)', md: 'calc(100vh - 108px)' },
-          minHeight: 540,
-          maxHeight: 920,
-          borderRadius: 3.5,
+          height: { xs: 'calc(100dvh - 122px)', md: 'calc(100vh - 104px)' },
+          minHeight: { xs: 500, md: 580 },
+          maxHeight: 940,
+          width: '100%',
+          maxWidth: '100%',
+          borderRadius: { xs: 3, md: 4 },
           overflow: 'hidden',
           backgroundColor: 'var(--lifehub-surface)',
           borderColor: 'var(--lifehub-border)',
-          mb: 2,
-          boxShadow: '0 4px 24px rgba(15, 23, 42, 0.04)',
+          mb: 2.5,
+          boxShadow: '0 8px 32px rgba(15, 23, 42, 0.05)',
         }}
       >
-        {/* 左侧：DeepSeek 风格会话历史侧边栏 */}
+        {/* 左侧：桌面端会话侧栏 / 移动端极简顶栏 */}
         <Box
           data-testid="ai-sessions-sidebar"
           sx={{
-            width: { xs: '100%', md: 240 },
+            width: { xs: '100%', md: 248 },
             flexShrink: 0,
             borderRight: { xs: 'none', md: '1px solid var(--lifehub-border)' },
             borderBottom: { xs: '1px solid var(--lifehub-border)', md: 'none' },
-            p: 1.75,
+            px: { xs: 2, md: 2 },
+            py: { xs: 1.25, md: 2.25 },
             display: 'flex',
             flexDirection: 'column',
             backgroundColor: 'var(--lifehub-bg)',
           }}
         >
-          <Button
-            variant="contained"
-            fullWidth
-            startIcon={<AddCommentOutlined />}
-            onClick={handleNewSession}
-            data-testid="ai-new-session-button"
-            sx={{
-              mb: 1.75,
-              borderRadius: 2.5,
-              py: 0.95,
-              fontWeight: 700,
-              textTransform: 'none',
-              boxShadow: 'none',
-            }}
+          {/* 顶行：新建对话 + 移动端抽屉入口 */}
+          <Stack
+            direction={{ xs: 'row', md: 'column' }}
+            spacing={1}
+            alignItems={{ xs: 'center', md: 'stretch' }}
+            justifyContent="space-between"
           >
-            开启新对话
-          </Button>
+            <Button
+              variant="contained"
+              startIcon={<AddCommentOutlined sx={{ fontSize: 17 }} />}
+              onClick={() => {
+                handleNewSession();
+                setMobileHistoryOpen(false);
+              }}
+              data-testid="ai-new-session-button"
+              sx={{
+                mb: { xs: 0, md: 1.75 },
+                borderRadius: '999px',
+                py: { xs: 0.65, md: 1 },
+                px: { xs: 2, md: 2.25 },
+                fontSize: { xs: 13, md: 13.5 },
+                fontWeight: 700,
+                textTransform: 'none',
+                boxShadow: 'none',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              开启新对话
+            </Button>
 
-          <Stack direction="row" spacing={0.75} alignItems="center" sx={{ mb: 0.75, px: 0.5 }}>
+            {/* 移动端右侧轻巧入口：历史会话 + Key 设置 */}
+            <Stack
+              direction="row"
+              spacing={0.75}
+              alignItems="center"
+              sx={{ display: { xs: 'flex', md: 'none' } }}
+            >
+              <Button
+                size="small"
+                variant={mobileHistoryOpen ? 'contained' : 'outlined'}
+                color={mobileHistoryOpen ? 'primary' : 'inherit'}
+                startIcon={<HistoryOutlined sx={{ fontSize: 15 }} />}
+                onClick={() => setMobileHistoryOpen((prev) => !prev)}
+                sx={{
+                  borderRadius: '999px',
+                  fontSize: 12.5,
+                  py: 0.45,
+                  px: 1.35,
+                  textTransform: 'none',
+                  borderColor: 'var(--lifehub-border)',
+                  color: mobileHistoryOpen ? '#fff' : 'var(--lifehub-text)',
+                }}
+              >
+                历史 ({sessions.length})
+              </Button>
+              <Button
+                size="small"
+                variant={advancedOpen ? 'contained' : 'outlined'}
+                color={advancedOpen ? 'primary' : 'inherit'}
+                startIcon={<SettingsOutlined sx={{ fontSize: 15 }} />}
+                onClick={() => {
+                  setAdvancedOpen((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      setTimeout(() => {
+                        advancedSectionRef.current?.scrollIntoView?.({
+                          behavior: 'smooth',
+                          block: 'start',
+                        });
+                      }, 60);
+                    }
+                    return next;
+                  });
+                }}
+                sx={{
+                  borderRadius: '999px',
+                  fontSize: 12.5,
+                  py: 0.45,
+                  px: 1.35,
+                  textTransform: 'none',
+                  borderColor: 'var(--lifehub-border)',
+                  color: advancedOpen ? '#fff' : 'var(--lifehub-text)',
+                }}
+              >
+                模型设置
+              </Button>
+            </Stack>
+          </Stack>
+
+          <Stack
+            direction="row"
+            spacing={0.75}
+            alignItems="center"
+            sx={{ display: { xs: 'none', md: 'flex' }, mb: 1, px: 0.5 }}
+          >
             <HistoryOutlined sx={{ fontSize: 15, color: 'var(--lifehub-text-muted)' }} />
             <Typography variant="caption" sx={{ fontWeight: 700, color: 'var(--lifehub-text-muted)' }}>
               历史对话 ({sessions.length})
@@ -787,10 +887,14 @@ export function AiAnalysisPage() {
           </Stack>
 
           <Stack
-            spacing={0.5}
+            spacing={0.75}
             sx={{
-              flex: 1,
-              maxHeight: { xs: 110, md: 'none' },
+              display: { xs: mobileHistoryOpen ? 'flex' : 'none', md: 'flex' },
+              flex: { xs: 'none', md: 1 },
+              mt: { xs: 1.25, md: 0 },
+              pt: { xs: 1.25, md: 0 },
+              borderTop: { xs: '1px dashed var(--lifehub-border)', md: 'none' },
+              maxHeight: { xs: 180, md: 'none' },
               overflowY: 'auto',
               pr: 0.25,
             }}
@@ -799,11 +903,11 @@ export function AiAnalysisPage() {
             {sessions.length === 0 ? (
               <Typography
                 variant="caption"
-                sx={{ color: 'var(--lifehub-text-muted)', py: 3, px: 1, textAlign: 'center', lineHeight: 1.6 }}
+                sx={{ color: 'var(--lifehub-text-muted)', py: { xs: 1.5, md: 4 }, px: 1, textAlign: 'center', lineHeight: 1.7 }}
               >
                 暂无历史会话
                 <br />
-                选择模块并提问即可开启分析
+                选择下方主题即可开启分析
               </Typography>
             ) : (
               sessions.map((sess) => {
@@ -811,12 +915,15 @@ export function AiAnalysisPage() {
                 return (
                   <Box
                     key={sess.id}
-                    onClick={() => handleSelectSession(sess)}
+                    onClick={() => {
+                      handleSelectSession(sess);
+                      setMobileHistoryOpen(false);
+                    }}
                     data-testid={`ai-session-item-${sess.id}`}
                     sx={{
-                      px: 1.25,
-                      py: 0.9,
-                      borderRadius: 2,
+                      px: 1.5,
+                      py: 1,
+                      borderRadius: 2.5,
                       cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
@@ -835,13 +942,13 @@ export function AiAnalysisPage() {
                       <Typography
                         variant="body2"
                         noWrap
-                        sx={{ fontWeight: isSelected ? 700 : 500, fontSize: 13 }}
+                        sx={{ fontWeight: isSelected ? 700 : 500, fontSize: 13.5 }}
                       >
                         {sess.title}
                       </Typography>
                       <Typography
                         variant="caption"
-                        sx={{ color: 'var(--lifehub-text-muted)', fontSize: 11 }}
+                        sx={{ color: 'var(--lifehub-text-muted)', fontSize: 11.5 }}
                       >
                         {sess.fromDate.slice(5)} ~ {sess.toDate.slice(5)}
                       </Typography>
@@ -852,7 +959,7 @@ export function AiAnalysisPage() {
                       aria-label="删除会话"
                       sx={{ opacity: 0.65, '&:hover': { opacity: 1 } }}
                     >
-                      <DeleteOutline sx={{ fontSize: 15 }} />
+                      <DeleteOutline sx={{ fontSize: 16 }} />
                     </IconButton>
                   </Box>
                 );
@@ -860,16 +967,16 @@ export function AiAnalysisPage() {
             )}
           </Stack>
 
-          <Divider sx={{ my: 1.25 }} />
+          <Divider sx={{ display: { xs: 'none', md: 'block' }, my: 1.5 }} />
 
-          <Stack spacing={0.5}>
+          <Stack spacing={0.75} sx={{ display: { xs: 'none', md: 'flex' } }}>
             <Button
               size="small"
               variant="text"
               startIcon={<VisibilityOutlined fontSize="small" />}
               onClick={() => setShowPromptDrawer((prev) => !prev)}
               data-testid="ai-toggle-prompt-preview-button"
-              sx={{ justifyContent: 'flex-start', fontSize: 12, color: 'var(--lifehub-text-muted)' }}
+              sx={{ justifyContent: 'flex-start', fontSize: 12.5, py: 0.6, color: 'var(--lifehub-text-muted)', textTransform: 'none' }}
             >
               {showPromptDrawer ? '隐藏底层脱敏 Prompt' : '查看底层脱敏 Prompt'}
             </Button>
@@ -879,45 +986,53 @@ export function AiAnalysisPage() {
               startIcon={<SettingsOutlined fontSize="small" />}
               onClick={() => setAdvancedOpen((prev) => !prev)}
               data-testid="ai-toggle-advanced-button"
-              sx={{ justifyContent: 'flex-start', fontSize: 12, fontWeight: 600 }}
+              sx={{ justifyContent: 'flex-start', fontSize: 12.5, py: 0.6, fontWeight: 600, textTransform: 'none' }}
             >
               {advancedOpen ? '收起 API Key 设置' : '模型与 DeepSeek Key 设置'}
             </Button>
           </Stack>
         </Box>
 
-        {/* 右侧：DeepSeek 网页风格主对话区 */}
+        {/* 右侧：DeepSeek 风格宽敞主对话区 */}
         <Box
           sx={{
             flex: 1,
             display: 'flex',
             flexDirection: 'column',
             minWidth: 0,
-            height: '100%',
+            minHeight: 0,
+            height: { xs: 'auto', md: '100%' },
             overflow: 'hidden',
           }}
         >
-          {/* 顶部极简状态栏：分析模块切换 + 数据时间段选择（最长半年） + 强制脱敏标识 */}
+          {/* 顶部舒展控制栏：左侧分析维度胶囊（圆润间距充足） + 右侧轻量时间段选择 */}
           <Stack
             direction={{ xs: 'column', lg: 'row' }}
             justifyContent="space-between"
-            alignItems={{ xs: 'flex-start', lg: 'center' }}
-            spacing={1}
+            alignItems={{ xs: 'stretch', lg: 'center' }}
+            spacing={1.25}
             sx={{
-              px: { xs: 2, sm: 3 },
-              py: 1.25,
+              px: { xs: 2, sm: 3.5 },
+              py: { xs: 1.35, sm: 1.75 },
               borderBottom: '1px solid var(--lifehub-border)',
               flexShrink: 0,
               backgroundColor: 'var(--lifehub-surface)',
             }}
           >
-            {/* 模块选择胶囊 */}
+            {/* 模块选择胶囊（圆润大胶囊、充足间距、手机端平滑横滑） */}
             <Stack
               direction="row"
-              spacing={0.75}
-              flexWrap="wrap"
+              spacing={1}
+              flexWrap={{ xs: 'nowrap', md: 'wrap' }}
               useFlexGap
               data-testid="ai-topic-selector"
+              sx={{
+                overflowX: { xs: 'auto', md: 'visible' },
+                maxWidth: '100%',
+                py: 0.25,
+                '&::-webkit-scrollbar': { display: 'none' },
+                scrollbarWidth: 'none',
+              }}
             >
               {(Object.keys(AI_TOPIC_META) as AiAnalysisTopic[]).map((topicKey) => {
                 const meta = AI_TOPIC_META[topicKey];
@@ -928,30 +1043,52 @@ export function AiAnalysisPage() {
                     label={`${meta.icon} ${meta.label}`}
                     color={active ? 'primary' : 'default'}
                     variant={active ? 'filled' : 'outlined'}
-                    size="small"
                     onClick={() => setSelectedTopic(topicKey)}
                     data-testid={`ai-topic-chip-${topicKey}`}
-                    sx={{ cursor: 'pointer', fontWeight: active ? 700 : 500, borderRadius: 2 }}
+                    sx={{
+                      cursor: 'pointer',
+                      fontWeight: active ? 700 : 500,
+                      borderRadius: '999px',
+                      height: 32,
+                      px: 0.5,
+                      flexShrink: 0,
+                      fontSize: 13,
+                      borderColor: active ? 'primary.main' : 'var(--lifehub-border)',
+                    }}
                   />
                 );
               })}
             </Stack>
 
-            {/* 数据时间段选择（最长半年） + 强制脱敏锁定徽章 */}
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-              <FormControl size="small" sx={{ minWidth: 150 }}>
-                <InputLabel id="ai-time-range-label">数据时间段（最长半年）</InputLabel>
+            {/* 数据时间段选择（去掉笨重的浮动 Label，改为干净清爽的圆角下拉框） + 强制脱敏徽章 */}
+            <Stack
+              direction="row"
+              spacing={1.25}
+              alignItems="center"
+              justifyContent="space-between"
+              sx={{ width: { xs: '100%', lg: 'auto' }, flexShrink: 0 }}
+            >
+              <FormControl size="small" sx={{ minWidth: 148 }}>
                 <Select
-                  labelId="ai-time-range-label"
-                  label="数据时间段（最长半年）"
+                  displayEmpty
                   value={timeRange}
                   onChange={(e) => setTimeRange(e.target.value as AiTimeRangePreset)}
                   data-testid="ai-time-range-select"
-                  sx={{ borderRadius: 2, fontSize: 13 }}
+                  sx={{
+                    borderRadius: '999px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    height: 32,
+                    backgroundColor: 'var(--lifehub-bg)',
+                    '& .MuiSelect-select': {
+                      py: 0.5,
+                      px: 1.75,
+                    },
+                  }}
                 >
                   {AI_TIME_RANGE_OPTIONS.map((opt) => (
                     <MenuItem key={opt.value} value={opt.value} sx={{ fontSize: 13 }}>
-                      {opt.label}
+                      📅 {opt.label}
                     </MenuItem>
                   ))}
                 </Select>
@@ -963,21 +1100,30 @@ export function AiAnalysisPage() {
                 color="success"
                 variant="outlined"
                 data-testid="ai-mandatory-redaction-chip"
-                label="强制全量脱敏"
-                sx={{ fontWeight: 600, fontSize: 11.5 }}
+                label="本地已脱敏"
+                sx={{
+                  fontWeight: 600,
+                  fontSize: 12,
+                  height: 30,
+                  borderRadius: '999px',
+                  px: 0.5,
+                  flexShrink: 0,
+                }}
               />
             </Stack>
           </Stack>
 
-          {/* 中间：独立滚动消息流（发送或收到消息自动平滑滚到底部） */}
+          {/* 中间：独立滚动消息流（宽敞呼吸感留白） */}
           <Box
             ref={chatScrollContainerRef}
             data-testid="ai-chat-history"
             sx={{
               flex: 1,
+              minHeight: 0,
               overflowY: 'auto',
-              px: { xs: 2, sm: 3.5 },
-              py: 2.5,
+              overflowX: 'hidden',
+              px: { xs: 2, sm: 4 },
+              py: { xs: 2.5, sm: 3.5 },
               display: 'flex',
               flexDirection: 'column',
             }}
@@ -985,59 +1131,68 @@ export function AiAnalysisPage() {
             <Box
               sx={{
                 width: '100%',
-                maxWidth: 820,
+                maxWidth: 780,
                 mx: 'auto',
                 flex: 1,
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 2,
+                gap: 2.75,
+                minWidth: 0,
               }}
             >
               {currentMessages.length === 0 ? (
-                /* DeepSeek 网页风居中欢迎引导页 */
+                /* DeepSeek 风格大留白欢迎页 */
                 <Box
                   sx={{
                     my: 'auto',
                     textAlign: 'center',
-                    maxWidth: 600,
+                    maxWidth: 580,
+                    width: '100%',
                     mx: 'auto',
-                    py: 3,
+                    py: { xs: 2, sm: 4 },
                   }}
                 >
                   <Box
                     sx={{
-                      width: 52,
-                      height: 52,
-                      borderRadius: '16px',
+                      width: 56,
+                      height: 56,
+                      borderRadius: '18px',
                       backgroundColor: 'rgba(99, 102, 241, 0.1)',
                       color: 'primary.main',
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      fontSize: 26,
-                      mb: 1.5,
+                      fontSize: 28,
+                      mb: 2,
                     }}
                   >
                     {AI_TOPIC_META[selectedTopic].icon}
                   </Box>
-                  <Typography variant="h6" sx={{ fontWeight: 800, mb: 0.75 }}>
-                    我是 LifeHub · DeepSeek 智能复盘顾问
+                  <Typography
+                    variant="h6"
+                    sx={{ fontWeight: 800, mb: 1, fontSize: { xs: '1.15rem', sm: '1.35rem' } }}
+                  >
+                    有什么可以帮您复盘？
                   </Typography>
                   <Typography
                     variant="body2"
-                    sx={{ color: 'var(--lifehub-text-muted)', mb: 2.5, lineHeight: 1.7 }}
+                    sx={{
+                      color: 'var(--lifehub-text-muted)',
+                      mb: 3,
+                      lineHeight: 1.75,
+                      fontSize: { xs: 13.5, sm: 14.5 },
+                    }}
                   >
-                    当前模块：<strong>{AI_TOPIC_META[selectedTopic].label}</strong> · 数据范围：
-                    <strong>{dateWindow.label}</strong>（{dateWindow.fromDate} ~ {dateWindow.toDate}）
-                    <br />
-                    系统已自动将该时间段内的账单、课表、习惯与树洞数据<strong>本地强制脱敏</strong>，可直接发起深度分析或自由提问。
+                    已就绪：<strong>{AI_TOPIC_META[selectedTopic].label}</strong> ·{' '}
+                    <strong>{dateWindow.label}</strong>（{dateWindow.fromDate.slice(5)} 至{' '}
+                    {dateWindow.toDate.slice(5)}）脱敏数据
                   </Typography>
 
                   <Stack
                     direction={{ xs: 'column', sm: 'row' }}
-                    spacing={1.25}
+                    spacing={1.5}
                     justifyContent="center"
-                    sx={{ mb: 3 }}
+                    sx={{ mb: 3.5 }}
                   >
                     <Button
                       variant="contained"
@@ -1045,9 +1200,17 @@ export function AiAnalysisPage() {
                       disabled={analyzing}
                       onClick={() => void handleRemoteAnalyze()}
                       data-testid="ai-remote-analyze-button"
-                      sx={{ borderRadius: 2.5, px: 3, py: 1, fontWeight: 700, textTransform: 'none' }}
+                      sx={{
+                        borderRadius: '14px',
+                        px: 3,
+                        py: 1.2,
+                        fontWeight: 700,
+                        textTransform: 'none',
+                        fontSize: 14,
+                        boxShadow: '0 4px 14px rgba(99, 102, 241, 0.22)',
+                      }}
                     >
-                      🚀 发送脱敏数据给 DeepSeek 深度分析
+                      🚀 DeepSeek 深度分析报告
                     </Button>
                     <Button
                       variant="outlined"
@@ -1055,32 +1218,52 @@ export function AiAnalysisPage() {
                       disabled={analyzing}
                       onClick={() => void handleLocalSummary()}
                       data-testid="ai-local-summary-button"
-                      sx={{ borderRadius: 2.5, px: 2.5, py: 1, fontWeight: 600, textTransform: 'none' }}
+                      sx={{
+                        borderRadius: '14px',
+                        px: 2.75,
+                        py: 1.2,
+                        fontWeight: 600,
+                        textTransform: 'none',
+                        fontSize: 14,
+                      }}
                     >
-                      ⚡ 生成本地秒级总结（免联网）
+                      ⚡ 生成本地秒级总结
                     </Button>
                   </Stack>
 
-                  {/* 预设快捷追问胶囊 */}
-                  <Stack spacing={1} alignItems="center">
-                    <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-                      猜你想问（点击直接发送）：
+                  {/* 预设快捷追问：从挤在一起的小胶囊升级为整齐舒展的列表卡片 */}
+                  <Stack spacing={1.25} alignItems="stretch" sx={{ width: '100%', textAlign: 'left' }}>
+                    <Typography
+                      variant="caption"
+                      sx={{ color: 'var(--lifehub-text-muted)', px: 0.5, fontWeight: 600 }}
+                    >
+                      猜你想问（点击直接提问）：
                     </Typography>
-                    <Stack direction="row" spacing={1} flexWrap="wrap" justifyContent="center" useFlexGap>
+                    <Stack spacing={1} sx={{ width: '100%' }}>
                       {AI_TOPIC_META[selectedTopic].starterQuestions.map((q, idx) => (
-                        <Chip
+                        <Box
                           key={idx}
-                          label={`💬 ${q}`}
-                          variant="outlined"
                           onClick={() => void handleSendChat(q)}
                           data-testid={`ai-starter-question-${idx}`}
                           sx={{
                             cursor: 'pointer',
-                            borderRadius: 2,
-                            py: 0.5,
-                            '&:hover': { borderColor: 'primary.main' },
+                            px: 2,
+                            py: 1.35,
+                            borderRadius: '14px',
+                            backgroundColor: 'var(--lifehub-bg)',
+                            border: '1px solid var(--lifehub-border)',
+                            fontSize: 13.5,
+                            lineHeight: 1.55,
+                            color: 'var(--lifehub-text)',
+                            transition: 'all 0.15s ease',
+                            '&:hover': {
+                              borderColor: 'primary.main',
+                              backgroundColor: 'rgba(99, 102, 241, 0.04)',
+                            },
                           }}
-                        />
+                        >
+                          💬 {q}
+                        </Box>
                       ))}
                     </Stack>
                   </Stack>
@@ -1099,15 +1282,15 @@ export function AiAnalysisPage() {
                           alignSelf: 'flex-end',
                           maxWidth: { xs: '88%', sm: '75%' },
                           px: 2.25,
-                          py: 1.25,
-                          borderRadius: '20px 20px 4px 20px',
+                          py: 1.35,
+                          borderRadius: '20px 20px 6px 20px',
                           backgroundColor: 'primary.main',
                           color: '#fff',
-                          fontSize: 14,
+                          fontSize: 14.5,
                           lineHeight: 1.65,
                           whiteSpace: 'pre-wrap',
                           wordBreak: 'break-word',
-                          boxShadow: '0 2px 8px rgba(99, 102, 241, 0.18)',
+                          boxShadow: '0 2px 10px rgba(99, 102, 241, 0.18)',
                         }}
                       >
                         {msg.content}
@@ -1115,23 +1298,23 @@ export function AiAnalysisPage() {
                     );
                   }
 
-                  // AI 顾问回复：采用 DeepSeek 网页端左侧头像 + 右侧 Markdown 富文本排版 + 底部复制/重试工具栏
+                  // AI 顾问回复：宽敞舒适的阅读卡片
                   return (
                     <Stack
                       key={idx}
                       direction="row"
-                      spacing={1.5}
+                      spacing={{ xs: 0, sm: 1.75 }}
                       alignItems="flex-start"
-                      sx={{ width: '100%', py: 0.5 }}
+                      sx={{ width: '100%', py: 0.5, minWidth: 0 }}
                     >
                       <Box
                         sx={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: '10px',
+                          width: 34,
+                          height: 34,
+                          borderRadius: '12px',
                           backgroundColor: 'rgba(99, 102, 241, 0.12)',
                           color: 'primary.main',
-                          display: 'flex',
+                          display: { xs: 'none', sm: 'flex' },
                           alignItems: 'center',
                           justifyContent: 'center',
                           flexShrink: 0,
@@ -1141,34 +1324,38 @@ export function AiAnalysisPage() {
                         <AutoAwesomeOutlined sx={{ fontSize: 18 }} />
                       </Box>
 
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                          <Typography variant="caption" sx={{ fontWeight: 700, color: 'var(--lifehub-text)' }}>
-                            DeepSeek / LifeHub AI 顾问
+                      <Box sx={{ flex: 1, minWidth: 0, maxWidth: '100%' }}>
+                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.85 }}>
+                          <AutoAwesomeOutlined
+                            sx={{ fontSize: 16, color: 'primary.main', display: { xs: 'inline-flex', sm: 'none' } }}
+                          />
+                          <Typography variant="caption" sx={{ fontWeight: 700, fontSize: 13, color: 'var(--lifehub-text)' }}>
+                            DeepSeek 顾问
                           </Typography>
-                          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 11 }}>
-                            {AI_TOPIC_META[selectedTopic].label}
+                          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 12 }}>
+                            · {AI_TOPIC_META[selectedTopic].label}
                           </Typography>
                         </Stack>
 
                         <Paper
                           variant="outlined"
                           sx={{
-                            p: { xs: 1.75, sm: 2.25 },
-                            borderRadius: 3,
+                            p: { xs: 2, sm: 2.75 },
+                            borderRadius: '18px',
                             backgroundColor: 'var(--lifehub-bg)',
                             borderColor: 'var(--lifehub-border)',
+                            overflow: 'hidden',
                           }}
                         >
                           <AiMarkdownRenderer content={msg.content} />
 
                           <Stack
                             direction="row"
-                            spacing={1}
+                            spacing={1.5}
                             alignItems="center"
                             sx={{
-                              mt: 1.5,
-                              pt: 1,
+                              mt: 1.75,
+                              pt: 1.1,
                               borderTop: '1px dashed var(--lifehub-border)',
                             }}
                           >
@@ -1178,9 +1365,9 @@ export function AiAnalysisPage() {
                                 variant="text"
                                 startIcon={<ContentCopyOutlined sx={{ fontSize: 14 }} />}
                                 onClick={() => handleCopyMessage(msg.content, idx)}
-                                sx={{ fontSize: 11.5, py: 0.2, px: 0.75, color: 'var(--lifehub-text-muted)' }}
+                                sx={{ fontSize: 12, py: 0.3, px: 1, color: 'var(--lifehub-text-muted)', textTransform: 'none' }}
                               >
-                                {copiedIdx === idx ? '已复制' : '复制'}
+                                {copiedIdx === idx ? '已复制' : '复制内容'}
                               </Button>
                             </Tooltip>
 
@@ -1191,7 +1378,7 @@ export function AiAnalysisPage() {
                                 startIcon={<RefreshOutlined sx={{ fontSize: 14 }} />}
                                 disabled={analyzing}
                                 onClick={() => void handleRemoteAnalyze()}
-                                sx={{ fontSize: 11.5, py: 0.2, px: 0.75, color: 'var(--lifehub-text-muted)' }}
+                                sx={{ fontSize: 12, py: 0.3, px: 1, color: 'var(--lifehub-text-muted)', textTransform: 'none' }}
                               >
                                 重新深度分析
                               </Button>
@@ -1204,9 +1391,9 @@ export function AiAnalysisPage() {
                 })
               )}
 
-              {/* 实时思考中动画气泡（发送后立即呈现在最底部并自动滚入视野） */}
+              {/* 实时思考中动画气泡 */}
               {analyzing && (
-                <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 1 }}>
+                <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 1.25 }}>
                   <Box
                     sx={{
                       width: 32,
@@ -1222,8 +1409,8 @@ export function AiAnalysisPage() {
                   >
                     <CircularProgress size={16} thickness={5} />
                   </Box>
-                  <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontWeight: 500 }}>
-                    DeepSeek 正在基于您的脱敏数据进行结构化分析，请稍候…
+                  <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontWeight: 500, fontSize: 13.5 }}>
+                    DeepSeek 正在思考并生成结构化分析，请稍候…
                   </Typography>
                 </Stack>
               )}
@@ -1238,16 +1425,16 @@ export function AiAnalysisPage() {
                 </Box>
               )}
 
-              <Box ref={chatBottomAnchorRef} sx={{ height: 4 }} />
+              <Box ref={chatBottomAnchorRef} sx={{ height: 6 }} />
             </Box>
           </Box>
 
-          {/* 底部：1:1 DeepSeek 网页风大圆角悬浮输入舱（Composer） */}
+          {/* 底部：极简宽敞的 DeepSeek 风格输入舱（去除多余按钮，左一右一清爽呼吸感） */}
           <Box
             data-testid="ai-chat-panel"
             sx={{
-              px: { xs: 1.5, sm: 3 },
-              pb: 2,
+              px: { xs: 2, sm: 4 },
+              pb: { xs: 2, sm: 2.5 },
               pt: 1,
               backgroundColor: 'var(--lifehub-surface)',
               flexShrink: 0,
@@ -1256,10 +1443,10 @@ export function AiAnalysisPage() {
             <Paper
               variant="outlined"
               sx={{
-                maxWidth: 820,
+                maxWidth: 780,
                 mx: 'auto',
-                p: 1.25,
-                borderRadius: 3.5,
+                p: { xs: 1.5, sm: 1.75 },
+                borderRadius: '20px',
                 backgroundColor: 'var(--lifehub-bg)',
                 borderColor: 'var(--lifehub-border)',
                 transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
@@ -1276,7 +1463,7 @@ export function AiAnalysisPage() {
                 minRows={1}
                 maxRows={4}
                 variant="standard"
-                placeholder={`给 DeepSeek 发送消息（当前：${AI_TOPIC_META[selectedTopic].label} · ${dateWindow.label}脱敏数据，Enter 发送 / Shift+Enter 换行）…`}
+                placeholder={`给 DeepSeek 发送消息（当前：${AI_TOPIC_META[selectedTopic].label}）…`}
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -1287,61 +1474,39 @@ export function AiAnalysisPage() {
                 }}
                 InputProps={{
                   disableUnderline: true,
-                  sx: { px: 1, py: 0.5, fontSize: 14, lineHeight: 1.6 },
+                  sx: { px: 0.75, py: 0.5, fontSize: 14.5, lineHeight: 1.65 },
                 }}
                 inputProps={{ 'data-testid': 'ai-chat-input' }}
               />
 
-              {/* 输入框底栏：模仿 DeepSeek 网页版的「深度思考 (R1)」开关胶囊 + 快捷复盘 + 发送按钮 */}
+              {/* 输入框底栏：仅保留左侧「深度思考 (R1)」与右侧「发送」，告别按钮拥挤 */}
               <Stack
                 direction="row"
                 justifyContent="space-between"
                 alignItems="center"
-                spacing={1}
-                sx={{ mt: 1, pt: 0.75, px: 0.5 }}
+                spacing={1.5}
+                sx={{ mt: 1, pt: 0.5, px: 0.5 }}
               >
-                <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                  <Chip
-                    icon={<PsychologyOutlined sx={{ fontSize: 15 }} />}
-                    size="small"
-                    label="深度思考 (R1)"
-                    color={isReasonerModel ? 'primary' : 'default'}
-                    variant={isReasonerModel ? 'filled' : 'outlined'}
-                    onClick={() => {
-                      const nextModel = isReasonerModel ? 'deepseek-chat' : 'deepseek-reasoner';
-                      setProvider('deepseek');
-                      setBaseUrl('https://api.deepseek.com');
-                      setModel(nextModel);
-                    }}
-                    sx={{
-                      cursor: 'pointer',
-                      borderRadius: 2,
-                      fontWeight: isReasonerModel ? 700 : 500,
-                      fontSize: 12,
-                    }}
-                  />
-
-                  <Button
-                    size="small"
-                    variant="text"
-                    disabled={analyzing}
-                    onClick={() => void handleRemoteAnalyze()}
-                    sx={{ fontSize: 12, textTransform: 'none', py: 0.25 }}
-                  >
-                    🚀 一键生成本模块复盘
-                  </Button>
-
-                  <Button
-                    size="small"
-                    variant="text"
-                    color="secondary"
-                    disabled={analyzing}
-                    onClick={() => void handleLocalSummary()}
-                    sx={{ fontSize: 12, textTransform: 'none', py: 0.25 }}
-                  >
-                    本地总结
-                  </Button>
-                </Stack>
+                <Chip
+                  icon={<PsychologyOutlined sx={{ fontSize: 16 }} />}
+                  label="深度思考 (R1)"
+                  color={isReasonerModel ? 'primary' : 'default'}
+                  variant={isReasonerModel ? 'filled' : 'outlined'}
+                  onClick={() => {
+                    const nextModel = isReasonerModel ? 'deepseek-chat' : 'deepseek-reasoner';
+                    setProvider('deepseek');
+                    setBaseUrl('https://api.deepseek.com');
+                    setModel(nextModel);
+                  }}
+                  sx={{
+                    cursor: 'pointer',
+                    borderRadius: '999px',
+                    height: 32,
+                    px: 0.5,
+                    fontWeight: isReasonerModel ? 700 : 500,
+                    fontSize: 12.5,
+                  }}
+                />
 
                 <Button
                   variant="contained"
@@ -1351,10 +1516,12 @@ export function AiAnalysisPage() {
                   data-testid="ai-chat-send-button"
                   sx={{
                     whiteSpace: 'nowrap',
-                    px: 2.25,
-                    py: 0.65,
-                    borderRadius: 2.5,
+                    flexShrink: 0,
+                    px: 2.5,
+                    py: 0.7,
+                    borderRadius: '999px',
                     fontWeight: 700,
+                    fontSize: 13.5,
                     textTransform: 'none',
                     boxShadow: 'none',
                   }}
@@ -1417,11 +1584,15 @@ export function AiAnalysisPage() {
       </Paper>
 
       {/* 模型与 DeepSeek / OpenAI API Key 配置抽屉（默认折叠） */}
-      <Box sx={{ display: advancedOpen ? 'block' : 'none' }} data-testid="ai-advanced-section">
+      <Box
+        ref={advancedSectionRef}
+        sx={{ display: advancedOpen ? 'block' : 'none' }}
+        data-testid="ai-advanced-section"
+      >
         <Paper
           variant="outlined"
           data-testid="ai-config-card"
-          sx={{ p: { xs: 2, sm: 2.5 }, mb: 2.5, borderRadius: 3 }}
+          sx={{ p: { xs: 1.75, sm: 2.5 }, mb: 2.5, borderRadius: 3 }}
         >
           <Stack
             direction={{ xs: 'column', sm: 'row' }}
@@ -1430,7 +1601,7 @@ export function AiAnalysisPage() {
             spacing={1}
             sx={{ mb: 2 }}
           >
-            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: { xs: '0.95rem', sm: '1rem' } }}>
               模型端点与 API Key 配置（支持 DeepSeek 官方接口 · 本地 AES-GCM 加密）
             </Typography>
             <Chip
@@ -1442,11 +1613,16 @@ export function AiAnalysisPage() {
                   : '未配置远程密钥（默认使用零网络本地顾问）'
               }
               data-testid="ai-key-status-chip"
+              sx={{
+                maxWidth: '100%',
+                height: 'auto',
+                '& .MuiChip-label': { whiteSpace: 'normal', py: 0.4 },
+              }}
             />
           </Stack>
 
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }}>
-            <FormControl size="small" sx={{ minWidth: 220 }}>
+            <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 220 } }}>
               <InputLabel id="ai-provider-label">接口类型</InputLabel>
               <Select
                 labelId="ai-provider-label"
@@ -1503,36 +1679,6 @@ export function AiAnalysisPage() {
             />
           </Stack>
 
-          {provider === 'deepseek' && (
-            <Stack
-              direction="row"
-              spacing={1}
-              alignItems="center"
-              sx={{ mb: 1.5 }}
-              data-testid="ai-deepseek-model-presets"
-            >
-              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-                DeepSeek 快捷模型：
-              </Typography>
-              <Chip
-                size="small"
-                label="deepseek-chat (V3)"
-                color={model === 'deepseek-chat' ? 'primary' : 'default'}
-                variant={model === 'deepseek-chat' ? 'filled' : 'outlined'}
-                onClick={() => setModel('deepseek-chat')}
-                sx={{ cursor: 'pointer' }}
-              />
-              <Chip
-                size="small"
-                label="deepseek-reasoner (R1)"
-                color={model === 'deepseek-reasoner' ? 'primary' : 'default'}
-                variant={model === 'deepseek-reasoner' ? 'filled' : 'outlined'}
-                onClick={() => setModel('deepseek-reasoner')}
-                sx={{ cursor: 'pointer' }}
-              />
-            </Stack>
-          )}
-
           <Button
             variant="contained"
             size="small"
@@ -1543,18 +1689,41 @@ export function AiAnalysisPage() {
           </Button>
         </Paper>
 
-        {/* E-04 / X-13：请求审计指标历史表 */}
+        {/* E-04 / X-13：请求审计指标历史表（支持单条删除与一键清空） */}
         <Paper
           variant="outlined"
           data-testid="ai-request-history"
           sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 3 }}
         >
-          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 0.5 }}>
-            AI 请求审计指标记录（X-13：仅存 SHA-256 摘要与性能指标）
-          </Typography>
-          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', display: 'block', mb: 1.5 }}>
-            共 {auditHistory.length} 条请求指标记录
-          </Typography>
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="center"
+            spacing={1}
+            sx={{ mb: 1.5 }}
+          >
+            <Box>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 0.25 }}>
+                AI 请求审计指标记录（X-13：仅存 SHA-256 摘要与性能指标）
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', display: 'block' }}>
+                共 {auditHistory.length} 条请求指标记录
+              </Typography>
+            </Box>
+            {auditHistory.length > 0 && (
+              <Button
+                size="small"
+                color="error"
+                variant="outlined"
+                startIcon={<DeleteOutline sx={{ fontSize: 16 }} />}
+                onClick={() => void handleClearAuditHistory()}
+                data-testid="ai-clear-audits-button"
+                sx={{ borderRadius: 2, textTransform: 'none', flexShrink: 0 }}
+              >
+                清空全部记录
+              </Button>
+            )}
+          </Stack>
 
           {auditHistory.length > 0 && (
             <Box sx={{ overflowX: 'auto' }}>
@@ -1567,6 +1736,7 @@ export function AiAnalysisPage() {
                     <TableCell>耗时</TableCell>
                     <TableCell>Token 用量</TableCell>
                     <TableCell>状态</TableCell>
+                    <TableCell align="right">操作</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -1587,6 +1757,17 @@ export function AiAnalysisPage() {
                           color={item.status === 'success' ? 'success' : 'error'}
                           label={item.status === 'success' ? '成功' : item.errorCode || '失败'}
                         />
+                      </TableCell>
+                      <TableCell align="right">
+                        <IconButton
+                          size="small"
+                          color="error"
+                          aria-label="删除审计记录"
+                          onClick={() => void handleDeleteAuditRecord(item.id)}
+                          data-testid={`ai-delete-audit-${item.id}`}
+                        >
+                          <DeleteOutline sx={{ fontSize: 16 }} />
+                        </IconButton>
                       </TableCell>
                     </TableRow>
                   ))}

@@ -458,4 +458,20 @@ export class AiStorageService {
     const all = await this.db.table<AIAnalysisRequestRecord>('aiAnalysisRequests').toArray();
     return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
+
+  /**
+   * 删除指定的单条 AI 请求审计指标记录。
+   *
+   * @param id 待删除的审计记录 ID
+   */
+  async deleteRequestAudit(id: string): Promise<void> {
+    await this.db.table<AIAnalysisRequestRecord>('aiAnalysisRequests').delete(id);
+  }
+
+  /**
+   * 清空全部 AI 请求审计指标记录。
+   */
+  async clearRequestAudits(): Promise<void> {
+    await this.db.table<AIAnalysisRequestRecord>('aiAnalysisRequests').clear();
+  }
 }

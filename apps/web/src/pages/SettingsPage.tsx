@@ -246,7 +246,7 @@ export function SettingsPage() {
           data-testid="mobile-settings-quick-nav"
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' },
+            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' },
             gap: 1.25,
           }}
         >
@@ -285,18 +285,6 @@ export function SettingsPage() {
             sx={{ py: 1.25, borderRadius: 2.5, justifyContent: 'flex-start' }}
           >
             🔥 习惯打卡
-          </Button>
-          <Button
-            variant="outlined"
-            data-testid="quick-nav-security"
-            onClick={() => {
-              if (typeof window !== 'undefined') {
-                window.location.hash = '#/security';
-              }
-            }}
-            sx={{ py: 1.25, borderRadius: 2.5, justifyContent: 'flex-start' }}
-          >
-            🔒 安全与加密
           </Button>
         </Box>
       </Paper>

@@ -64,7 +64,7 @@ describe('SideNav', () => {
     expect(screen.getByText('生活课表')).toBeInTheDocument();
     expect(screen.getByText('习惯打卡')).toBeInTheDocument();
     expect(screen.getByText('AI 分析')).toBeInTheDocument();
-    expect(screen.getByText('安全与加密')).toBeInTheDocument();
+    expect(screen.queryByText('安全与加密')).not.toBeInTheDocument();
     expect(screen.getByText('设置')).toBeInTheDocument();
     expect(screen.getByText('本地优先 · 端到端加密')).toBeInTheDocument();
   });
