@@ -578,7 +578,12 @@ describe('R7 · 无指向外部域名的请求', () => {
     expect(violations).toEqual([]);
   }, VAULT_TIMEOUT);
 
-  it('Web 端真实代码里不出现任何网络 API（除用户自填 AI endpoint）', () => {
+  it('Web 端真实代码里不出现任何未授权网络 API（仅允许用户自填 AI endpoint、用户自配云存储及桌面宿主本地桥接）', () => {
+    const allowedNetworkFiles = new Set([
+      'apps/web/src/modules/ai/ai-client.ts',
+      'apps/web/src/lib/cloud-storage.ts',
+      'apps/web/src/utils/download.ts',
+    ]);
     const networkPatterns: { name: string; regex: RegExp }[] = [
       { name: 'fetch', regex: /(?<![.\w])fetch\s*\(/g },
       { name: 'XMLHttpRequest', regex: /\bXMLHttpRequest\b/g },
@@ -588,10 +593,12 @@ describe('R7 · 无指向外部域名的请求', () => {
     ];
     const violations: string[] = [];
     for (const file of collectTsFiles(WEB_SRC)) {
+      const rel = toRel(file);
+      if (allowedNetworkFiles.has(rel)) continue;
       const code = stripComments(readFileSync(file, 'utf8'));
       for (const { name, regex } of networkPatterns) {
         if (regex.test(code)) {
-          violations.push(`${toRel(file)} 命中 ${name}`);
+          violations.push(`${rel} 命中 ${name}`);
           regex.lastIndex = 0;
         }
       }

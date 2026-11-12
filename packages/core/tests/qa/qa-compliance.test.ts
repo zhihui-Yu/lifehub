@@ -351,8 +351,13 @@ describe('R6 / R7 / R8 · 全仓合规红线（X-05 / X-06）', () => {
     expect(hits).toEqual([]);
   });
 
-  it('Web 端页面不含指向外部域名的请求，且 CSP 限定 connect-src 为 self（X-06 ② / R7）', () => {
+  it('Web 端页面不含未授权外部请求，且 CSP 限定 connect-src（X-06 ② / R7）', () => {
     const roots = [join(REPO_ROOT, 'apps/web/src')];
+    const allowedSuffixes = [
+      'src/modules/ai/ai-client.ts',
+      'src/lib/cloud-storage.ts',
+      'src/utils/download.ts',
+    ];
     const networkPatterns: { name: string; regex: RegExp }[] = [
       { name: 'fetch', regex: /(?<![.\w])fetch\s*\(/g },
       { name: 'XMLHttpRequest', regex: /\bXMLHttpRequest\b/g },
@@ -363,6 +368,8 @@ describe('R6 / R7 / R8 · 全仓合规红线（X-05 / X-06）', () => {
     const violations: string[] = [];
     for (const root of roots) {
       for (const file of collectTsFiles(root)) {
+        const normalized = file.replace(/\\/g, '/');
+        if (allowedSuffixes.some((suffix) => normalized.endsWith(suffix))) continue;
         const code = stripComments(readFileSync(file, 'utf8'));
         for (const { name, regex } of networkPatterns) {
           if (regex.test(code)) {
