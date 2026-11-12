@@ -58,8 +58,8 @@ describe('CSV 解析性能', () => {
 
     const started = performance.now();
     let count = 0;
-    for await (const _row of parser.parseStream(chunks())) {
-      count += 1;
+    for await (const row of parser.parseStream(chunks())) {
+      if (row) count += 1;
     }
     const elapsed = performance.now() - started;
 

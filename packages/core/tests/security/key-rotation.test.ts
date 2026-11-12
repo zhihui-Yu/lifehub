@@ -17,7 +17,7 @@
 import { describe, expect, it } from 'vitest';
 import { createTestRuntime } from '../helpers/runtime';
 import { KeyRotationService } from '../../src/services/key-rotation-service';
-import type { KeyRotationPlan, RotationState, RotationStatus } from '../../src/services/key-rotation-service';
+import type { KeyRotationPlan, RotationStatus } from '../../src/services/key-rotation-service';
 
 /** 测试用主口令。 */
 const PASSWORD = 'test-password-123';

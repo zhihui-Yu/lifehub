@@ -3,7 +3,6 @@
  *
  * 架构位置：core 包的「仓储」层。核心层只通过仓储访问数据，**不感知 IndexedDB / Dexie**。
  */
-import { LifeHubError } from '../errors';
 import type { Bill, Direction } from '../models/bill';
 import { validateBill } from '../models/bill';
 import type { EncryptedStore } from '../storage/encrypted-store';

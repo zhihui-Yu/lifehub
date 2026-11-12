@@ -88,10 +88,7 @@ describe('X-11 · 双端改不同字段 → 两字段都保留（X-11 ③）', (
 
   it('两端各改三个不同字段，六个字段全部保留', () => {
     const base = entity({});
-    const local = entity({ amountMinor: 1111, counterparty: 'A店', note: '本地备注' });
-    const remote = entity({ amountMinor: 2222, counterparty: 'B店', note: '远端备注' });
-
-    // 同一字段被两端都改 → 产生冲突；这里改为真正不同的字段组合。
+    // 真正不同的字段组合。
     const local2 = entity({ amountMinor: 1111, counterparty: 'A店' });
     const remote2 = entity({ note: '远端备注', version: 2 });
     const result = mergeRecord<TestEntity>(local2, remote2, base);

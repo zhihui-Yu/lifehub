@@ -198,7 +198,6 @@ describe('R1 · globalThis 用法在纯 Node 环境真实可用', () => {
     const provider = new WebCryptoProvider();
     const crypto = new CryptoService(provider);
     const key = provider.randomBytes(32);
-    const aad = crypto.buildAad('bill', 'bill-1', 1);
 
     const payload = await crypto.encryptRecord(key, 'bill', 'bill-1', 1, { amountMinor: 1234 });
     await expect(crypto.decryptRecord(key, 'bill', 'bill-1', 1, payload)).resolves.toEqual({

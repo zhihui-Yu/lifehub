@@ -98,7 +98,6 @@ describe('EncryptedStore', () => {
   });
 
   it('未解锁时拒绝一切业务实体读写（LIFEHUB_E_VAULT_NOT_FOUND）', async () => {
-    const runtime = await createUnlockedRuntime();
     const locked = await createUnlockedRuntime();
     // 构造一个未解锁的 DEK 供给器。
     const { MemoryStorageAdapter, CryptoService, WebCryptoProvider, EncryptedStore } = await import(

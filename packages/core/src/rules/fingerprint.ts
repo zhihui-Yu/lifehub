@@ -6,7 +6,6 @@
 import type { Bill } from '../models/bill';
 import type { CryptoProvider } from '../crypto/provider';
 import { sha256Hex } from '../utils/hash';
-import { utf8Encode } from '../utils/bytes';
 
 /**
  * 计算文件内容的 sha256 hex。

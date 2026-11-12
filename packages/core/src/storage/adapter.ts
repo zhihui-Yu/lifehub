@@ -11,7 +11,7 @@
  * 本接口本身不提供任何明文业务写入口。
  */
 import type { EntityType, IndexColumn } from '../types/entity-type';
-import type { PlainPayload, StoredRecord } from '../models/common';
+import type { StoredRecord } from '../models/common';
 
 export type { IndexColumn } from '../types/entity-type';
 export type { PlainPayload, StoredRecord } from '../models/common';

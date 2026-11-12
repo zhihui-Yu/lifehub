@@ -9,12 +9,12 @@
 import { LifeHubError } from '../errors';
 import type { Bill, Direction } from '../models/bill';
 import type { ColumnMapping } from '../models/rule-template';
-import { CurrencyCode, DEFAULT_CURRENCY } from '../money/currency';
+import { CurrencyCode } from '../money/currency';
 import { parseAmountToMinor } from '../money/amount';
 import { parseFlexibleDate } from '../time/datetime';
 import type { Clock } from '../types/common';
 import { uuidV7 } from '../utils/id';
-import type { ColumnMapper, MappedRow } from './column-mapper';
+import type { ColumnMapper } from './column-mapper';
 import type { DirectionResolver } from './direction';
 
 /** 行解析错误。 */
