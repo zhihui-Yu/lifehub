@@ -52,6 +52,9 @@ function createTestConfig(): SyncServerConfig {
   };
 }
 
+/** WhatWG Fetch 规范禁止访问的高手位端口（如 10080 / 6000 / 6665-6669 / 6697），若 OS 随机分配命中则重新绑定。 */
+const FETCH_BAD_PORTS = new Set([6000, 6566, 6665, 6666, 6667, 6668, 6669, 6697, 10080]);
+
 /**
  * 起一个临时的同步服务实例。
  *
@@ -61,12 +64,23 @@ export async function startTestServer(): Promise<TestServer> {
   const config = createTestConfig();
   const store = new SqliteBlobStore(':memory:');
   const authorizer = new DeviceAuthorizer(config.credentials);
-  const server = createSyncServer({ store, authorizer, config });
+  let server = createSyncServer({ store, authorizer, config });
 
   await new Promise<void>((resolve) => {
     server.listen(0, '127.0.0.1', resolve);
   });
-  const address = server.address() as AddressInfo;
+  let address = server.address() as AddressInfo;
+  while (FETCH_BAD_PORTS.has(address.port)) {
+    const prev = server;
+    server = createSyncServer({ store, authorizer, config });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    await new Promise<void>((resolve) => {
+      prev.close(() => resolve());
+    });
+    address = server.address() as AddressInfo;
+  }
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   return {

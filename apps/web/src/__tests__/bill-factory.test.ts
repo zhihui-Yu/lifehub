@@ -41,8 +41,8 @@ describe('buildManualBill', () => {
     expect(bill.counterparty).toBe('星巴克');
     expect(bill.categoryId).toBe('c1');
     expect(bill.note).toBe('拿铁');
-    // occurredAt 由本地墙钟解析，值与本地时区无关地可被新 Date 复现。
-    expect(bill.occurredAt).toBe(new Date('2024-01-15T08:00').toISOString());
+    // occurredAt 按 CTX.timeZone ('Asia/Shanghai', UTC+8) 将本地墙钟 08:00 反解为 UTC 00:00。
+    expect(bill.occurredAt).toBe('2024-01-15T00:00:00.000Z');
   });
 
   it('省略时间时默认 00:00 且金额恒为正', () => {
@@ -52,7 +52,7 @@ describe('buildManualBill', () => {
     );
     expect(bill.amountMinor).toBe(10000);
     expect(bill.localDate).toBe('2024-02-02');
-    expect(bill.occurredAt).toBe(new Date('2024-02-02T00:00').toISOString());
+    expect(bill.occurredAt).toBe('2024-02-01T16:00:00.000Z');
   });
 
   it('金额为空 / 零 / 负号都会抛中文校验错误', () => {
