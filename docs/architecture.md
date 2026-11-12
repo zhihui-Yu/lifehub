@@ -1,10 +1,10 @@
 # LifeHub 架构说明
 
-> 文档版本：v1.1 ｜ 日期：2026-10-30 ｜ 作者：寇豆码（工程师）
-> 上游输入：`docs/PRD.md` v1.0 ｜ `docs/system_design.md` v1.0
-> 本文是 `docs/system_design.md` 的**面向读者版**：讲清「为什么这样分层、加密边界在哪里、索引列为何是这 7 个、同步协议长什么样、以后怎么移植到 Flutter」。
+> 文档版本：v1.2 ｜ 日期：2026-11-12 ｜ 作者：寇豆码（工程师）
+> 上游输入：`docs/PRD.md` v1.4 ｜ `docs/system_design.md` v1.0
+> 本文是 `docs/system_design.md` 的**面向读者版**：讲清「为什么这样分层、加密边界在哪里、索引列为何是这 7 个、同步协议与对象存储压缩加密备份长什么样、以后怎么移植到 Flutter」。
 >
-> v1.1 变更：新增 §5「同步协议与密文 blob 格式」，与 `apps/sync-server` 的实际实现对齐。
+> v1.2 变更：更新表现层全模块（记账、统计、分类、课表、习惯、树洞、AI 分析）架构、无感本地加密初始化（Silent E2EE）、5 大云对象存储双级无损压缩 + AES-256-GCM 备份（`lifehub-backup.json.enc`）以及 Windows EXE / Android APK 双端原生宿主架构。
 
 ---
 

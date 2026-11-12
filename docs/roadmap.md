@@ -548,9 +548,24 @@ S5 的目标是「多设备同步（只搬密文）+ 密钥轮换」。本轮先
 | 条目 | 现状 | 建议 |
 | --- | --- | --- |
 | 删除墓碑协议 | 未设计 | 与客户端一起设计；服务端需增列（`deleted_at` 墓碑行） |
-| 客户端同步闭环 | 协议已定，未接线 | 用 `core` 的 `buildSyncPayload()` / `mergeRecord()` 实现「拉取 → 合并 → 回传」 |
+| 客户端同步闭环 | 已通过 5 大对象存储（OSS/COS/Kodo/OBS/S3）全量压缩加密备份（`lifehub-backup.json.enc`）实现跨端同步闭环 | 自托管 `sync-server` 增量合并可按需接线 |
 | 密钥轮换（`X-10`） | 只有接口与数据结构 | S5 主体任务 |
 | 服务端多副本 | 当前单机单进程 | 若要水平扩展，需换存储（协议层不用动） |
+
+---
+
+## 10. 实际实现状态回填（S2 ~ S6 全模块落地与 v0.2.1 体验打磨）
+
+> 回填时间：2026-11-12 ｜ 版本：`v0.2.1`
+
+| 模块 / 领域 | 实际交付状态 | 关键实现与文件位置 |
+| --- | --- | --- |
+| **A 记账扩展与多格式解析** | ✅ 已交付 | 支持 CSV、Excel (`.xlsx`)、微信/银行加密 `.pdf`、支付宝加密 `.zip` 导入（`apps/web/src/lib/import/`）；支持账单统计看板（`BillStatsPage.tsx` / `BillVisualDashboard.tsx`）与商户分类自动记忆（`category-memory.ts`）。 |
+| **B 生活课表 + C 习惯打卡** | ✅ 已交付 | `SchedulePage.tsx`（固定周课表 + RFC 5545 RRULE + 日/周视图 + A4 打印）与 `HabitsPage.tsx`（连续天数、中断重置、年度热力图、共享 `CompletionEvent`）。 |
+| **D 树洞加密日记** | ✅ 已交付 | `TreeHolePage.tsx` + `diary-service.ts`，支持全字段 AES-256-GCM 加密落盘、语音日记、心情/标签/置顶/搜索、人物关系图谱与未来规划。 |
+| **E AI 分析层** | ✅ 已交付 | `AiAnalysisPage.tsx` + `modules/ai/`，支持零网络本地智能总结、自带 API Key（AES-GCM 加密存储）、DeepSeek V3/R1 深度思考切换、本地脱敏管线、单条删除与一键清空请求审计指标，以及手机端极简大留白对话 UI。 |
+| **X 无感加密与云端备份 (`lifehub-backup.json.enc`)** | ✅ 已交付 | 本地保险库后台静默初始化并自动加密，移除导航栏与设置页冗余的「安全与加密」入口；云存储备份支持 5 大厂商（OSS/COS/Kodo/OBS/S3），内置字典+LZ77 双级无损压缩、必填密码校验、本机「记住加密密码」与云端密码指纹防误改覆盖保护。 |
+| **X 双端原生打包 (EXE + APK)** | ✅ 已交付 | `npm run release`（`scripts/release-packages.mjs`）一键自动递增版本号并构建 Windows WebView2 单文件桌面版 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 Capacitor Android 手机版 `LifeHub-xiaomi15-v<版本>.apk`。 |
 
 ---
 

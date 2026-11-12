@@ -10,24 +10,24 @@
 
 | ✅ 负责 | ❌ 不负责 |
 | --- | --- |
-| 6 个页面的渲染与交互 | 加密算法、口令派生（→ core） |
-| 表单状态、列表筛选、导入向导的状态流转 | 金额解析与格式化（→ core） |
-| 平台适配：IndexedDB / WebCrypto / 时钟 / 设备标签 | 业务规则（去重、方向推断、分类匹配 → core） |
-| 把 core 的错误码翻译成用户能看懂的中文提示 | 存储引擎选型与索引策略（→ core） |
-| 虚拟化长列表、响应式布局、无障碍语义 | 同步协议与网络传输 |
+| 全量业务页面（导入、映射、账单列表、账单统计、分类管理、生活课表、习惯打卡、树洞日记、AI 分析、设置、404）的渲染与交互 | 核心加密算法与口令派生（→ core） |
+| 表单状态、列表筛选、导入向导、课表/习惯/树洞/AI 对话的状态流转 | 金额精度解析与零浮点运算（→ core） |
+| 平台适配：IndexedDB / WebCrypto / 时钟 / 设备标签 / 多格式导入（XLSX/PDF/ZIP）/ 5 大云存储端到端压缩加密同步 | 核心去重、方向推断、分类规则引擎（→ core） |
+| 把 core 的错误码翻译成用户能看懂的中文提示 | 存储抽象端口与索引明文列策略（→ core） |
+| 虚拟化长列表、手机端卡片化与 Mobile Lite 极简布局、无障碍语义 | 自托管同步服务端持久化 |
 
 ---
 
 ## 2. 快速开始
 
 ```bash
-npm install                        # 仓库根目录执行一次
-npm run dev --workspace @lifehub/web # http://localhost:5173
+npm install                          # 仓库根目录执行一次
+npm run dev --workspace @lifehub/web # http://localhost:4180
 npm run build --workspace @lifehub/web
-npm run test --workspace @lifehub/web # jsdom 组件测试
+npm run test --workspace @lifehub/web # jsdom 组件与模块测试
 ```
 
-> WebCrypto（`crypto.subtle`）**只在 HTTPS 或 localhost 下可用**。用 `http://localhost:5173` 访问，
+> WebCrypto（`crypto.subtle`）**只在 HTTPS 或 localhost 下可用**。用 `http://localhost:4180` 访问，
 > 不要用局域网 IP 直连（否则会提示「本地数据读写失败」或加密不可用）。
 
 ---
@@ -36,45 +36,65 @@ npm run test --workspace @lifehub/web # jsdom 组件测试
 
 ```
 apps/web/src/
-├── pages/                6 个页面
-│   ├── ImportPage.tsx        导入页：拖拽 / 选择文件 → 探查
+├── pages/                核心业务页面
+│   ├── ImportPage.tsx        导入页：拖拽 / 选择 CSV、XLSX、加密 PDF、加密 ZIP → 探查
 │   ├── MappingPage.tsx       列头映射页：拖拽 + 下拉映射、实时预览、开始导入
-│   ├── BillsPage.tsx         账单列表页：按 localDate 分组、组合筛选、虚拟化
-│   ├── SecurityPage.tsx      安全页：保险库状态、恢复码、盐值备份、审计日志
-│   ├── SettingsPage.tsx      设置页：时区、币种、危险操作
+│   ├── BillsPage.tsx         账单列表页：按 localDate 分组、组合筛选、虚拟化、移动端卡片流
+│   ├── BillStatsPage.tsx     账单统计页：收支趋势、分类占比、商户排行与可视化看板
+│   ├── CategoriesPage.tsx    分类管理页：收支分类增删改查與自动分类规则配置
+│   ├── SchedulePage.tsx      生活课表页：固定周课表、RRULE 周期日程、日/周视图、A4 打印
+│   ├── HabitsPage.tsx        习惯打卡页：微习惯打卡、连续天数、年度热力图、完成率统计
+│   ├── TreeHolePage.tsx      树洞日记页：本地 AES-GCM 加密文本/语音日记、人物图谱、未来规划
+│   ├── AiAnalysisPage.tsx    AI 分析页：本地零网络总结、DeepSeek V3/R1 深度思考对话、脱敏与请求审计管理
+│   ├── SettingsPage.tsx      设置页：快捷功能中心、5 大云存储端到端压缩加密同步、全量数据导出、外观主题
+│   ├── SecurityPage.tsx      安全底层页：保险库状态、恢复码、盐值备份、审计日志（后台自动运行，导航默认隐藏）
 │   └── NotFoundPage.tsx      404
+├── modules/               独立业务域模块
+│   ├── ai/                   AI 客户端（OpenAI/DeepSeek/Ollama）、本地脱敏管线、Prompt 组装、加密存储与审计指标管理、Markdown 渲染
+│   ├── diary/                树洞加密日记、人物关系与未来规划服务
+│   ├── habits/               习惯打卡与连续天数计算服务
+│   ├── schedule/             课表管理与 RFC 5545 RRULE 展开器
+│   └── shared/               课表与习惯共享的 CompletionEvent 与本地日期工具
+├── lib/                   Web 端扩展能力库
+│   ├── cloud-storage.ts      5 大云存储（OSS/COS/Kodo/OBS/S3）双级无损压缩（字典+LZ77）+ PBKDF2/AES-256-GCM 加密备份（lifehub-backup.json.enc）
+│   ├── category-memory.ts    商户智能分类记忆引擎
+│   ├── bill-factory.ts       手工记账与编辑工厂
+│   ├── category-factory.ts   默认分类初始化工厂
+│   └── import/               多格式账单提取器（CSV / Excel .xlsx / 微信与银行加密 .pdf / 支付宝加密 .zip）
 ├── components/
-│   ├── bills/              账单组件：过滤栏、分组列表、虚拟列表、行
-│   ├── import/             导入组件：拖拽区、最近导入、步骤指示
-│   ├── mapping/            映射组件：映射看板、方向规则、分类规则、预览表
-│   ├── security/           安全组件：保险库状态卡、恢复码面板、盐值备份、审计表、设口令弹窗
-│   ├── common/             通用组件：金额文本、确认弹窗、空状态、错误汇总、加载遮罩
-│   └── layout/             布局：应用外壳、侧边导航、顶栏
+│   ├── bills/                账单组件：过滤栏、分组列表、虚拟列表、行、可视化看板、编辑弹窗
+│   ├── import/               导入组件：拖拽区、最近导入、步骤指示
+│   ├── mapping/              映射组件：映射看板、方向规则、分类规则、预览表
+│   ├── settings/             设置组件：CloudStoragePanel（必填密码、记住密码、密码指纹防误改覆盖校验）
+│   ├── security/             安全组件：保险库状态卡、恢复码面板、盐值备份、审计表、设口令弹窗
+│   ├── common/               通用组件：金额文本、确认弹窗、空状态、错误汇总、加载遮罩、图标
+│   └── layout/               布局：应用外壳、侧边导航（桌面端 8 项 / 手机端底部 4 固定 Tab）、顶栏
 ├── hooks/                 业务编排
-│   ├── useVault.ts         建库 / 解锁 / 恢复码解锁 / 锁定，会话状态
-│   ├── useBillList.ts      加载解密账单 → 按 localDate 分组 → 过滤
-│   ├── useCategories.ts    分类列表
-│   ├── useAuditLog.ts      审计日志列表
-│   ├── useImportFlow.ts    plan → 映射调整 → run 四步编排
-│   └── useDebouncedValue.ts 200ms 防抖（搜索框）
+│   ├── useVault.ts           后台静默建库 / 自动解锁 / 恢复码解锁 / 锁定，会话状态
+│   ├── useBillList.ts        加载解密账单 → 按 localDate 分组 → 过滤
+│   ├── useBillActions.ts     账单手工新增、编辑、删除、内部转账标记
+│   ├── useCategories.ts      分类列表管理
+│   ├── useAuditLog.ts        审计日志列表
+│   ├── useImportFlow.ts      多格式解压解析 → plan → 映射调整 → run 四步编排
+│   └── useDebouncedValue.ts  200ms 防抖（搜索框）
 ├── store/                 Zustand 状态
-│   ├── bill-store.ts       账单工作集 + 过滤条件
-│   ├── import-store.ts     导入流程（idle → planning → mapping → running → done/error）
-│   ├── settings-store.ts   时区、币种等设置
-│   └── vault-store.ts      会话状态 + 内存态 DEK 供给器
+│   ├── bill-store.ts         账单工作集 + 过滤条件
+│   ├── import-store.ts       导入流程（idle → planning → mapping → running → done/error）
+│   ├── settings-store.ts     外观主题、时区、币种等设置
+│   └── vault-store.ts        会话状态 + 内存态 DEK 供给器
 ├── platform/              ★ 平台适配层（唯一知道「平台是什么」的地方）
 │   ├── index.ts                装配全部适配器与仓储
 │   ├── indexeddb-storage-adapter.ts  Dexie 实现 StorageAdapter
 │   ├── web-crypto-provider.ts  WebCrypto 实现 CryptoProvider
 │   ├── clock.ts                Clock 端口实现
 │   ├── device-label.ts         设备标签（'本机 · Chrome'）
-│   └── db.ts                   Dexie 数据库定义
-├── components/../utils/   下载、文件读取、格式化工具
+│   └── db.ts                   Dexie 数据库定义（含课表、习惯、树洞、AI 加密表）
+├── utils/                 下载、文件读取、格式化工具
 ├── types/                 Web 层专用类型
-├── __tests__/             组件与 store 测试（jsdom）
-├── router.tsx             6 条路由
+├── __tests__/             33 个组件、模块与 store 测试文件（jsdom）
+├── router.tsx             应用路由定义
 ├── App.tsx / main.tsx     应用入口
-└── styles/index.css       Tailwind 指令 + CSS 变量（主题色）
+└── styles/index.css       Tailwind 指令 + CSS 变量（主题色）+ 移动端响应式卡片与毛玻璃底栏样式
 ```
 
 ---
@@ -186,9 +206,14 @@ npm run coverage --workspace @lifehub/web        # 覆盖率
 
 | 文件 | 覆盖内容 |
 | --- | --- |
-| `src/__tests__/import-store.test.ts` | 导入流程 store 的状态流转（idle → planning → mapping → done / error → reset） |
-| `src/__tests__/bills-page.test.tsx` | 账单列表的分组、方向筛选、日期区间筛选、关键词搜索、一键清空 |
-| `src/__tests__/mapping-page.test.tsx` | 映射页的必填校验、实时预览、映射变更触发重算、导入结果提示 |
+| `src/__tests__/import-store.test.ts` / `import-flow.test.tsx` / `import-page.test.tsx` | 导入流程状态流转、CSV/XLSX/PDF/ZIP 多格式探查与导入结果汇总 |
+| `src/__tests__/bills-page.test.tsx` / `bills-filter.test.tsx` / `bill-edit-dialog.test.tsx` | 账单列表分组、方向/日期/分类筛选、手工新增/编辑/删除、内部转账标记、移动端极简模式 |
+| `src/__tests__/mapping-page.test.tsx` / `mapping-board.test.tsx` / `category-rule-editor.test.tsx` | 映射页必填校验、实时预览、映射变更重算、分类规则编辑器 |
+| `src/__tests__/categories-page.test.tsx` | 分类管理增删改查與商户分类记忆 |
+| `src/__tests__/modules-schedule.test.tsx` / `modules-habits.test.tsx` | 生活课表（RRULE 展开、日/周视图、A4 打印）与习惯打卡（连续天数、年度热力图、共享完成事件） |
+| `src/__tests__/treehole-and-enhancements.test.tsx` | 树洞加密日记（文本/语音/人物图谱/未来规划）与 5 大云存储无损压缩 + AES-256-GCM 加密备份（`lifehub-backup.json.enc`） |
+| `src/__tests__/modules-ai.test.tsx` | AI 分析（本地零网络总结、DeepSeek V3/R1 深度思考对话、本地脱敏管线、请求审计指标单条删除与一键清空） |
+| `src/__tests__/settings-and-notfound.test.tsx` / `layout-components.test.tsx` | 设置页（快捷功能中心、云存储必填密码与密码指纹保护、全量导出）与导航布局 |
 
 **测试约定**：
 

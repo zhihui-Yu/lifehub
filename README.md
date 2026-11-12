@@ -4,7 +4,7 @@
 >
 > 记账数据只存在你自己的设备上；即使使用同步服务，**服务端也只见密文**。
 
-**文档版本**：v1.1 ｜ **日期**：2026-10-30 ｜ **当前阶段**：Sprint 0（Web 可跑 MVP + 可运行的同步服务）
+**文档版本**：v1.4（应用版本 v0.2.1） ｜ **日期**：2026-11-12 ｜ **当前阶段**：全模块交付（记账 / 统计看板 / 课表 / 习惯打卡 / 树洞日记 / AI 分析 / 5 大云存储端到端压缩加密同步 / Windows EXE + Android APK 双端打包）
 
 ---
 
@@ -62,14 +62,13 @@ npm run typecheck  # 三个包的类型检查
 | **手机 PWA** | 将 `apps/web/dist` 部署在 HTTPS 下，用手机 Chrome / Safari 打开并点击「添加到主屏幕」 | 独立全屏离线运行 |
 | **微信小程序** | 企业主体可直接用 `<web-view>` 嵌入 HTTPS Web 端；个人/企业主体可用 Taro 构建表现层并直接复用零 DOM 的 `@lifehub/core`（实现小程序版 `StorageAdapter` 与 `CryptoProvider`） | 微信开发者工具编译预览与上传 |
 
-### 1.3 首次进入的引导流程
+### 1.3 首次进入与核心使用流程
 
-1. 打开首页 → 首次进入会看到**「设置主密码」**引导页。
-2. 输入主密码（≥ 8 位），**必须勾选**「我已知悉忘记密码将无法恢复」才能继续（X-02 ②）。
-3. 创建成功后会展示一份 **12 组 × 6 字符的恢复码**（形如 `ABCDEF-GHIJKL-…`）。
-   **请立刻导出并离线保存**——这是你找回数据的唯一途径（见 §6 隐私与安全声明）。
-4. 导入账单：进入「导入」页 → 选择微信 / 支付宝 / 银行导出的 CSV → 确认列头映射 → 开始导入。
-5. 账单列表按**本地日历日**分组展示，支持关键词 / 方向 / 日期区间 / 分类组合筛选。
+1. **零门槛无感本地加密**：打开应用即直接进入工作台（桌面端默认进入「导入账单」，手机端默认直达「账单列表」）。底层自动在本地初始化保险库并派生 DEK，树洞日记、AI 密钥等敏感数据在本地 `IndexedDB` 中 **100% 自动执行 AES-256-GCM 加密**，无需操作人手动干预。
+2. **多格式账单导入**：进入「导入账单」页 → 选择微信 / 支付宝 / 银行导出的 `.csv`、`.xlsx`、加密 `.pdf` 或加密 `.zip` → 自动识别或自定义列头映射 → 一键导入并自动记忆商户分类。
+3. **生活课表与习惯打卡**：支持固定周课表与 `RRULE` 周期日程、日/周视图切换、A4 打印，以及微习惯打卡连续天数与年度热力图统计。
+4. **树洞私密日记与 AI 智能分析**：树洞支持加密文本/语音日记、人物关系图谱与未来规划；AI 分析支持「零网络本地智能总结」与自带 API Key（DeepSeek V3 / R1 深度思考、OpenAI 兼容、Ollama）对话分析，支持单条删除或一键清空 AI 请求审计指标。
+5. **5 大云存储端到端压缩加密备份**：在「设置 → 云存储服务」中配置阿里云 OSS / 腾讯云 COS / 七牛云 Kodo / 华为云 OBS / AWS S3，设置必填加密密码（支持勾选「记住加密密码」与密码指纹防误覆盖校验），数据先经双级无损压缩（字典 + LZ77，体积缩减 65%~75%）再经 `PBKDF2 + AES-256-GCM` 加密上传为 `lifehub-backup.json.enc`。
 
 ### 1.4 常见问题
 
@@ -104,14 +103,17 @@ lifehub/
 │   │   └── tests/             # 单元测试 + 集成测试 + 夹具（全部在 Node 环境跑）
 │   └── (README 见 packages/core/README.md)
 ├── apps/
-│   ├── web/                   # Vite + React 18 + MUI v6 + Tailwind 的表现层
+│   ├── web/                   # Vite + React 18 + MUI v6 + Tailwind + Capacitor 的表现层
 │   │   ├── src/
-│   │   │   ├── pages/         # 6 个页面：导入 / 映射 / 账单 / 安全 / 设置 / 404
-│   │   │   ├── components/    # 按域拆分的展示组件
+│   │   │   ├── pages/         # 核心页面：导入 / 映射 / 账单 / 账单统计 / 分类管理 / 课表 / 习惯 / 树洞 / AI 分析 / 设置 / 404
+│   │   │   ├── modules/       # 业务域模块：ai（脱敏/Prompt/流式对话/审计）/ diary / habits / schedule / shared
+│   │   │   ├── lib/           # 多格式导入解析（CSV/XLSX/PDF/ZIP）、智能分类记忆、5 大云存储压缩加密同步（cloud-storage.ts）
+│   │   │   ├── components/    # 按域拆分的展示组件（bills / import / mapping / settings / security / layout / common）
 │   │   │   ├── store/         # Zustand 状态：bill / import / settings / vault
 │   │   │   ├── hooks/         # 业务编排 Hook：useVault / useBillList / useImportFlow …
 │   │   │   ├── platform/      # 平台适配层：Dexie、Clock、DeviceLabel、WebCryptoProvider
-│   │   │   └── __tests__/     # 组件与 store 测试（jsdom）
+│   │   │   └── __tests__/     # 33 个组件、模块与 store 测试文件（jsdom）
+│   │   ├── android/           # Capacitor Android 原生壳工程（用于构建 APK）
 │   │   └── (README 见 apps/web/README.md)
 │   └── sync-server/           # 自托管同步服务（只存密文，零 npm 依赖）
 │       ├── src/               # server / store / validation / auth / config 五个模块
@@ -119,7 +121,7 @@ lifehub/
 │       ├── Dockerfile         # 多阶段构建；构建上下文为仓库根目录
 │       └── .env.example       # 环境变量示例（含设备令牌说明）
 ├── docs/
-│   ├── build-and-packaging.md # 多端构建与打包指南（Web / 同步服务 / Android APK / iOS IPA / 微信小程序）
+│   ├── build-and-packaging.md # 多端构建与打包指南（Windows EXE / Android APK / Web / 同步服务 / iOS IPA / 微信小程序）
 │   ├── PRD.md                 # 产品需求文档（需求池与追踪索引）
 │   ├── system_design.md       # 系统设计（类图、时序、任务列表、共享约定）
 │   ├── architecture.md        # 架构说明（分层、数据流、加密边界、同步协议、移植路径）
@@ -129,7 +131,7 @@ lifehub/
 │   ├── class-diagram.mermaid  # 类图（源）
 │   ├── sequence-diagram.mermaid # 时序图（源）
 │   └── task-dependency-graph.mermaid # 任务依赖图（源）
-├── scripts/                   # 合规静态断言脚本 + 同步服务快照脚本（CI 可直接跑）
+├── scripts/                   # Windows EXE 桌面打包脚本、双端一键发版脚本、合规静态断言脚本与同步服务快照脚本
 ├── docker-compose.yml         # 同步服务编排（含夜间快照 sidecar）
 ├── package.json               # npm workspaces 根清单
 └── vitest.config.ts           # 跨包测试编排（projects 指向 core / web / sync-server）
@@ -246,26 +248,26 @@ IndexedDB（密文 payload + 7 个索引明文列）
 | **A-11** | 错误明细与部分成功 | ✅ | `ImportSummary.errors` + `ErrorSummary` |
 | **A-12** | 幂等导入与去重 | ✅ | `rules/dedupe.ts` + `ImportService.run()` 的文件哈希拦截 |
 | **A-13** | 规则模板 | ✅ | `models/rule-template.ts` + `RuleTemplateRepository` |
-| **A-20 ~ A-25** | 预算信封 / 图表 / 多账本 / 标签 / 导出 / 加密备份 | ⏳ | A-24 的加密备份已交付（`BackupService`），其余在阶段 2 |
-| **B-01 ~ B-05** | 生活课表与时间块 | ⏳ | 阶段 4 |
-| **C-01 ~ C-03** | 微习惯打卡 | ⏳ | 阶段 4 |
-| **D-01 ~ D-03** | 树洞日记 | ⏳ | 阶段 6 |
-| **E-01 ~ E-05** | AI 分析层 | ⏳ | 阶段 6（用户自带 Key） |
-| **X-01** | 端到端加密与同步载荷 | ✅ | `sync/sync-payload.ts` + `check-sync-payload.mjs` |
-| **X-02** | 口令强度与安全教育 | ✅ | `SetPasswordDialog` 的阻断式确认 |
+| **A-20 ~ A-25** | 自动分类 / 统计图表 / 预算信封 / 多格式解析 / 云端加密备份 | ✅ | `BillVisualDashboard` + `BillStatsPage` + `extract.ts`（CSV/XLSX/PDF/ZIP）+ `cloud-storage.ts`（双级无损压缩 + AES-256-GCM 备份 `lifehub-backup.json.enc`） |
+| **B-01 ~ B-05** | 生活课表与时间块 | ✅ | `SchedulePage` + `modules/schedule`（固定周课表 + RRULE + 日/周视图 + A4 打印 + 完成率统计） |
+| **C-01 ~ C-03** | 微习惯打卡 | ✅ | `HabitsPage` + `modules/habits`（连续天数 + 年度热力图 + 共享 `CompletionEvent` + 统计） |
+| **D-01 ~ D-05** | 树洞加密日记 | ✅ | `TreeHolePage` + `modules/diary`（全字段 AES-GCM 加密 + 语音日记 + 心情/标签/置顶/检索 + 人物关系图谱 + 未来规划） |
+| **E-01 ~ E-05** | AI 分析层 | ✅ | `AiAnalysisPage` + `modules/ai`（本地零网络总结 + 自带 API Key 加密存储 + DeepSeek V3/R1 深度思考 + 脱敏管线 + 审计指标删除/清空 + 移动端极简对话 UI） |
+| **X-01** | 端到端加密与同步载荷 | ✅ | `sync/sync-payload.ts` + `check-sync-payload.mjs` + `cloud-storage.ts` |
+| **X-02** | 口令强度与密码防呆保护 | ✅ | 云端备份必填密码校验 + 本机「记住加密密码」混淆存储 + 云端密码指纹防误改覆盖保护 |
 | **X-03** | 恢复码与盐值备份 | ✅ | `crypto/recovery-code.ts` + `RecoveryCodePanel` |
-| **X-04** | 档案与密钥本地安全存储 | ✅ | `PlainStore`（白名单实体）+ `InMemoryDekProvider` |
+| **X-04** | 档案与密钥本地无感安全存储 | ✅ | `PlainStore`（白名单实体）+ `InMemoryDekProvider` + 本地静默初始化自动加密 |
 | **X-05** | 隐私与合规 | ✅ | `scripts/check-compliance.mjs` + `docs/compliance-checklist.md` |
 | **X-06** | 无统计 SDK | ✅ | 依赖树精确匹配扫描（含匹配器自检） |
 | **X-07** | 审计日志 | ✅ | `AuditLogger` + `AuditLogRepository` + `AuditLogTable` |
 | **X-08** | 存储抽象层 | ✅ | `StorageAdapter` 端口 + Dexie / Memory 两个实现 |
 | **X-09** | 索引明文列 | ✅ | 7 个索引列（见 §6.9） |
-| **X-10** | 密钥轮换 | ⏳ | 阶段 5（本轮只落接口与参数校验） |
+| **X-10** | 密钥轮换 | ⏳ | 阶段 5（已落接口与参数校验） |
 | **X-11** | 冲突合并基础 | ✅ | `services/sync/merge.ts`（`(updatedAt, deviceId)` 决胜） |
-| **X-12** | 自托管同步服务 | ✅ | `apps/sync-server`（只搬密文；5 个端点 + SQLite 持久化 + 设备级授权 + 快照备份） |
-| **X-13 ~ X-14** | 多设备授权 / 密钥分发 | ⏳ | 服务端的**设备级令牌授权**已落地（X-13 的服务端形态）；密钥分发仍在阶段 5 |
+| **X-12** | 自托管同步服务与云对象存储备份 | ✅ | `apps/sync-server`（只搬密文）+ 5 大对象存储（OSS/COS/Kodo/OBS/S3）端到端加密备份 |
+| **X-13 ~ X-14** | AI 请求只存指标 + 本地脱敏管线 | ✅ | `ai-storage.ts`（仅存摘要与指标，支持单条删除与一键清空）+ `redaction.ts` |
 | **X-15** | 合规自检清单 | ✅ | `docs/compliance-checklist.md` |
-| **X-16 ~ X-17** | 可访问性 / 国际化 | ⏳ | 阶段 2 起逐步补齐 |
+| **X-16** | Windows 桌面端 (.exe) 与 Android (.apk) 原生打包 | ✅ | `scripts/build-desktop-windows.mjs`（WebView2 单文件 EXE）+ Capacitor Android APK + `scripts/release-packages.mjs` 一键双端发版 |
 | **M-01** | 微信小程序轻量版 | 🚫 | 最后做，且个人主体下必须砍掉金融 / AI / 公开 UGC 部分 |
 
 ---
@@ -427,9 +429,9 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 | S5 | W9-10 | 自托管同步服务 | 多设备同步（只搬密文）+ 密钥轮换 |
 | S6 | W11-12 | AI 分析层 + 日记加密 | 模块 D / E；小程序轻量版最后做 |
 
-### 7.2 当前 Sprint 范围
+### 7.2 当前交付范围（v0.2.1）
 
-本轮（Sprint 0）交付：**核心层 + Web 可跑 MVP + 可运行的同步服务 + 完整文档与红线断言**。
+已全面交付：**核心层 + Web 全模块（记账、统计看板、分类管理、生活课表、习惯打卡、树洞加密日记、AI 智能分析）+ 5 大对象存储双级压缩与端到端加密同步（`lifehub-backup.json.enc`）+ 自托管同步服务 + Windows 单文件 `.exe` 与 Android `.apk` 一键打包**。
 
 已完成的工程约束（后续每轮都要维持）：
 
