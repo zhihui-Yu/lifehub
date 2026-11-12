@@ -10,6 +10,7 @@
 import { LifeHubError, type Bill, type Category } from '@lifehub/core';
 import type { StoredScheduleSlot } from '@/modules/schedule/rrule';
 import type { StoredHabit, StoredHabitCheckIn } from '@/modules/habits/habit-service';
+import type { DecryptedDiaryEntry } from '@/modules/diary/diary-service';
 import type { CompletionEvent } from '@/modules/shared/completion-event';
 
 /** 支持的主流云存储服务商标识。 */
@@ -72,6 +73,8 @@ export interface CloudSyncRecord {
   scheduleCount?: number;
   /** 同步微习惯条数。 */
   habitCount?: number;
+  /** 同步树洞日记条数。 */
+  diaryCount?: number;
   /** 同步完成时间（ISO 8601）。 */
   syncedAt: string;
   /** 远端对象键路径（固定以 `.json.enc` 结尾）。 */
@@ -98,6 +101,8 @@ export interface CloudBackupExtraModules {
   habitCheckIns?: readonly StoredHabitCheckIn[];
   /** 微习惯打卡记录列表（兼容别名）。 */
   habitCheckins?: readonly StoredHabitCheckIn[];
+  /** 树洞日记条目列表（已解密对象，随云端备份整体使用登录密码二次加密）。 */
+  diaryEntries?: readonly DecryptedDiaryEntry[];
 }
 
 /** 云端快照内部存储结构。 */
@@ -474,6 +479,10 @@ export function uploadBillsToCloud(
     extraModules?.habitCheckins ??
     []
   ).map((ci) => ({ ...ci }));
+  const clonedDiaryEntries: DecryptedDiaryEntry[] = (extraModules?.diaryEntries ?? []).map((d) => ({
+    ...d,
+    tags: Array.isArray(d.tags) ? [...d.tags] : [],
+  }));
 
   const rawSourceJson = JSON.stringify(
     {
@@ -484,6 +493,7 @@ export function uploadBillsToCloud(
       categoryCount: clonedCategories.length,
       scheduleCount: clonedScheduleSlots.length,
       habitCount: clonedHabits.length,
+      diaryCount: clonedDiaryEntries.length,
       bills: clonedBills,
       categories: clonedCategories,
       scheduleSlots: clonedScheduleSlots,
@@ -493,6 +503,7 @@ export function uploadBillsToCloud(
       habits: clonedHabits,
       habitCheckIns: clonedHabitCheckIns,
       habitCheckins: clonedHabitCheckIns,
+      diaryEntries: clonedDiaryEntries,
     },
     null,
     2,
@@ -513,6 +524,7 @@ export function uploadBillsToCloud(
     categoryCount: clonedCategories.length,
     scheduleCount: clonedScheduleSlots.length,
     habitCount: clonedHabits.length,
+    diaryCount: clonedDiaryEntries.length,
     syncedAt,
     objectKey,
     payloadPreview: `AES-256-GCM 强制加密载荷 (${ciphertextBase64.slice(0, 24)}...)`,
@@ -633,6 +645,7 @@ export function restoreBillsFromCloud(
   habits: StoredHabit[];
   habitCheckIns: StoredHabitCheckIn[];
   habitCheckins: StoredHabitCheckIn[];
+  diaryEntries: DecryptedDiaryEntry[];
   extraModules: Required<CloudBackupExtraModules>;
 } {
   const { rawJson, record } = decryptCloudSourceJson(config, password);
@@ -667,6 +680,8 @@ export function restoreBillsFromCloud(
       : !isArray && Array.isArray(parsed.habitCheckins)
         ? [...parsed.habitCheckins]
         : [];
+  const diaryEntries =
+    !isArray && Array.isArray(parsed.diaryEntries) ? [...parsed.diaryEntries] : [];
 
   const extraModules: Required<CloudBackupExtraModules> = {
     categories,
@@ -677,6 +692,7 @@ export function restoreBillsFromCloud(
     habits,
     habitCheckIns,
     habitCheckins: habitCheckIns,
+    diaryEntries,
   };
 
   return {
@@ -690,6 +706,7 @@ export function restoreBillsFromCloud(
     habits,
     habitCheckIns,
     habitCheckins: habitCheckIns,
+    diaryEntries,
     extraModules,
   };
 }

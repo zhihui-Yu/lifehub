@@ -59,6 +59,10 @@ export class LifeHubDatabase extends Dexie {
       aiAnalysisRequests: 'id, createdAt, provider, status',
       aiSettings: 'id',
     });
+    // 模块 D：树洞日记表（D-01：标题、正文、标签、心情均通过 AES-GCM 加密后写入 ciphertext，AAD 绑定条目 id，表内不存明文内容）。
+    this.version(4).stores({
+      diaryEntries: 'id, localDate, isPinned, createdAt, updatedAt',
+    });
   }
 }
 

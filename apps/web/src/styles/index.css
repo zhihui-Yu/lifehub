@@ -118,6 +118,13 @@ body {
   box-sizing: border-box;
 }
 
+/* 桌面/Web端（>900px，左侧导航栏可见时）隐藏仅面向手机端的快捷切换条与快捷入口卡片 */
+@media (min-width: 901px) {
+  .lifehub-mobile-only {
+    display: none !important;
+  }
+}
+
 /* 小屏（<900px）折叠为底部磨砂玻璃胶囊导航栏（适配全面屏挖孔与手势安全区） */
 @media (max-width: 900px) {
   .lifehub-shell {
@@ -152,7 +159,7 @@ body {
   .lifehub-sidenav__list,
   .lifehub-sidenav .MuiList-root {
     display: grid !important;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: stretch;
     width: 100%;
     overflow-x: hidden;

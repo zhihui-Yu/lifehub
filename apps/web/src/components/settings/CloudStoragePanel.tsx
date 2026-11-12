@@ -42,6 +42,7 @@ import {
 } from '@/lib/cloud-storage';
 import type { StoredScheduleSlot } from '@/modules/schedule/rrule';
 import type { StoredHabit, StoredHabitCheckIn } from '@/modules/habits/habit-service';
+import { DiaryService, type DecryptedDiaryEntry } from '@/modules/diary/diary-service';
 import type { CompletionEvent } from '@/modules/shared/completion-event';
 import { createDatabase } from '@/platform/db';
 import { useBillStore } from '@/store';
@@ -82,6 +83,7 @@ export function CloudStoragePanel() {
     let completionEvents: CompletionEvent[] = [];
     let habits: StoredHabit[] = [];
     let habitCheckIns: StoredHabitCheckIn[] = [];
+    let diaryEntries: DecryptedDiaryEntry[] = [];
 
     try {
       const catRepo = (
@@ -96,16 +98,19 @@ export function CloudStoragePanel() {
 
     try {
       const db = createDatabase();
-      const [slots, events, habitList, checkIns] = await Promise.all([
+      const diaryService = new DiaryService(db);
+      const [slots, events, habitList, checkIns, diaries] = await Promise.all([
         db.table<StoredScheduleSlot>('scheduleSlots').toArray(),
         db.table<CompletionEvent>('completionEvents').toArray(),
         db.table<StoredHabit>('habits').toArray(),
         db.table<StoredHabitCheckIn>('habitCheckIns').toArray(),
+        diaryService.exportAllDecrypted(),
       ]);
       scheduleSlots = slots;
       completionEvents = events;
       habits = habitList;
       habitCheckIns = checkIns;
+      diaryEntries = diaries;
     } catch {
       // 忽略测试环境 IndexedDB 不可用异常
     }
@@ -119,6 +124,7 @@ export function CloudStoragePanel() {
       habits,
       habitCheckIns,
       habitCheckins: habitCheckIns,
+      diaryEntries,
     };
   }, []);
 
@@ -183,6 +189,7 @@ export function CloudStoragePanel() {
             (freshExtra.scheduleSlots?.length ?? 0) !== (extraModulesState.scheduleSlots?.length ?? 0) ||
             (freshExtra.habits?.length ?? 0) !== (extraModulesState.habits?.length ?? 0) ||
             (freshExtra.habitCheckIns?.length ?? 0) !== (extraModulesState.habitCheckIns?.length ?? 0) ||
+            (freshExtra.diaryEntries?.length ?? 0) !== (extraModulesState.diaryEntries?.length ?? 0) ||
             (freshExtra.completionEvents?.length ?? 0) !==
               (extraModulesState.completionEvents?.length ?? 0);
           if (hasExtraDiff) {
@@ -216,6 +223,7 @@ export function CloudStoragePanel() {
         completionEvents: restoredEvents,
         habits: restoredHabits,
         habitCheckIns: restoredCheckIns,
+        diaryEntries: restoredDiaries,
         extraModules,
       } = restoreBillsFromCloud(config, encryptionPassword);
       if (runtime) {
@@ -233,6 +241,7 @@ export function CloudStoragePanel() {
       }
       try {
         const db = createDatabase();
+        const diaryService = new DiaryService(db);
         if (restoredSlots.length > 0) {
           await db.table<StoredScheduleSlot>('scheduleSlots').bulkPut(restoredSlots);
         }
@@ -245,6 +254,9 @@ export function CloudStoragePanel() {
         if (restoredCheckIns.length > 0) {
           await db.table<StoredHabitCheckIn>('habitCheckIns').bulkPut(restoredCheckIns);
         }
+        if (restoredDiaries.length > 0) {
+          await diaryService.importAllFromBackup(restoredDiaries);
+        }
       } catch {
         // 忽略测试环境 IndexedDB 不可用异常
       }
@@ -253,7 +265,7 @@ export function CloudStoragePanel() {
       setLastRecord(record);
       setBanner({
         severity: 'success',
-        text: `已凭登录密码从「${record.providerName}」成功解密并恢复 ${restoredBills.length} 条账单记录（含分类 ${restoredCategories.length} 项、课表 ${restoredSlots.length} 项、习惯 ${restoredHabits.length} 项）`,
+        text: `已凭登录密码从「${record.providerName}」成功解密并恢复 ${restoredBills.length} 条账单记录（含分类 ${restoredCategories.length} 项、课表 ${restoredSlots.length} 项、习惯 ${restoredHabits.length} 项、树洞 ${restoredDiaries.length} 条）`,
       });
     } catch (err) {
       setBanner({

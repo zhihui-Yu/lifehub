@@ -22,6 +22,7 @@ import {
   getWeekRange,
   weekdayOf,
 } from '@/modules/shared/date-utils';
+import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /**
  * 持久化在 Dexie `habits` 表中的微习惯模型。
@@ -463,7 +464,37 @@ export class HabitService {
       updatedAt: now,
     };
     await this.db.table<StoredHabit>('habits').put(habit);
+    await this.persistModuleSnapshot();
     return habit;
+  }
+
+  /**
+   * 将当前微习惯定义与打卡记录实时静默落盘至配置目录下的 `lifehub-habits.json`。
+   */
+  private async persistModuleSnapshot(): Promise<void> {
+    try {
+      const [habits, checkIns] = await Promise.all([
+        this.db.table<StoredHabit>('habits').toArray(),
+        this.db.table<StoredHabitCheckIn>('habitCheckIns').toArray(),
+      ]);
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify(
+          {
+            schema: 'lifehub-habits-v1',
+            updatedAt: new Date().toISOString(),
+            habitCount: habits.length,
+            checkInCount: checkIns.length,
+            habits,
+            habitCheckIns: checkIns,
+          },
+          null,
+          2,
+        ),
+        'lifehub-habits.json',
+      );
+    } catch {
+      // 忽略快照写入异常
+    }
   }
 
   /**
@@ -495,6 +526,7 @@ export class HabitService {
       updatedAt: new Date().toISOString(),
     };
     await table.put(updated);
+    await this.persistModuleSnapshot();
     return updated;
   }
 
@@ -515,6 +547,7 @@ export class HabitService {
         await checkInTable.delete(item.id);
       }
     }
+    await this.persistModuleSnapshot();
   }
 
   /**
@@ -544,6 +577,7 @@ export class HabitService {
     } else {
       await checkInTable.delete(checkInId);
     }
+    await this.persistModuleSnapshot();
     return completed;
   }
 

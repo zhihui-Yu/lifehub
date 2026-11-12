@@ -24,6 +24,7 @@ import {
   persistCategoryMemoryToRepo,
   saveRememberedCategoryMapping,
 } from '@/lib/category-memory';
+import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /** 账单分类动作的附加选项。 */
 export interface BillCategoryActionOptions {
@@ -60,6 +61,24 @@ export function useBillActions() {
     try {
       const list = await runtime.billRepository.list();
       setBills(list);
+      // 自动同步更新本地存储目录下的实时数据文件 lifehub-auto-snapshot.json
+      const readableBills = list.map((b) => ({
+        ...b,
+        amountYuan: Number((b.amountMinor / 100).toFixed(2)),
+      }));
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify(
+          {
+            schema: 'lifehub-bills-v1',
+            updatedAt: new Date().toISOString(),
+            billCount: readableBills.length,
+            bills: readableBills,
+          },
+          null,
+          2,
+        ),
+        'lifehub-bills.json',
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '本地数据读写失败');
     }

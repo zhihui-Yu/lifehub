@@ -16,7 +16,7 @@ import type { LifeHubDatabase } from '@/platform/db';
 import { createDatabase } from '@/platform/db';
 
 /** 支持的远程或本地 AI 接口提供方类型。 */
-export type AiProviderType = 'openai-compatible' | 'ollama';
+export type AiProviderType = 'deepseek' | 'openai-compatible' | 'ollama';
 
 /** 本地设备专属包装密钥在 localStorage 中的键名（不参与任何同步或备份）。 */
 const LOCAL_WRAPPING_KEY_STORAGE_KEY = 'lifehub:ai:local-wrapping-key:v1';
@@ -356,15 +356,35 @@ export class AiStorageService {
       }
     }
 
+    const rawBaseUrl = input.baseUrl.trim();
+    const rawModel = input.model.trim();
+    const normalizedBaseUrl =
+      input.provider === 'deepseek' &&
+      (!rawBaseUrl || rawBaseUrl === 'https://api.openai.com/v1' || rawBaseUrl === 'http://localhost:11434')
+        ? 'https://api.deepseek.com'
+        : rawBaseUrl ||
+          (input.provider === 'ollama'
+            ? 'http://localhost:11434'
+            : input.provider === 'deepseek'
+              ? 'https://api.deepseek.com'
+              : 'https://api.openai.com/v1');
+
+    const normalizedModel =
+      input.provider === 'deepseek' &&
+      (!rawModel || rawModel === 'gpt-4o-mini' || rawModel === 'qwen2.5:7b')
+        ? 'deepseek-chat'
+        : rawModel ||
+          (input.provider === 'ollama'
+            ? 'qwen2.5:7b'
+            : input.provider === 'deepseek'
+              ? 'deepseek-chat'
+              : 'gpt-4o-mini');
+
     const record: StoredAiSettingsRecord = {
       id: 'default',
       provider: input.provider,
-      baseUrl:
-        input.baseUrl.trim() ||
-        (input.provider === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com/v1'),
-      model:
-        input.model.trim() ||
-        (input.provider === 'ollama' ? 'qwen2.5:7b' : 'gpt-4o-mini'),
+      baseUrl: normalizedBaseUrl,
+      model: normalizedModel,
       encryptedApiKeyCiphertext,
       encryptedApiKeyIv,
       hasApiKey,
@@ -378,7 +398,7 @@ export class AiStorageService {
   /**
    * 读取已保存的 AI 加密配置记录（不解密 API Key）。
    *
-   * @returns 加密配置记录；若尚未配置则返回默认配置
+   * @returns 加密配置记录；若尚未配置则返回默认配置（默认 DeepSeek 官方接口）
    * @throws 无
    */
   async getConfigRecord(): Promise<StoredAiSettingsRecord> {
@@ -388,9 +408,9 @@ export class AiStorageService {
     }
     return {
       id: 'default',
-      provider: 'openai-compatible',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o-mini',
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-chat',
       encryptedApiKeyCiphertext: '',
       encryptedApiKeyIv: '',
       hasApiKey: false,

@@ -13,6 +13,35 @@
  *    不暴露具体交易日期与精确时刻。
  */
 import type { Bill } from '@lifehub/core';
+import type { DecryptedDiaryEntry } from '@/modules/diary/diary-service';
+
+/**
+ * 单条树洞日记脱敏后的安全记录（已抹除手机号、邮箱、身份证号、银行卡号及精确日期）。
+ */
+export interface RedactedDiaryRecord {
+  /** 粗化后的月份标识 'YYYY-MM'。 */
+  yearMonth: string;
+  /** 心情标签（如 '平静'）。 */
+  moodLabel: string;
+  /** 标签数组。 */
+  tags: string[];
+  /** 本地正则脱敏后的摘要文本。 */
+  sanitizedExcerpt: string;
+}
+
+/**
+ * 用户手动勾选参与 AI 分析的树洞脱敏摘要（模块 D：D-03）。
+ */
+export interface RedactedDiarySummary {
+  /** 勾选参与分析的树洞条数。 */
+  selectedCount: number;
+  /** 脱敏后文本总字符长度（供发送前向用户展示）。 */
+  sanitizedCharLength: number;
+  /** 心情频次统计。 */
+  moodDistribution: Record<string, number>;
+  /** 脱敏后的树洞条目列表。 */
+  items: RedactedDiaryRecord[];
+}
 
 /** 脱敏金额分桶标签。 */
 export type AmountBucketLabel =
@@ -225,6 +254,68 @@ export function redactBillsForAi(
     bucketDistribution,
     categoryDistribution,
     merchantAliasCount: counterpartyToAlias.size,
+    items,
+  };
+}
+
+const MOOD_TEXT_MAP: Record<string, string> = {
+  calm: '平静',
+  happy: '开心',
+  focused: '专注',
+  tired: '疲惫',
+  anxious: '焦虑',
+  grateful: '感恩',
+};
+
+/**
+ * 对自由文本执行本地敏感信息脱敏（移除手机号、身份证号、银行卡号、邮箱与精确金额数字）。
+ *
+ * @param raw 原始文本
+ * @returns 脱敏后的安全文本
+ */
+export function sanitizeFreeTextForAi(raw: string): string {
+  return (raw || '')
+    .replace(/\b1[3-9]\d{9}\b/g, '[手机号已脱敏]')
+    .replace(/\b\d{15,19}\b/g, '[卡号/证件号已脱敏]')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[邮箱已脱敏]')
+    .replace(/¥\s*\d+(?:\.\d+)?|\d+\.\d{1,2}\s*元/g, '[具体金额已脱敏]')
+    .trim();
+}
+
+/**
+ * 对用户手动勾选的树洞记录执行发送前本地脱敏（模块 D：D-03）。
+ *
+ * @param entries 用户勾选的解密后树洞记录
+ * @returns 脱敏后的树洞摘要 `RedactedDiarySummary`
+ */
+export function redactDiaryEntriesForAi(
+  entries: readonly DecryptedDiaryEntry[],
+): RedactedDiarySummary {
+  const moodDistribution: Record<string, number> = {};
+  const items: RedactedDiaryRecord[] = [];
+  let sanitizedCharLength = 0;
+
+  for (const entry of entries) {
+    const yearMonth = coarsenToYearMonth(entry.localDate);
+    const moodLabel = entry.mood ? (MOOD_TEXT_MAP[entry.mood] ?? '日常') : '日常';
+    moodDistribution[moodLabel] = (moodDistribution[moodLabel] ?? 0) + 1;
+
+    const combinedText = [entry.title, entry.body].filter(Boolean).join('：');
+    const sanitized = sanitizeFreeTextForAi(combinedText).slice(0, 160);
+    sanitizedCharLength += sanitized.length;
+
+    items.push({
+      yearMonth,
+      moodLabel,
+      tags: entry.tags.slice(0, 5),
+      sanitizedExcerpt: sanitized,
+    });
+  }
+
+  return {
+    selectedCount: entries.length,
+    sanitizedCharLength,
+    moodDistribution,
     items,
   };
 }

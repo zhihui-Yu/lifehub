@@ -20,6 +20,8 @@ coverage-*/
 
 # 本地打包产物与本地私密账单回归测试（绝不入库）
 *.apk
+*.exe
+apps/web/.desktop-build/
 apps/web/src/__tests__/real-files-import.test.ts
 .workbuddy/
 TODO.md

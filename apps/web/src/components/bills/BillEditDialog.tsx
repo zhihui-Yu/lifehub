@@ -20,6 +20,7 @@ import {
   InputLabel,
   MenuItem,
   Select,
+  Stack,
   TextField,
   Typography,
 } from '@mui/material';
@@ -118,14 +119,17 @@ export function BillEditDialog({ open, initial, categories, onClose, onSubmit }:
       setCategoryId(initial.categoryId ?? rememberedForInitial ?? '');
       setNote(initial.note);
     } else {
-      let todayInTimezone = new Date().toISOString().slice(0, 10);
+      const now = new Date();
+      let todayInTimezone = now.toISOString().slice(0, 10);
+      let currentTimeInTimezone = now.toISOString().slice(11, 16);
       try {
-        todayInTimezone = toLocalDate(new Date(), effectiveTimeZone);
+        todayInTimezone = toLocalDate(now, effectiveTimeZone);
+        currentTimeInTimezone = toWallClock(now, effectiveTimeZone);
       } catch {
-        // 时区标识异常时回退 UTC 日期。
+        // 时区标识异常时回退 UTC 日期与时间。
       }
       setDate(todayInTimezone);
-      setTime('');
+      setTime(currentTimeInTimezone);
       setAmountText('');
       setDirection('expense');
       setCounterparty('');
@@ -176,103 +180,121 @@ export function BillEditDialog({ open, initial, categories, onClose, onSubmit }:
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth aria-labelledby="bill-edit-title">
       <DialogTitle id="bill-edit-title">{initial ? '编辑账单' : '记一笔'}</DialogTitle>
-      <DialogContent>
-        <TextField
-          fullWidth
-          size="small"
-          margin="dense"
-          type="date"
-          label="日期"
-          value={date}
-          onChange={(event) => setDate(event.target.value)}
-          InputLabelProps={{ shrink: true }}
-        />
-        <TextField
-          fullWidth
-          size="small"
-          margin="dense"
-          type="time"
-          label="时间（可选）"
-          value={time}
-          onChange={(event) => setTime(event.target.value)}
-          InputLabelProps={{ shrink: true }}
-        />
-        <TextField
-          fullWidth
-          size="small"
-          margin="dense"
-          type="number"
-          inputProps={{ min: 0, step: '0.01' }}
-          label="金额（元）"
-          value={amountText}
-          onChange={(event) => setAmountText(event.target.value)}
-        />
-        <FormControl fullWidth size="small" margin="dense">
-          <InputLabel id="bill-direction-label">方向</InputLabel>
-          <Select
-            labelId="bill-direction-label"
-            label="方向"
-            value={direction}
-            onChange={(event) => setDirection(event.target.value as Direction)}
-          >
-            {DIRECTION_OPTIONS.map((option) => (
-              <MenuItem key={option.value} value={option.value}>
-                {option.label}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <TextField
-          fullWidth
-          size="small"
-          margin="dense"
-          label="交易对方"
-          value={counterparty}
-          onChange={(event) => setCounterparty(event.target.value)}
-        />
-        <FormControl fullWidth size="small" margin="dense">
-          <InputLabel id="bill-category-label">分类</InputLabel>
-          <Select
-            labelId="bill-category-label"
-            label="分类"
-            value={categoryId}
-            onChange={(event) => {
-              setUserModifiedCategory(true);
-              setCategoryId(event.target.value);
-            }}
-          >
-            <MenuItem value="">未分类</MenuItem>
-            {categories.map((category) => (
-              <MenuItem key={category.id} value={category.id}>
-                {category.name}
-              </MenuItem>
-            ))}
-          </Select>
-        </FormControl>
-        <FormControlLabel
-          sx={{ mt: 0.25, mb: 0.25, ml: 0 }}
-          control={
-            <Checkbox
+      <DialogContent sx={{ pt: 1 }}>
+        <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+          {/* 第一位：金额（元），打开即聚焦，突出核心操作 */}
+          <TextField
+            fullWidth
+            autoFocus
+            size="small"
+            type="number"
+            inputProps={{ min: 0, step: '0.01', 'data-testid': 'bill-edit-amount-input' }}
+            label="金额（元）"
+            placeholder="0.00"
+            value={amountText}
+            onChange={(event) => setAmountText(event.target.value)}
+          />
+
+          {/* 第二行：方向 + 分类并排，减少纵向滚动 */}
+          <Stack direction="row" spacing={1.5}>
+            <FormControl fullWidth size="small" sx={{ flex: 1 }}>
+              <InputLabel id="bill-direction-label">方向</InputLabel>
+              <Select
+                labelId="bill-direction-label"
+                label="方向"
+                value={direction}
+                onChange={(event) => setDirection(event.target.value as Direction)}
+              >
+                {DIRECTION_OPTIONS.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <FormControl fullWidth size="small" sx={{ flex: 1.4 }}>
+              <InputLabel id="bill-category-label">分类</InputLabel>
+              <Select
+                labelId="bill-category-label"
+                label="分类"
+                value={categoryId}
+                onChange={(event) => {
+                  setUserModifiedCategory(true);
+                  setCategoryId(event.target.value);
+                }}
+              >
+                <MenuItem value="">未分类</MenuItem>
+                {categories.map((category) => (
+                  <MenuItem key={category.id} value={category.id}>
+                    {category.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Stack>
+
+          {/* 第三行：日期 + 时间并排，默认自动填入当前日期与当前时间 */}
+          <Stack direction="row" spacing={1.5}>
+            <TextField
+              fullWidth
               size="small"
-              checked={rememberCategory}
-              onChange={(event) => setRememberCategory(event.target.checked)}
-              data-testid="remember-category-checkbox"
+              type="date"
+              label="日期"
+              value={date}
+              onChange={(event) => setDate(event.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ flex: 1.2 }}
             />
-          }
-          label={
-            <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              记住此次分类选择（相同交易对方/备注的未分类账单及后续导入将自动归入此分类）
-            </Typography>
-          }
-        />
-        <TextField
-          fullWidth
-          size="small"
-          margin="dense"
-          label="备注"
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-        />
+            <TextField
+              fullWidth
+              size="small"
+              type="time"
+              label="时间（可选）"
+              value={time}
+              onChange={(event) => setTime(event.target.value)}
+              InputLabelProps={{ shrink: true }}
+              sx={{ flex: 1 }}
+            />
+          </Stack>
+
+          {/* 第四行：交易对方与备注（选填） */}
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+            <TextField
+              fullWidth
+              size="small"
+              label="交易对方"
+              placeholder="选填，如：星巴克"
+              value={counterparty}
+              onChange={(event) => setCounterparty(event.target.value)}
+            />
+            <TextField
+              fullWidth
+              size="small"
+              label="备注"
+              placeholder="选填，如：早餐"
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+            />
+          </Stack>
+
+          <FormControlLabel
+            sx={{ mt: -0.5, mb: -0.5, ml: 0 }}
+            control={
+              <Checkbox
+                size="small"
+                checked={rememberCategory}
+                onChange={(event) => setRememberCategory(event.target.checked)}
+                data-testid="remember-category-checkbox"
+              />
+            }
+            label={
+              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
+                记住相同交易对方/备注的分类选择
+              </Typography>
+            }
+          />
+        </Stack>
         {localError ? (
           <Typography variant="body2" color="error" sx={{ mt: 1 }}>
             {localError}

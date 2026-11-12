@@ -23,6 +23,7 @@ import { SettingsPage } from '@/pages/SettingsPage';
 import { CategoriesPage } from '@/pages/CategoriesPage';
 import { SchedulePage } from '@/pages/SchedulePage';
 import { HabitsPage } from '@/pages/HabitsPage';
+import { TreeHolePage } from '@/pages/TreeHolePage';
 import { AiAnalysisPage } from '@/pages/AiAnalysisPage';
 
 /**
@@ -42,6 +43,8 @@ export const router = createHashRouter([
       { path: 'categories', element: <CategoriesPage /> },
       { path: 'schedule', element: <SchedulePage /> },
       { path: 'habits', element: <HabitsPage /> },
+      { path: 'treehole', element: <TreeHolePage /> },
+      { path: 'diary', element: <TreeHolePage /> },
       { path: 'ai', element: <AiAnalysisPage /> },
       { path: 'security', element: <SecurityPage /> },
       { path: 'settings', element: <SettingsPage /> },

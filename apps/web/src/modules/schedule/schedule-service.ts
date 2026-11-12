@@ -17,6 +17,7 @@ import {
   type CompletionEvent,
 } from '@/modules/shared/completion-event';
 import { getMonthRange, getWeekRange } from '@/modules/shared/date-utils';
+import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 import {
   expandScheduleForRange,
   isValidWallTime,
@@ -266,7 +267,38 @@ export class ScheduleService {
       updatedAt: now,
     };
     await this.db.table<StoredScheduleSlot>('scheduleSlots').put(slot);
+    await this.persistModuleSnapshot();
     return slot;
+  }
+
+  /**
+   * 将当前全部课表时段与完成事件静默落盘至用户配置的本地存储目录 `lifehub-schedule.json`。
+   */
+  private async persistModuleSnapshot(): Promise<void> {
+    try {
+      const [slots, events] = await Promise.all([
+        this.db.table<StoredScheduleSlot>('scheduleSlots').toArray(),
+        this.completionRepo.listByDateRange('1970-01-01', '2099-12-31'),
+      ]);
+      const scheduleEvents = events.filter((e) => e.sourceType === 'schedule');
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify(
+          {
+            schema: 'lifehub-schedule-v1',
+            updatedAt: new Date().toISOString(),
+            slotCount: slots.length,
+            completionCount: scheduleEvents.length,
+            scheduleSlots: slots,
+            completionEvents: scheduleEvents,
+          },
+          null,
+          2,
+        ),
+        'lifehub-schedule.json',
+      );
+    } catch {
+      // 忽略快照写入异常
+    }
   }
 
   /**
@@ -314,6 +346,7 @@ export class ScheduleService {
       updatedAt: new Date().toISOString(),
     };
     await table.put(updated);
+    await this.persistModuleSnapshot();
     return updated;
   }
 
@@ -327,6 +360,7 @@ export class ScheduleService {
   async deleteSlot(id: string): Promise<void> {
     await this.db.table<StoredScheduleSlot>('scheduleSlots').delete(id);
     await this.completionRepo.deleteBySource('schedule', id);
+    await this.persistModuleSnapshot();
   }
 
   /**
@@ -338,7 +372,9 @@ export class ScheduleService {
    * @throws 无
    */
   async toggleSlotCompletion(slotId: string, localDate: string): Promise<boolean> {
-    return this.completionRepo.toggle('schedule', slotId, localDate);
+    const res = await this.completionRepo.toggle('schedule', slotId, localDate);
+    await this.persistModuleSnapshot();
+    return res;
   }
 
   /**

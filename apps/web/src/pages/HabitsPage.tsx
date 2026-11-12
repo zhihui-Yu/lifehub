@@ -143,11 +143,13 @@ export function HabitsPage() {
 
   return (
     <Box data-testid="habits-page" sx={{ width: '100%' }}>
-      {/* 移动端日程 / 习惯一键切换胶囊栏（ML-03） */}
+      {/* 移动端日程 / 习惯一键切换胶囊栏（仅手机端展示，桌面端左侧导航已可切换） */}
       <Paper
         variant="outlined"
         data-testid="schedule-habits-switcher"
+        className="lifehub-mobile-only"
         sx={{
+          display: { xs: 'block', md: 'none' },
           p: 0.75,
           mb: 2,
           borderRadius: 3,

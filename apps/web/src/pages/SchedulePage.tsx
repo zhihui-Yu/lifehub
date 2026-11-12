@@ -40,6 +40,9 @@ import {
   weekdayOf,
 } from '@/modules/shared/date-utils';
 import {
+  getDaysInMonth,
+} from '@/modules/schedule/rrule';
+import {
   ScheduleService,
   type ScheduleCompletionStats,
   type ScheduleOccurrenceWithStatus,
@@ -70,6 +73,29 @@ const SCHEDULE_COLORS = [
 
 /** 重复模式类型。 */
 type RepeatPreset = 'weekly-fixed' | 'daily' | 'workdays' | 'monthly' | 'custom-rrule';
+
+/** 同步未来有效周期预设类型。 */
+type SyncDurationPreset = '1' | '3' | '6' | '12' | 'current-week' | 'forever' | 'custom';
+
+/**
+ * 在本地日历日 `'YYYY-MM-DD'` 基础上向后推算指定月数。
+ *
+ * @param baseDate 基准日历日 `'YYYY-MM-DD'`
+ * @param months 向后推算的月数（正整数）
+ * @returns 推算后的 `'YYYY-MM-DD'`
+ */
+export function addMonthsToLocalDate(baseDate: string, months: number): string {
+  const parts = baseDate.split('-').map((n) => Number(n));
+  const y0 = parts[0] ?? 2026;
+  const m0 = parts[1] ?? 1;
+  const d0 = parts[2] ?? 1;
+  const totalMonths = y0 * 12 + (m0 - 1) + Math.max(1, Math.trunc(months));
+  const targetYear = Math.floor(totalMonths / 12);
+  const targetMonth = (totalMonths % 12) + 1;
+  const maxDay = getDaysInMonth(targetYear, targetMonth);
+  const targetDay = Math.min(d0, maxDay);
+  return `${String(targetYear).padStart(4, '0')}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+}
 
 /**
  * 渲染生活课表页面。
@@ -102,6 +128,8 @@ export function SchedulePage() {
   const [repeatPreset, setRepeatPreset] = useState<RepeatPreset>('weekly-fixed');
   const [dayOfWeek, setDayOfWeek] = useState<number>(weekdayOf(today));
   const [customRRule, setCustomRRule] = useState('FREQ=WEEKLY;BYDAY=MO,WE,FR');
+  const [syncDurationPreset, setSyncDurationPreset] = useState<SyncDurationPreset>('3');
+  const [customSyncMonths, setCustomSyncMonths] = useState<string>('4');
   const [location, setLocation] = useState('');
   const [color, setColor] = useState('#4F46E5');
   const [note, setNote] = useState('');
@@ -138,6 +166,8 @@ export function SchedulePage() {
     setRepeatPreset('weekly-fixed');
     setDayOfWeek(weekdayOf(anchorDate));
     setCustomRRule('FREQ=WEEKLY;BYDAY=MO,WE,FR');
+    setSyncDurationPreset('3');
+    setCustomSyncMonths('4');
     setLocation('');
     setColor('#4F46E5');
     setNote('');
@@ -164,11 +194,44 @@ export function SchedulePage() {
       setRepeatPreset('weekly-fixed');
       setDayOfWeek(slot.dayOfWeek ?? weekdayOf(anchorDate));
     }
+    if (!slot.validUntil) {
+      setSyncDurationPreset('forever');
+    } else {
+      setSyncDurationPreset('3');
+    }
     setLocation(slot.location ?? '');
     setColor(slot.color ?? '#4F46E5');
     setNote(slot.note ?? '');
     setDialogOpen(true);
   };
+
+  const resolvedSyncRange = useMemo((): { validFrom?: string; validUntil?: string; label: string } => {
+    const startBase = weekStart < anchorDate ? weekStart : anchorDate;
+    if (syncDurationPreset === 'forever') {
+      return {
+        validFrom: repeatPreset === 'monthly' ? anchorDate : undefined,
+        validUntil: undefined,
+        label: '长期有效（每周自动延续）',
+      };
+    }
+    if (syncDurationPreset === 'current-week') {
+      return {
+        validFrom: weekStart,
+        validUntil: weekEnd,
+        label: `仅本周有效（${weekStart} ~ ${weekEnd}）`,
+      };
+    }
+    const monthsNum =
+      syncDurationPreset === 'custom'
+        ? Math.max(1, Math.min(60, Number.parseInt(customSyncMonths, 10) || 1))
+        : Number.parseInt(syncDurationPreset, 10);
+    const untilDate = addMonthsToLocalDate(anchorDate, monthsNum);
+    return {
+      validFrom: startBase,
+      validUntil: untilDate,
+      label: `同步未来 ${monthsNum} 个月（${startBase} ~ ${untilDate}，免每周重复设置）`,
+    };
+  }, [anchorDate, customSyncMonths, repeatPreset, syncDurationPreset, weekEnd, weekStart]);
 
   const handleSaveSlot = async () => {
     try {
@@ -193,7 +256,8 @@ export function SchedulePage() {
         endTime,
         dayOfWeek: resolvedDayOfWeek,
         rrule: resolvedRRule,
-        validFrom: repeatPreset === 'monthly' ? anchorDate : undefined,
+        validFrom: resolvedSyncRange.validFrom,
+        validUntil: resolvedSyncRange.validUntil,
         location,
         color,
         note,
@@ -239,12 +303,13 @@ export function SchedulePage() {
 
   return (
     <Box data-testid="schedule-page" sx={{ width: '100%' }}>
-      {/* 移动端日程 / 习惯一键切换胶囊栏（ML-03） */}
+      {/* 移动端日程 / 习惯一键切换胶囊栏（仅手机端展示，桌面端左侧导航已可切换） */}
       <Paper
         variant="outlined"
         data-testid="schedule-habits-switcher"
-        className="lifehub-no-print"
+        className="lifehub-no-print lifehub-mobile-only"
         sx={{
+          display: { xs: 'block', md: 'none' },
           p: 0.75,
           mb: 2,
           borderRadius: 3,
@@ -701,6 +766,45 @@ export function SchedulePage() {
                 helperText="示例：FREQ=WEEKLY;BYDAY=MO,WE,FR 或 FREQ=MONTHLY;BYMONTHDAY=1,15"
               />
             )}
+
+            <FormControl fullWidth size="small">
+              <InputLabel id="schedule-sync-months-label">同步未来周期（免每周重复设置）</InputLabel>
+              <Select
+                labelId="schedule-sync-months-label"
+                label="同步未来周期（免每周重复设置）"
+                value={syncDurationPreset}
+                onChange={(e) => setSyncDurationPreset(e.target.value as SyncDurationPreset)}
+                data-testid="schedule-sync-months-select"
+              >
+                <MenuItem value="1">同步到未来 1 个月</MenuItem>
+                <MenuItem value="3">同步到未来 3 个月（推荐）</MenuItem>
+                <MenuItem value="6">同步到未来 6 个月（半年）</MenuItem>
+                <MenuItem value="12">同步到未来 12 个月（全年）</MenuItem>
+                <MenuItem value="custom">自定义未来 X 个月</MenuItem>
+                <MenuItem value="current-week">仅本周有效</MenuItem>
+                <MenuItem value="forever">长期有效（无截止日）</MenuItem>
+              </Select>
+            </FormControl>
+
+            {syncDurationPreset === 'custom' && (
+              <TextField
+                label="同步到未来几个月（1 ~ 60）"
+                type="number"
+                fullWidth
+                size="small"
+                value={customSyncMonths}
+                onChange={(e) => setCustomSyncMonths(e.target.value)}
+                inputProps={{ min: 1, max: 60, 'data-testid': 'schedule-custom-months-input' }}
+              />
+            )}
+
+            <Typography
+              variant="caption"
+              data-testid="schedule-sync-range-preview"
+              sx={{ color: 'var(--lifehub-text-muted)', mt: -1 }}
+            >
+              生效周期：{resolvedSyncRange.label}
+            </Typography>
 
             <TextField
               label="地点（可选）"

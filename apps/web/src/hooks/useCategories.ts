@@ -14,6 +14,7 @@ import {
   CATEGORY_LOCAL_DEVICE_ID,
   type CategoryInput,
 } from '@/lib/category-factory';
+import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /** 分类 Hook 的返回值。 */
 export interface UseCategoriesResult {
@@ -59,6 +60,19 @@ export function useCategories(): UseCategoriesResult {
           : await runtime.categoryRepository.list();
       setCategories(list);
       setError(null);
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify(
+          {
+            schema: 'lifehub-categories-v1',
+            updatedAt: new Date().toISOString(),
+            categoryCount: list.length,
+            categories: list,
+          },
+          null,
+          2,
+        ),
+        'lifehub-categories.json',
+      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '本地数据读写失败');
     } finally {

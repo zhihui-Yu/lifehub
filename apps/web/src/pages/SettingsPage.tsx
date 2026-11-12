@@ -7,22 +7,31 @@
  * 提供快捷功能中心、全量数据开放导出（JSON / CSV 方便迁移至其他应用）、远程云存储连接与外观主题设置。
  */
 import { useEffect, useState } from 'react';
-import { Alert, Box, Button, Chip, MenuItem, Paper, Select, Stack, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, MenuItem, Paper, Select, Stack, TextField, Typography } from '@mui/material';
 import DarkModeOutlined from '@mui/icons-material/DarkModeOutlined';
 import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
 import FileDownloadOutlined from '@mui/icons-material/FileDownloadOutlined';
+import FolderOpenOutlined from '@mui/icons-material/FolderOpenOutlined';
 import PublicOutlined from '@mui/icons-material/PublicOutlined';
 import TableViewOutlined from '@mui/icons-material/TableViewOutlined';
 import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import type { Category, ThemeMode } from '@lifehub/core';
 import { CloudStoragePanel } from '@/components/settings/CloudStoragePanel';
 import { useVault } from '@/hooks/useVault';
+import { DiaryService, type DecryptedDiaryEntry } from '@/modules/diary/diary-service';
 import type { StoredHabit, StoredHabitCheckIn } from '@/modules/habits/habit-service';
 import type { StoredScheduleSlot } from '@/modules/schedule/rrule';
 import type { CompletionEvent } from '@/modules/shared/completion-event';
 import { createDatabase } from '@/platform/db';
 import { useBillStore, useSettingsStore } from '@/store';
-import { buildDatedFileName, downloadText } from '@/utils/download';
+import {
+  buildDatedFileName,
+  downloadText,
+  getStorageDirectory,
+  getWebDirectoryHandleName,
+  pickWebDirectoryHandle,
+  setStorageDirectory,
+} from '@/utils/download';
 
 /**
  * 将单个 CSV 单元格转义为 RFC 4180 安全格式。
@@ -57,12 +66,45 @@ export function SettingsPage() {
   const bills = useBillStore((state) => state.bills) ?? [];
 
   const [exportBanner, setExportBanner] = useState<string | null>(null);
+  const [storageDir, setStorageDir] = useState<string>(() => getStorageDirectory());
+  const [pickedDirName, setPickedDirName] = useState<string | null>(() => getWebDirectoryHandleName());
+  const [storageDirSavedMsg, setStorageDirSavedMsg] = useState<string | null>(null);
+  const [pickingDir, setPickingDir] = useState(false);
 
   useEffect(() => {
     if (!timezone) {
       setTimezone('Asia/Shanghai');
     }
   }, [timezone, setTimezone]);
+
+  const formatEffectiveStoragePath = (dir: string): string => {
+    const trimmed = (dir || 'LifeHub').trim();
+    if (/^[A-Za-z]:\//.test(trimmed) || /^[A-Za-z]:\\/.test(trimmed)) {
+      return trimmed;
+    }
+    return `Download/${trimmed}`;
+  };
+
+  const handleSaveStorageDir = () => {
+    const normalized = setStorageDirectory(storageDir);
+    setStorageDir(normalized);
+    setStorageDirSavedMsg(`已保存默认文件存储目录：${formatEffectiveStoragePath(normalized)}`);
+  };
+
+  const handlePickWebDir = async () => {
+    if (pickingDir) return;
+    setPickingDir(true);
+    try {
+      const picked = await pickWebDirectoryHandle();
+      if (picked) {
+        setPickedDirName(picked);
+        setStorageDir(picked);
+        setStorageDirSavedMsg(`已选择并保存本地目录：${formatEffectiveStoragePath(picked)}`);
+      }
+    } finally {
+      setPickingDir(false);
+    }
+  };
 
   const loadCategoriesSafely = async (): Promise<Category[]> => {
     try {
@@ -84,21 +126,25 @@ export function SettingsPage() {
     let habits: StoredHabit[] = [];
     let habitCheckIns: StoredHabitCheckIn[] = [];
     let completionEvents: CompletionEvent[] = [];
+    let diaryEntries: DecryptedDiaryEntry[] = [];
 
     categories = await loadCategoriesSafely();
 
     try {
       const db = createDatabase();
-      const [slots, habitList, checkIns, events] = await Promise.all([
+      const diaryService = new DiaryService(db);
+      const [slots, habitList, checkIns, events, diaries] = await Promise.all([
         db.table<StoredScheduleSlot>('scheduleSlots').toArray(),
         db.table<StoredHabit>('habits').toArray(),
         db.table<StoredHabitCheckIn>('habitCheckIns').toArray(),
         db.table<CompletionEvent>('completionEvents').toArray(),
+        diaryService.exportAllDecrypted(),
       ]);
       scheduleSlots = slots;
       habits = habitList;
       habitCheckIns = checkIns;
       completionEvents = events;
+      diaryEntries = diaries;
     } catch {
       // 测试环境或 IndexedDB 未初始化时降级为空数组
     }
@@ -122,6 +168,7 @@ export function SettingsPage() {
         habitCount: habits.length,
         habitCheckInCount: habitCheckIns.length,
         completionEventCount: completionEvents.length,
+        diaryCount: diaryEntries.length,
       },
       bills: readableBills,
       categories,
@@ -129,12 +176,14 @@ export function SettingsPage() {
       habits,
       habitCheckIns,
       completionEvents,
+      diaryEntries,
     };
 
     const fileName = buildDatedFileName('lifehub-all-data', '.json');
     downloadText(fileName, JSON.stringify(payload, null, 2), 'application/json');
+    const dirLabel = formatEffectiveStoragePath(getStorageDirectory());
     setExportBanner(
-      `已导出全量数据 ${fileName}（含 ${readableBills.length} 笔账单、${scheduleSlots.length} 个课表时段、${habits.length} 个习惯），手机端已保存至系统「下载 (Download)」目录。`,
+      `已导出全量数据 ${fileName}（含 ${readableBills.length} 笔账单、${scheduleSlots.length} 个课表时段、${habits.length} 个习惯、${diaryEntries.length} 条树洞），已保存至「${dirLabel}」目录。`,
     );
   };
 
@@ -175,11 +224,13 @@ export function SettingsPage() {
 
   return (
     <div data-testid="settings-page">
-      {/* 移动端快捷功能中心（ML-05：聚合低频页面入口） */}
+      {/* 移动端快捷功能中心（ML-05：聚合低频页面入口，仅移动端显示，Web/桌面端左侧已有导航栏故隐藏） */}
       <Paper
         variant="outlined"
+        className="lifehub-mobile-only"
         data-testid="mobile-quick-hub-card"
         sx={{
+          display: { xs: 'block', md: 'none' },
           p: { xs: 2, sm: 2.5 },
           mb: 3,
           width: '100%',
@@ -358,6 +409,63 @@ export function SettingsPage() {
             <MenuItem value="light">浅色模式</MenuItem>
             <MenuItem value="dark">深色模式</MenuItem>
           </Select>
+        </Box>
+
+        {/* 文件存储目录设置 */}
+        <Box sx={{ mt: 2.5 }} data-testid="storage-dir-setting">
+          <Typography
+            variant="caption"
+            component="div"
+            sx={{ mb: 0.75, color: 'var(--lifehub-text-muted)', display: 'flex', alignItems: 'center', gap: 0.5 }}
+          >
+            <FolderOpenOutlined sx={{ fontSize: 15 }} />
+            文件存储目录（手机端保存在系统「下载 / Download」下的子目录，桌面端支持直接选择本地文件夹）
+          </Typography>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+            <TextField
+              size="small"
+              fullWidth
+              value={storageDir}
+              onChange={(e) => setStorageDir(e.target.value)}
+              placeholder="例如：LifeHub 或 LifeHub/Backup"
+              inputProps={{
+                'aria-label': '文件存储目录',
+                'data-testid': 'storage-dir-input',
+              }}
+            />
+            <Button
+              variant="contained"
+              onClick={handleSaveStorageDir}
+              data-testid="save-storage-dir-button"
+              sx={{ whiteSpace: 'nowrap' }}
+            >
+              保存目录
+            </Button>
+            <Button
+              variant="outlined"
+              startIcon={<FolderOpenOutlined />}
+              disabled={pickingDir}
+              onClick={() => void handlePickWebDir()}
+              data-testid="pick-storage-dir-button"
+              sx={{ whiteSpace: 'nowrap' }}
+            >
+              {pickingDir ? '正在打开目录选择…' : '选择本地文件夹'}
+            </Button>
+          </Stack>
+          <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--lifehub-text-muted)' }}>
+            当前生效路径：<code>{formatEffectiveStoragePath(storageDir)}</code>
+            {pickedDirName ? `（已选择目录：${pickedDirName}）` : ''}
+          </Typography>
+          {storageDirSavedMsg && (
+            <Alert
+              severity="success"
+              sx={{ mt: 1 }}
+              onClose={() => setStorageDirSavedMsg(null)}
+              data-testid="storage-dir-saved-alert"
+            >
+              {storageDirSavedMsg}
+            </Alert>
+          )}
         </Box>
       </Paper>
     </div>
