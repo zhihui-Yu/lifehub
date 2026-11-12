@@ -9,6 +9,27 @@
  * 3. 星期计算把日历日当作 UTC 零点解析，避免时区 / 夏令时导致星期漂移。
  */
 import { addDays, toLocalDate } from '@lifehub/core';
+import { getDaysInMonth } from '@/modules/schedule/rrule';
+
+/**
+ * 在本地日历日 `'YYYY-MM-DD'` 基础上向后推算指定月数。
+ *
+ * @param baseDate 基准日历日 `'YYYY-MM-DD'`
+ * @param months 向后推算的月数（正整数）
+ * @returns 推算后的 `'YYYY-MM-DD'`
+ */
+export function addMonthsToLocalDate(baseDate: string, months: number): string {
+  const parts = baseDate.split('-').map((n) => Number(n));
+  const y0 = parts[0] ?? 2026;
+  const m0 = parts[1] ?? 1;
+  const d0 = parts[2] ?? 1;
+  const totalMonths = y0 * 12 + (m0 - 1) + Math.max(1, Math.trunc(months));
+  const targetYear = Math.floor(totalMonths / 12);
+  const targetMonth = (totalMonths % 12) + 1;
+  const maxDay = getDaysInMonth(targetYear, targetMonth);
+  const targetDay = Math.min(d0, maxDay);
+  return `${String(targetYear).padStart(4, '0')}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
+}
 
 /**
  * 取「今天」的本地日历日。

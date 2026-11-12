@@ -13,7 +13,7 @@ import {
   generateLocalSmartSummary,
 } from '@/modules/ai/prompt-builder';
 import { getStorageDirectory, setStorageDirectory } from '@/utils/download';
-import { addMonthsToLocalDate } from '@/pages/SchedulePage';
+import { addMonthsToLocalDate } from '@/modules/shared/date-utils';
 import { TreeHolePage } from '@/pages/TreeHolePage';
 import { AiStorageService } from '@/modules/ai/ai-storage';
 import { executeAiChatMessage, executeRemoteAiAnalysis } from '@/modules/ai/ai-client';

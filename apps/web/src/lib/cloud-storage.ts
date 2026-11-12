@@ -477,7 +477,8 @@ export function compressBackupJson(jsonText: string): string {
   // 2. 高频 JSON 结构短语单字符替换 (0xE001..0xE000+N)
   let tokenized = escaped;
   for (let d = 0; d < BACKUP_JSON_DICT.length; d += 1) {
-    const phrase = BACKUP_JSON_DICT[d]!;
+    const phrase = BACKUP_JSON_DICT[d] ?? '';
+    if (!phrase) continue;
     const tokenChar = String.fromCharCode(0xe001 + d);
     tokenized = tokenized.split(phrase).join(tokenChar);
   }

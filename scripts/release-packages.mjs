@@ -43,6 +43,21 @@ function updateVersionFiles() {
   webPkg.version = nextVersion;
   writeFileSync(webPkgPath, JSON.stringify(webPkg, null, 2) + '\n', 'utf8');
 
+  const lockPath = join(REPO_ROOT, 'package-lock.json');
+  try {
+    const lockJson = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lockJson.version = nextVersion;
+    if (lockJson.packages && lockJson.packages['']) {
+      lockJson.packages[''].version = nextVersion;
+    }
+    if (lockJson.packages && lockJson.packages['apps/web']) {
+      lockJson.packages['apps/web'].version = nextVersion;
+    }
+    writeFileSync(lockPath, JSON.stringify(lockJson, null, 2) + '\n', 'utf8');
+  } catch {
+    // 忽略 lock 文件同步异常
+  }
+
   let gradleContent = readFileSync(gradlePath, 'utf8');
   const codeMatch = /versionCode\s+(\d+)/.exec(gradleContent);
   const nextCode = codeMatch ? parseInt(codeMatch[1], 10) + 1 : 2;

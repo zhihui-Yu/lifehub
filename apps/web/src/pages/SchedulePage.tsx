@@ -34,14 +34,12 @@ import {
 } from '@mui/material';
 import { addDays } from '@lifehub/core';
 import {
+  addMonthsToLocalDate,
   getTodayLocalDate,
   getWeekRange,
   listLocalDates,
   weekdayOf,
 } from '@/modules/shared/date-utils';
-import {
-  getDaysInMonth,
-} from '@/modules/schedule/rrule';
 import {
   ScheduleService,
   type ScheduleCompletionStats,
@@ -76,26 +74,6 @@ type RepeatPreset = 'weekly-fixed' | 'daily' | 'workdays' | 'monthly' | 'custom-
 
 /** 同步未来有效周期预设类型。 */
 type SyncDurationPreset = '1' | '3' | '6' | '12' | 'current-week' | 'forever' | 'custom';
-
-/**
- * 在本地日历日 `'YYYY-MM-DD'` 基础上向后推算指定月数。
- *
- * @param baseDate 基准日历日 `'YYYY-MM-DD'`
- * @param months 向后推算的月数（正整数）
- * @returns 推算后的 `'YYYY-MM-DD'`
- */
-export function addMonthsToLocalDate(baseDate: string, months: number): string {
-  const parts = baseDate.split('-').map((n) => Number(n));
-  const y0 = parts[0] ?? 2026;
-  const m0 = parts[1] ?? 1;
-  const d0 = parts[2] ?? 1;
-  const totalMonths = y0 * 12 + (m0 - 1) + Math.max(1, Math.trunc(months));
-  const targetYear = Math.floor(totalMonths / 12);
-  const targetMonth = (totalMonths % 12) + 1;
-  const maxDay = getDaysInMonth(targetYear, targetMonth);
-  const targetDay = Math.min(d0, maxDay);
-  return `${String(targetYear).padStart(4, '0')}-${String(targetMonth).padStart(2, '0')}-${String(targetDay).padStart(2, '0')}`;
-}
 
 /**
  * 渲染生活课表页面。

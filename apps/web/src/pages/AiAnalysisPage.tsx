@@ -306,7 +306,12 @@ export function AiAnalysisPage() {
 
   // 根据选定的时间段（最长半年 180 天）计算闭区间 [fromDate, toDate]
   const dateWindow = useMemo(() => {
-    const opt = AI_TIME_RANGE_OPTIONS.find((o) => o.value === timeRange) ?? AI_TIME_RANGE_OPTIONS[1]!;
+    const opt =
+      AI_TIME_RANGE_OPTIONS.find((o) => o.value === timeRange) ?? {
+        value: '30d' as const,
+        label: '近 1 个月（30 天）',
+        days: 30,
+      };
     const safeDays = Math.min(180, Math.max(1, opt.days));
     const fromDate = addDays(today, -(safeDays - 1));
     return { fromDate, toDate: today, label: opt.label };
