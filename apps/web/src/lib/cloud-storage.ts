@@ -957,7 +957,7 @@ function parseCloudXmlError(xml: string): {
  * 说明：
  * - 自动对请求进行 HMAC-SHA1 预签名；
  * - 若阿里云 OSS 返回跨地域 `<Endpoint>` 重定向提示，自动修正 Endpoint 并重签上传；
- * - 若发现桶名为腾讯云格式（如 `xxx-1308298144`）或密钥为 `AKID` 开头但誤选了阿里云 OSS，也会给出明确指引。
+ * - 若发现桶名为腾讯云格式（如 `xxx-1250000000`）或密钥为 `AKID` 开头但誤选了阿里云 OSS，也会给出明确指引。
  */
 export async function pushSnapshotToRemoteCloud(
   config: CloudStorageConfig,
@@ -982,7 +982,7 @@ export async function pushSnapshotToRemoteCloud(
     throw new LifeHubError('LIFEHUB_E_VALIDATION', '本地尚无待上传的加密备份快照');
   }
 
-  // 智能检测：若用户桶名带有腾讯云 10 位 APPID 后缀（如 lifehub-1308298144）或密钥以 AKID 开头，但仍使用阿里云默认域名
+  // 智能检测：若用户桶名带有腾讯云 10 位 APPID 后缀（如 lifehub-1250000000）或密钥以 AKID 开头，但仍使用阿里云默认域名
   if (
     config.provider === 'aliyun-oss' &&
     config.endpoint.includes('aliyuncs.com') &&
@@ -1042,7 +1042,7 @@ export async function pushSnapshotToRemoteCloud(
     const errInfo = parseCloudXmlError(result.body);
     const cosHint =
       config.provider === 'aliyun-oss' && /-\d{10}$/.test(config.bucket.trim())
-        ? '（提示：您的 Bucket 名称带有 10 位数字后缀如 -1308298144，这通常是「腾讯云 COS」的命名格式，若您使用的是腾讯云，请在上方将云服务商切换为「腾讯云 COS」并填写所属地域 Endpoint）'
+        ? '（提示：您的 Bucket 名称带有 10 位数字后缀如 -1250000000，这通常是「腾讯云 COS」的命名格式，若您使用的是腾讯云，请在上方将云服务商切换为「腾讯云 COS」并填写所属地域 Endpoint）'
         : '';
     const detail = errInfo.code
       ? `${errInfo.code}: ${errInfo.message ?? ''}`

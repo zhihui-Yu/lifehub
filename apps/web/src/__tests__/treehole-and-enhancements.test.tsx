@@ -272,14 +272,14 @@ describe('DeepSeek API Key 配置与远程调用支持', () => {
       {
         provider: 'aliyun-oss',
         endpoint: 'https://oss-cn-hangzhou.aliyuncs.com',
-        bucket: 'lifehub-1308298144',
+        bucket: 'lifehub-demo-1250000000',
         accessKey: 'LTAI_TEST_KEY',
         secretKey: 'SECRET_TEST_KEY',
         encryptUpload: true,
       },
       'PUT',
     );
-    expect(ossSigned.url).toContain('https://lifehub-1308298144.oss-cn-hangzhou.aliyuncs.com/lifehub-bills-backup.json.enc');
+    expect(ossSigned.url).toContain('https://lifehub-demo-1250000000.oss-cn-hangzhou.aliyuncs.com/lifehub-bills-backup.json.enc');
     expect(ossSigned.url).toContain('OSSAccessKeyId=LTAI_TEST_KEY');
     expect(ossSigned.url).toContain('Signature=');
 
@@ -287,14 +287,14 @@ describe('DeepSeek API Key 配置与远程调用支持', () => {
       {
         provider: 'tencent-cos',
         endpoint: 'https://cos.ap-shanghai.myqcloud.com',
-        bucket: 'lifehub-1308298144',
+        bucket: 'lifehub-demo-1250000000',
         accessKey: 'AKID_TEST_KEY',
         secretKey: 'SECRET_TEST_KEY',
         encryptUpload: true,
       },
       'PUT',
     );
-    expect(cosSigned.url).toContain('https://lifehub-1308298144.cos.ap-shanghai.myqcloud.com/lifehub-bills-backup.json.enc');
+    expect(cosSigned.url).toContain('https://lifehub-demo-1250000000.cos.ap-shanghai.myqcloud.com/lifehub-bills-backup.json.enc');
     expect(cosSigned.url).toContain('q-sign-algorithm=sha1');
     expect(cosSigned.url).toContain('q-signature=');
   });
