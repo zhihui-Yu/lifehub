@@ -36,7 +36,7 @@ npm run release
   3. 调用 `scripts/build-desktop-windows.mjs` 编译前端并封装为单文件免安装 Windows 桌面版：
      `LifeHub-Desktop-win-x64-v<版本号>.exe`
   4. 执行 `npx cap sync android` 与 `.\gradlew.bat assembleDebug`，并将生成的 APK 复制到仓库根目录：
-     `LifeHub-xiaomi15-v<版本号>.apk`
+     `LifeHub-Android-v<版本号>.apk`
 
 ### 0.2 单独打包 Windows 桌面端（`.exe`）
 

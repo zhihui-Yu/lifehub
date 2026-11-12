@@ -6,7 +6,7 @@
  * 1. 自动升级版本号（同步更新根 package.json、apps/web/package.json 与 Android build.gradle 的 versionCode / versionName）；
  * 2. 清理根目录下旧版本的 .exe 与 .apk 产物；
  * 3. 构建带最新版本号的 Windows 原生桌面版：`LifeHub-Desktop-win-x64-v<version>.exe`；
- * 4. 构建带最新版本号的 Android 手机端安装包：`LifeHub-xiaomi15-v<version>.apk`。
+ * 4. 构建带最新版本号的 Android 手机端安装包：`LifeHub-Android-v<version>.apk`。
  */
 import { execSync } from 'node:child_process';
 import { copyFileSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -74,6 +74,7 @@ function cleanOldDeliverables() {
   for (const name of readdirSync(REPO_ROOT)) {
     if (
       (name.startsWith('LifeHub-Desktop-win-x64') && name.endsWith('.exe')) ||
+      (name.startsWith('LifeHub-Android-') && name.endsWith('.apk')) ||
       (name.startsWith('LifeHub-xiaomi15-') && name.endsWith('.apk'))
     ) {
       try {
@@ -95,14 +96,14 @@ function main() {
     stdio: 'inherit',
   });
 
-  console.log(`[Release] 2/2 开始同步并构建 Android APK LifeHub-xiaomi15-v${version}.apk ...`);
+  console.log(`[Release] 2/2 开始同步并构建 Android APK LifeHub-Android-v${version}.apk ...`);
   const webDir = join(REPO_ROOT, 'apps', 'web');
   const androidDir = join(webDir, 'android');
   execSync('npx cap sync android', { cwd: webDir, stdio: 'inherit' });
   execSync('.\\gradlew.bat assembleDebug --no-daemon', { cwd: androidDir, stdio: 'inherit' });
 
   const builtApk = join(androidDir, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk');
-  const targetApk = join(REPO_ROOT, `LifeHub-xiaomi15-v${version}.apk`);
+  const targetApk = join(REPO_ROOT, `LifeHub-Android-v${version}.apk`);
   copyFileSync(builtApk, targetApk);
 
   console.log(`\n[Release] 双端打包完成（v${version}）：`);

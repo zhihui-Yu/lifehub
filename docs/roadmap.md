@@ -565,7 +565,7 @@ S5 的目标是「多设备同步（只搬密文）+ 密钥轮换」。本轮先
 | **D 树洞加密日记** | ✅ 已交付 | `TreeHolePage.tsx` + `diary-service.ts`，支持全字段 AES-256-GCM 加密落盘、语音日记、心情/标签/置顶/搜索、人物关系图谱与未来规划。 |
 | **E AI 分析层** | ✅ 已交付 | `AiAnalysisPage.tsx` + `modules/ai/`，支持零网络本地智能总结、自带 API Key（AES-GCM 加密存储）、DeepSeek V3/R1 深度思考切换、本地脱敏管线、单条删除与一键清空请求审计指标，以及手机端极简大留白对话 UI。 |
 | **X 无感加密与云端备份 (`lifehub-backup.json.enc`)** | ✅ 已交付 | 本地保险库后台静默初始化并自动加密，移除导航栏与设置页冗余的「安全与加密」入口；云存储备份支持 5 大厂商（OSS/COS/Kodo/OBS/S3），内置字典+LZ77 双级无损压缩、必填密码校验、本机「记住加密密码」与云端密码指纹防误改覆盖保护。 |
-| **X 双端原生打包 (EXE + APK)** | ✅ 已交付 | `npm run release`（`scripts/release-packages.mjs`）一键自动递增版本号并构建 Windows WebView2 单文件桌面版 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 Capacitor Android 手机版 `LifeHub-xiaomi15-v<版本>.apk`。 |
+| **X 双端原生打包 (EXE + APK)** | ✅ 已交付 | `npm run release`（`scripts/release-packages.mjs`）一键自动递增版本号并构建 Windows WebView2 单文件桌面版 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 Capacitor Android 手机版 `LifeHub-Android-v<版本>.apk`。 |
 
 ---
 

@@ -53,7 +53,7 @@ npm run typecheck  # 三个包的类型检查
 
 | 目标平台 | 一键构建命令 / 方式简述 | 产物位置 / 运行方式 |
 | --- | --- | --- |
-| **双端一键发版（EXE + APK）** | 根目录执行 `npm run release`（自动递增版本号并清理旧包） | 根目录生成 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 `LifeHub-xiaomi15-v<版本>.apk` |
+| **双端一键发版（EXE + APK）** | 根目录执行 `npm run release`（自动递增版本号并清理旧包） | 根目录生成 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 `LifeHub-Android-v<版本>.apk` |
 | **Windows 桌面版 (.exe)** | 根目录执行 `npm run build:desktop`（见 `scripts/build-desktop-windows.mjs`） | 根目录生成单文件免安装 `LifeHub-Desktop-win-x64-v<版本>.exe`（基于 WebView2 + .NET 原生窗体） |
 | **Android 手机端 (.apk)** | 根目录执行 `npm run build:android`（或 `cd apps/web && npx cap sync android && cd android && .\gradlew.bat assembleDebug`） | `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`（`npm run release` 会同步复制到根目录） |
 | **Web 生产包** | 根目录执行 `npm run build` | `apps/web/dist/`（部署至任意 HTTPS 静态服务器） |
