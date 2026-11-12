@@ -735,7 +735,7 @@ async function hmacSha1Base64(secret: string, message: string): Promise<string> 
     false,
     ['sign'],
   );
-  const sig = await crypto.subtle.sign('sign', cryptoKey, msgBytes);
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, msgBytes);
   const arr = new Uint8Array(sig);
   let binary = '';
   for (let i = 0; i < arr.length; i++) {
@@ -757,7 +757,7 @@ async function hmacSha1Hex(secret: string, message: string): Promise<string> {
     false,
     ['sign'],
   );
-  const sig = await crypto.subtle.sign('sign', cryptoKey, msgBytes);
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, msgBytes);
   return Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
