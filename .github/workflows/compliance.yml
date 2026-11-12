@@ -57,10 +57,10 @@ jobs:
               静态断言载荷构造不含明文字段名 + 运行时探针构造真实载荷后全文检索明文样本。
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 准备 Node 运行时
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
