@@ -151,7 +151,7 @@ export function SideNav() {
           LifeHub
         </Typography>
         <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-          本地优先 · 端到端加密
+          本地优先 · 数据自持
         </Typography>
       </Box>
       <List dense className="lifehub-sidenav__list" sx={{ flex: 1, overflowY: 'auto' }}>

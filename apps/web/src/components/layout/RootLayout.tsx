@@ -10,7 +10,6 @@
 import { Outlet } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
 import { TopBar } from '@/components/layout/TopBar';
-import { useVault } from '@/hooks/useVault';
 
 /**
  * 根布局组件：侧导航 + 顶栏 + 内容区。
@@ -18,10 +17,9 @@ import { useVault } from '@/hooks/useVault';
  * @returns React 节点
  */
 export function RootLayout() {
-  const { status } = useVault();
   return (
     <AppShell>
-      <TopBar title="LifeHub" unlocked={status === 'unlocked'} />
+      <TopBar title="LifeHub" />
       <Outlet />
     </AppShell>
   );

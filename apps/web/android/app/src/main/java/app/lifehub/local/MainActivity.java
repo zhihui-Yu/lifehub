@@ -2,8 +2,10 @@ package app.lifehub.local;
 
 import android.app.Activity;
 import android.content.ContentResolver;
+import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -205,57 +207,27 @@ public class MainActivity extends BridgeActivity {
             saveTextFile(fileName, content, mimeType, "LifeHub");
         }
 
+        /**
+         * 静默保存：供数据变更后的自动落盘调用，成功时不弹 Toast，同名文件直接覆盖。
+         */
+        @JavascriptInterface
+        public void saveTextFileSilent(String fileName, String content, String mimeType, String subDir) {
+            new Thread(() -> {
+                try {
+                    writeFileOverwrite(fileName, content, mimeType, subDir);
+                } catch (Exception ignored) {
+                }
+            }).start();
+        }
+
         @JavascriptInterface
         public void saveTextFile(String fileName, String content, String mimeType, String subDir) {
             runOnUiThread(() -> {
                 try {
-                    String safeName = (fileName == null || fileName.trim().isEmpty())
-                        ? "lifehub-export.json"
-                        : fileName.trim();
-                    String safeMime = (mimeType == null || mimeType.trim().isEmpty())
-                        ? "application/json"
-                        : mimeType.trim();
-                    String cleanedSubDir = (subDir == null)
-                        ? ""
-                        : subDir.trim().replace("\\", "/").replaceAll("\\.\\.+", "").replaceAll("^/+|/+$", "");
-                    String relativeDownloadPath = cleanedSubDir.isEmpty()
-                        ? Environment.DIRECTORY_DOWNLOADS
-                        : Environment.DIRECTORY_DOWNLOADS + "/" + cleanedSubDir;
-                    byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
-
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        ContentValues values = new ContentValues();
-                        values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
-                        values.put(MediaStore.Downloads.MIME_TYPE, safeMime);
-                        values.put(MediaStore.Downloads.RELATIVE_PATH, relativeDownloadPath);
-
-                        ContentResolver resolver = getContentResolver();
-                        Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                        if (uri != null) {
-                            try (OutputStream out = resolver.openOutputStream(uri)) {
-                                if (out != null) {
-                                    out.write(bytes);
-                                    out.flush();
-                                }
-                            }
-                        }
-                    } else {
-                        File baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-                        File dir = cleanedSubDir.isEmpty() ? baseDir : new File(baseDir, cleanedSubDir);
-                        if (!dir.exists()) {
-                            //noinspection ResultOfMethodCallIgnored
-                            dir.mkdirs();
-                        }
-                        File target = new File(dir, safeName);
-                        try (FileOutputStream out = new FileOutputStream(target)) {
-                            out.write(bytes);
-                            out.flush();
-                        }
-                    }
-
+                    String[] result = writeFileOverwrite(fileName, content, mimeType, subDir);
                     Toast.makeText(
                         MainActivity.this,
-                        "已保存至手机「" + relativeDownloadPath + "」目录：" + safeName,
+                        "已保存至手机「" + result[0] + "」目录：" + result[1],
                         Toast.LENGTH_LONG
                     ).show();
                 } catch (Exception e) {
@@ -266,6 +238,79 @@ public class MainActivity extends BridgeActivity {
                     ).show();
                 }
             });
+        }
+
+        /**
+         * 写入 Download/&lt;subDir&gt;/fileName；若本应用已创建过同名文件则覆盖，避免产生「xxx (1).json」重复文件。
+         *
+         * @return [相对目录, 文件名]
+         */
+        private synchronized String[] writeFileOverwrite(String fileName, String content, String mimeType, String subDir) throws Exception {
+            String safeName = (fileName == null || fileName.trim().isEmpty())
+                ? "lifehub-export.json"
+                : fileName.trim();
+            String safeMime = (mimeType == null || mimeType.trim().isEmpty())
+                ? "application/json"
+                : mimeType.trim();
+            String cleanedSubDir = (subDir == null)
+                ? ""
+                : subDir.trim().replace("\\", "/").replaceAll("\\.\\.+", "").replaceAll("^/+|/+$", "");
+            String relativeDownloadPath = cleanedSubDir.isEmpty()
+                ? Environment.DIRECTORY_DOWNLOADS
+                : Environment.DIRECTORY_DOWNLOADS + "/" + cleanedSubDir;
+            byte[] bytes = (content == null ? "" : content).getBytes(StandardCharsets.UTF_8);
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentResolver resolver = getContentResolver();
+                Uri collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                Uri uri = null;
+
+                // 查找本应用之前写过的同名文件（MediaStore 中 RELATIVE_PATH 以 "/" 结尾）
+                try (Cursor cursor = resolver.query(
+                    collection,
+                    new String[] { MediaStore.Downloads._ID },
+                    MediaStore.Downloads.DISPLAY_NAME + " = ? AND " + MediaStore.Downloads.RELATIVE_PATH + " IN (?, ?)",
+                    new String[] { safeName, relativeDownloadPath + "/", relativeDownloadPath },
+                    null
+                )) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        long id = cursor.getLong(0);
+                        uri = ContentUris.withAppendedId(collection, id);
+                    }
+                } catch (Exception ignored) {
+                }
+
+                if (uri == null) {
+                    ContentValues values = new ContentValues();
+                    values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
+                    values.put(MediaStore.Downloads.MIME_TYPE, safeMime);
+                    values.put(MediaStore.Downloads.RELATIVE_PATH, relativeDownloadPath);
+                    uri = resolver.insert(collection, values);
+                }
+                if (uri == null) {
+                    throw new IllegalStateException("无法创建文件 " + safeName);
+                }
+                // "wt"：截断后写入，确保覆盖旧内容
+                try (OutputStream out = resolver.openOutputStream(uri, "wt")) {
+                    if (out != null) {
+                        out.write(bytes);
+                        out.flush();
+                    }
+                }
+            } else {
+                File baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                File dir = cleanedSubDir.isEmpty() ? baseDir : new File(baseDir, cleanedSubDir);
+                if (!dir.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
+                    dir.mkdirs();
+                }
+                File target = new File(dir, safeName);
+                try (FileOutputStream out = new FileOutputStream(target, false)) {
+                    out.write(bytes);
+                    out.flush();
+                }
+            }
+            return new String[] { relativeDownloadPath, safeName };
         }
     }
 }

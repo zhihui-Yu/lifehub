@@ -1,8 +1,7 @@
 /**
  * 布局组件测试（顶栏 / 侧导航 / 外壳）。
  *
- * 覆盖需求：UI-04 交互要点 —— 顶栏常驻展示「本地 · 已加密 🔒」状态胶囊，
- * 让用户随时知道自己的数据处于加密状态；侧导航提供四个页面入口。
+ * 覆盖需求：顶栏仅展示标题（加密默认静默，不暴露保险库状态）；侧导航提供页面入口。
  */
 import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
@@ -34,19 +33,12 @@ vi.mock('@/hooks/useVault', () => ({
 }));
 
 describe('TopBar', () => {
-  it('锁定时展示「本地 · 已加密 🔒」胶囊', () => {
-    render(<TopBar title="LifeHub" unlocked={false} />);
+  it('仅展示标题，不再暴露「已解锁 / 已加密」保险库状态胶囊', () => {
+    render(<TopBar title="LifeHub" />);
 
     expect(screen.getByRole('heading', { name: 'LifeHub' })).toBeInTheDocument();
-    expect(screen.getByText('本地 · 已加密 🔒')).toBeInTheDocument();
-    expect(screen.getByLabelText('保险库处于加密锁定状态')).toBeInTheDocument();
-  });
-
-  it('解锁时展示「本地 · 已解锁」胶囊', () => {
-    render(<TopBar title="LifeHub" unlocked />);
-
-    expect(screen.getByText('本地 · 已解锁')).toBeInTheDocument();
-    expect(screen.getByLabelText('保险库已解锁')).toBeInTheDocument();
+    expect(screen.queryByText(/已解锁|已加密/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/保险库/)).not.toBeInTheDocument();
   });
 });
 
@@ -66,7 +58,8 @@ describe('SideNav', () => {
     expect(screen.getByText('AI 分析')).toBeInTheDocument();
     expect(screen.queryByText('安全与加密')).not.toBeInTheDocument();
     expect(screen.getByText('设置')).toBeInTheDocument();
-    expect(screen.getByText('本地优先 · 端到端加密')).toBeInTheDocument();
+    expect(screen.getByText('本地优先 · 数据自持')).toBeInTheDocument();
+    expect(screen.queryByText(/端到端加密/)).not.toBeInTheDocument();
   });
 
   it('当前路由对应的入口被标记为选中', () => {
@@ -143,11 +136,11 @@ describe('RootLayout', () => {
     // 顶栏标题是 h1；侧导航里的品牌名是 h6，两者同名，用层级区分。
     expect(screen.getByRole('heading', { level: 1, name: 'LifeHub' })).toBeInTheDocument();
     expect(screen.getByTestId('outlet-content')).toBeInTheDocument();
-    // 顶栏状态跟随保险库会话。
-    expect(screen.getByText('本地 · 已解锁')).toBeInTheDocument();
+    // 顶栏不再展示保险库状态。
+    expect(screen.queryByText(/已解锁|已加密/)).not.toBeInTheDocument();
   });
 
-  it('保险库锁定时顶栏展示加密状态胶囊', () => {
+  it('保险库锁定时顶栏也不展示加密状态胶囊', () => {
     vaultState.status = 'locked';
     render(
       <MemoryRouter initialEntries={['/bills']}>
@@ -159,6 +152,6 @@ describe('RootLayout', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('本地 · 已加密 🔒')).toBeInTheDocument();
+    expect(screen.queryByText(/已解锁|已加密/)).not.toBeInTheDocument();
   });
 });

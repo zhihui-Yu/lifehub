@@ -3,17 +3,14 @@
  *
  * 架构位置：apps/web 的「布局组件」层。
  *
- * 说明：展示账户状态胶囊「本地 · 已加密 🔒」，
- * 让用户随时知道自己的数据处于加密状态（PRD UI-04）。
+ * 说明：仅展示页面标题。加密已默认静默处理，不再向用户暴露「已解锁 / 已加密」状态胶囊。
  */
-import { Box, Chip, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 
 /** 顶栏组件的属性。 */
 export interface TopBarProps {
   /** 页面标题。 */
   title: string;
-  /** 是否已解锁。 */
-  unlocked: boolean;
 }
 
 /**
@@ -22,7 +19,7 @@ export interface TopBarProps {
  * @param props 组件属性
  * @returns React 节点
  */
-export function TopBar({ title, unlocked }: TopBarProps) {
+export function TopBar({ title }: TopBarProps) {
   return (
     <Box
       component="header"
@@ -57,18 +54,6 @@ export function TopBar({ title, unlocked }: TopBarProps) {
       >
         {title}
       </Typography>
-      <Chip
-        size="small"
-        color={unlocked ? 'success' : 'default'}
-        variant={unlocked ? 'filled' : 'outlined'}
-        label={unlocked ? '本地 · 已解锁' : '本地 · 已加密 🔒'}
-        aria-label={unlocked ? '保险库已解锁' : '保险库处于加密锁定状态'}
-        sx={{
-          fontWeight: 600,
-          borderRadius: 999,
-          px: 0.5,
-        }}
-      />
     </Box>
   );
 }

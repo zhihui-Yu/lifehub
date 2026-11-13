@@ -16,6 +16,8 @@ export const DEFAULT_STORAGE_DIR = 'LifeHub';
 /** Android WebView 原生文件导出桥接接口（可选注入）。 */
 interface AndroidFileBridge {
   saveTextFile?: (fileName: string, content: string, mimeType: string, subDir?: string) => void;
+  /** 静默保存（数据变更自动落盘用）：成功不弹提示，同名文件覆盖。 */
+  saveTextFileSilent?: (fileName: string, content: string, mimeType: string, subDir?: string) => void;
   pickDirectory?: () => void;
   migrateDirectory?: (fromSubDir: string, toSubDir: string) => void;
 }
@@ -323,8 +325,16 @@ export function syncAutoSnapshotToStorageDir(
   const writeSingleFile = (targetName: string, text: string) => {
     const subDir = getStorageDirectory();
 
-    // 1. Android 原生容器
+    // 1. Android 原生容器：优先走静默接口（不弹 Toast、覆盖同名文件），旧版 APK 回退到 saveTextFile
     const bridge = (globalThis as { LifeHubAndroid?: AndroidFileBridge }).LifeHubAndroid;
+    if (bridge && typeof bridge.saveTextFileSilent === 'function') {
+      try {
+        bridge.saveTextFileSilent(targetName, text, 'application/json', subDir);
+      } catch {
+        // 忽略异常
+      }
+      return;
+    }
     if (bridge && typeof bridge.saveTextFile === 'function') {
       try {
         bridge.saveTextFile(targetName, text, 'application/json', subDir);
