@@ -17,6 +17,7 @@ export const DEFAULT_STORAGE_DIR = 'LifeHub';
 interface AndroidFileBridge {
   saveTextFile?: (fileName: string, content: string, mimeType: string, subDir?: string) => void;
   pickDirectory?: () => void;
+  migrateDirectory?: (fromSubDir: string, toSubDir: string) => void;
 }
 
 /** 浏览器 File System Access API 最小类型定义。 */
@@ -93,12 +94,54 @@ export function getStorageDirectory(): string {
 }
 
 /**
- * 保存自定义文件存储目录配置。
+ * 将原文件存储目录下的所有 LifeHub 数据文件（`lifehub-*`、`*.json`、`*.csv`、`*.enc`）
+ * 自动迁移复制至新目录，确保目录切换前后文件零断层。
+ *
+ * @param fromDir 原目录路径或子目录名
+ * @param toDir 新目录路径或子目录名
+ */
+export function migrateStorageDirectoryFiles(fromDir: string, toDir: string): void {
+  const cleanFrom = sanitizeStorageDirectory(fromDir) || DEFAULT_STORAGE_DIR;
+  const cleanTo = sanitizeStorageDirectory(toDir) || DEFAULT_STORAGE_DIR;
+  if (cleanFrom.toLowerCase() === cleanTo.toLowerCase()) {
+    return;
+  }
+
+  // 1. Android 原生容器
+  const bridge = (globalThis as { LifeHubAndroid?: AndroidFileBridge }).LifeHubAndroid;
+  if (bridge && typeof bridge.migrateDirectory === 'function') {
+    try {
+      bridge.migrateDirectory(cleanFrom, cleanTo);
+    } catch {
+      // 忽略异常
+    }
+    return;
+  }
+
+  // 2. Windows 桌面版容器或本地开发/预览服务
+  if (
+    isWindowsDesktopRuntime() ||
+    (typeof window !== 'undefined' &&
+      (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost'))
+  ) {
+    void fetch('/__lifehub_desktop__/migrate-directory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromDir: cleanFrom, toDir: cleanTo }),
+    }).catch(() => {
+      // 忽略异常
+    });
+  }
+}
+
+/**
+ * 保存自定义文件存储目录配置（若目录发生变化，自动将原目录下的历史备份与数据文件迁移至新目录）。
  *
  * @param dir 用户输入的目录名或路径（若为空白则重置为默认 `'LifeHub'`）
  * @returns 规范化后实际保存的目录名
  */
 export function setStorageDirectory(dir: string): string {
+  const previous = getStorageDirectory();
   const sanitized = sanitizeStorageDirectory(dir) || DEFAULT_STORAGE_DIR;
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
@@ -106,6 +149,9 @@ export function setStorageDirectory(dir: string): string {
     }
   } catch {
     // 忽略无 localStorage 权限环境
+  }
+  if (previous.toLowerCase() !== sanitized.toLowerCase()) {
+    migrateStorageDirectoryFiles(previous, sanitized);
   }
   return sanitized;
 }

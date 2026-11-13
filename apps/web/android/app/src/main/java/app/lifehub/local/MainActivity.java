@@ -21,6 +21,7 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -128,6 +129,73 @@ public class MainActivity extends BridgeActivity {
                         Toast.LENGTH_LONG
                     ).show();
                     notifyWebDirectoryPicked("");
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void migrateDirectory(String fromSubDir, String toSubDir) {
+            runOnUiThread(() -> {
+                try {
+                    String fromClean = (fromSubDir == null)
+                        ? ""
+                        : fromSubDir.trim().replace("\\", "/").replaceAll("\\.\\.+", "").replaceAll("^/+|/+$", "");
+                    String toClean = (toSubDir == null)
+                        ? ""
+                        : toSubDir.trim().replace("\\", "/").replaceAll("\\.\\.+", "").replaceAll("^/+|/+$", "");
+                    if (fromClean.equalsIgnoreCase(toClean)) {
+                        return;
+                    }
+                    String fromRel = fromClean.isEmpty()
+                        ? Environment.DIRECTORY_DOWNLOADS + "/"
+                        : Environment.DIRECTORY_DOWNLOADS + "/" + fromClean + "/";
+                    String toRel = toClean.isEmpty()
+                        ? Environment.DIRECTORY_DOWNLOADS + "/"
+                        : Environment.DIRECTORY_DOWNLOADS + "/" + toClean + "/";
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        ContentResolver resolver = getContentResolver();
+                        ContentValues values = new ContentValues();
+                        values.put(MediaStore.Downloads.RELATIVE_PATH, toRel);
+                        resolver.update(
+                            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                            values,
+                            MediaStore.Downloads.RELATIVE_PATH + " = ?",
+                            new String[] { fromRel }
+                        );
+                    }
+
+                    File baseDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    File srcDir = fromClean.isEmpty() ? baseDir : new File(baseDir, fromClean);
+                    File dstDir = toClean.isEmpty() ? baseDir : new File(baseDir, toClean);
+                    if (srcDir.exists() && srcDir.isDirectory()) {
+                        if (!dstDir.exists()) {
+                            //noinspection ResultOfMethodCallIgnored
+                            dstDir.mkdirs();
+                        }
+                        File[] files = srcDir.listFiles();
+                        if (files != null) {
+                            byte[] buf = new byte[8192];
+                            for (File f : files) {
+                                if (f.isFile()) {
+                                    String name = f.getName().toLowerCase();
+                                    if (name.startsWith("lifehub") || name.endsWith(".json") || name.endsWith(".csv") || name.endsWith(".enc")) {
+                                        File target = new File(dstDir, f.getName());
+                                        try (FileInputStream in = new FileInputStream(f);
+                                             FileOutputStream out = new FileOutputStream(target)) {
+                                            int len;
+                                            while ((len = in.read(buf)) > 0) {
+                                                out.write(buf, 0, len);
+                                            }
+                                            out.flush();
+                                        } catch (Exception ignored) {
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {
                 }
             });
         }

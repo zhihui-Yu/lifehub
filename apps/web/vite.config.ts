@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
@@ -68,6 +68,46 @@ function lifehubDesktopNativePlugin(): Plugin {
             res.statusCode = 500;
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
             res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : 'write failed' }));
+          }
+        });
+        return;
+      }
+
+      if (req.url === '/__lifehub_desktop__/migrate-directory' && req.method === 'POST') {
+        let rawBody = '';
+        req.on('data', (chunk: Buffer) => {
+          rawBody += chunk.toString('utf8');
+        });
+        req.on('end', () => {
+          try {
+            const parsed = JSON.parse(rawBody) as { fromDir?: string; toDir?: string };
+            const fromSub = (parsed.fromDir || 'LifeHub').trim();
+            const toSub = (parsed.toDir || 'LifeHub').trim();
+            const srcDir = /^[A-Za-z]:[/\\]/.test(fromSub)
+              ? resolve(fromSub)
+              : join(homedir(), 'Downloads', fromSub);
+            const dstDir = /^[A-Za-z]:[/\\]/.test(toSub)
+              ? resolve(toSub)
+              : join(homedir(), 'Downloads', toSub);
+            mkdirSync(dstDir, { recursive: true });
+            let migratedCount = 0;
+            if (existsSync(srcDir) && resolve(srcDir).toLowerCase() !== resolve(dstDir).toLowerCase()) {
+              for (const name of readdirSync(srcDir)) {
+                const srcFile = join(srcDir, name);
+                if (!statSync(srcFile).isFile()) continue;
+                const ext = extname(name).toLowerCase();
+                if (name.toLowerCase().startsWith('lifehub') || ext === '.json' || ext === '.csv' || ext === '.enc') {
+                  copyFileSync(srcFile, join(dstDir, name));
+                  migratedCount++;
+                }
+              }
+            }
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.end(JSON.stringify({ ok: true, migratedCount, targetDir: dstDir }));
+          } catch (e) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : 'migrate failed' }));
           }
         });
         return;

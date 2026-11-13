@@ -31,6 +31,7 @@ import {
   getWebDirectoryHandleName,
   pickWebDirectoryHandle,
   setStorageDirectory,
+  syncAutoSnapshotToStorageDir,
 } from '@/utils/download';
 
 /**
@@ -85,27 +86,6 @@ export function SettingsPage() {
     return `Download/${trimmed}`;
   };
 
-  const handleSaveStorageDir = () => {
-    const normalized = setStorageDirectory(storageDir);
-    setStorageDir(normalized);
-    setStorageDirSavedMsg(`已保存默认文件存储目录：${formatEffectiveStoragePath(normalized)}`);
-  };
-
-  const handlePickWebDir = async () => {
-    if (pickingDir) return;
-    setPickingDir(true);
-    try {
-      const picked = await pickWebDirectoryHandle();
-      if (picked) {
-        setPickedDirName(picked);
-        setStorageDir(picked);
-        setStorageDirSavedMsg(`已选择并保存本地目录：${formatEffectiveStoragePath(picked)}`);
-      }
-    } finally {
-      setPickingDir(false);
-    }
-  };
-
   const loadCategoriesSafely = async (): Promise<Category[]> => {
     try {
       const catRepo = (
@@ -118,6 +98,94 @@ export function SettingsPage() {
       // 忽略分类仓库未就绪异常
     }
     return [];
+  };
+
+  /**
+   * 切换存储目录后，立即将当前全模块最新数据同步落盘至新目录，确保新目录文件完整无断层。
+   */
+  const syncAllModulesToNewDir = async () => {
+    try {
+      const categories = await loadCategoriesSafely();
+      const db = createDatabase();
+      const diaryService = new DiaryService(db);
+      const [scheduleSlots, habits, habitCheckIns, completionEvents, diaryEntries] =
+        await Promise.all([
+          db.table<StoredScheduleSlot>('scheduleSlots').toArray().catch(() => [] as StoredScheduleSlot[]),
+          db.table<StoredHabit>('habits').toArray().catch(() => [] as StoredHabit[]),
+          db.table<StoredHabitCheckIn>('habitCheckIns').toArray().catch(() => [] as StoredHabitCheckIn[]),
+          db.table<CompletionEvent>('completionEvents').toArray().catch(() => [] as CompletionEvent[]),
+          diaryService.exportAllDecrypted().catch(() => [] as DecryptedDiaryEntry[]),
+        ]);
+
+      const nowIso = new Date().toISOString();
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify({ schema: 'lifehub-bills-v1', updatedAt: nowIso, bills }, null, 2),
+        'lifehub-bills.json',
+      );
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify({ schema: 'lifehub-categories-v1', updatedAt: nowIso, categories }, null, 2),
+        'lifehub-categories.json',
+      );
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify({ schema: 'lifehub-schedule-v1', updatedAt: nowIso, scheduleSlots, completionEvents }, null, 2),
+        'lifehub-schedule.json',
+      );
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify({ schema: 'lifehub-habits-v1', updatedAt: nowIso, habits, habitCheckIns, completionEvents }, null, 2),
+        'lifehub-habits.json',
+      );
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify({ schema: 'lifehub-treehole-v1', updatedAt: nowIso, diaryEntries }, null, 2),
+        'lifehub-treehole.json',
+      );
+      syncAutoSnapshotToStorageDir(
+        JSON.stringify(
+          {
+            schema: 'lifehub-auto-snapshot-v1',
+            updatedAt: nowIso,
+            bills,
+            categories,
+            scheduleSlots,
+            habits,
+            habitCheckIns,
+            completionEvents,
+            diaryEntries,
+          },
+          null,
+          2,
+        ),
+        'lifehub-auto-snapshot.json',
+      );
+    } catch {
+      // 忽略测试环境或未初始化异常
+    }
+  };
+
+  const handleSaveStorageDir = () => {
+    const normalized = setStorageDirectory(storageDir);
+    setStorageDir(normalized);
+    void syncAllModulesToNewDir();
+    setStorageDirSavedMsg(
+      `已保存默认文件存储目录：${formatEffectiveStoragePath(normalized)}（已自动迁移原目录文件并同步最新全量数据）`,
+    );
+  };
+
+  const handlePickWebDir = async () => {
+    if (pickingDir) return;
+    setPickingDir(true);
+    try {
+      const picked = await pickWebDirectoryHandle();
+      if (picked) {
+        setPickedDirName(picked);
+        setStorageDir(picked);
+        void syncAllModulesToNewDir();
+        setStorageDirSavedMsg(
+          `已选择并保存本地目录：${formatEffectiveStoragePath(picked)}（已自动迁移原目录文件并同步最新全量数据）`,
+        );
+      }
+    } finally {
+      setPickingDir(false);
+    }
   };
 
   const handleExportAllJson = async () => {
