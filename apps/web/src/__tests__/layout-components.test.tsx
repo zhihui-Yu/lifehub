@@ -4,7 +4,7 @@
  * 覆盖需求：UI-04 交互要点 —— 顶栏常驻展示「本地 · 已加密 🔒」状态胶囊，
  * 让用户随时知道自己的数据处于加密状态；侧导航提供四个页面入口。
  */
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { AppShell } from '@/components/layout/AppShell';
@@ -78,6 +78,35 @@ describe('SideNav', () => {
 
     expect(screen.getByRole('link', { name: '账单列表' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: '导入账单' })).not.toHaveAttribute('aria-current');
+  });
+
+  it('文本输入框聚焦时自动标记软键盘激活类名，失焦后恢复，防止手机端底部导航栏被输入法顶起', async () => {
+    render(
+      <MemoryRouter initialEntries={['/bills']}>
+        <div>
+          <input data-testid="mock-text-input" type="text" />
+          <SideNav />
+        </div>
+      </MemoryRouter>,
+    );
+
+    const nav = screen.getByRole('navigation', { name: '主导航' });
+    const input = screen.getByTestId('mock-text-input');
+
+    expect(nav).not.toHaveClass('lifehub-sidenav--keyboard-open');
+
+    act(() => {
+      input.focus();
+    });
+    expect(nav).toHaveClass('lifehub-sidenav--keyboard-open');
+    expect(document.body.classList.contains('lifehub-keyboard-open')).toBe(true);
+
+    await act(async () => {
+      input.blur();
+      await new Promise((r) => setTimeout(r, 120));
+    });
+    expect(nav).not.toHaveClass('lifehub-sidenav--keyboard-open');
+    expect(document.body.classList.contains('lifehub-keyboard-open')).toBe(false);
   });
 });
 

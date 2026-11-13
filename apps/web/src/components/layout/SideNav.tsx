@@ -5,6 +5,7 @@
  *
  * 说明：桌面端 220px 侧导航；小屏（<900px）由 AppShell 的 CSS 折叠为底部 Tab。
  */
+import { useEffect, useState } from 'react';
 import { Box, List, ListItemButton, ListItemIcon, ListItemText, Typography } from '@mui/material';
 import AddCircleOutline from '@mui/icons-material/AddCircleOutline';
 import ReceiptLong from '@mui/icons-material/ReceiptLong';
@@ -15,6 +16,37 @@ import ParkOutlined from '@mui/icons-material/ParkOutlined';
 import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import { NavLink, useLocation } from 'react-router-dom';
+
+const NON_KEYBOARD_INPUT_TYPES = new Set([
+  'button',
+  'checkbox',
+  'color',
+  'file',
+  'hidden',
+  'image',
+  'radio',
+  'range',
+  'reset',
+  'submit',
+]);
+
+/**
+ * 判断当前聚焦元素是否为会唤起手机端软键盘的文本输入控件。
+ */
+function isSoftKeyboardTarget(el: Element | null): boolean {
+  if (!el) return false;
+  if (el instanceof HTMLTextAreaElement) {
+    return !el.readOnly && !el.disabled;
+  }
+  if (el instanceof HTMLInputElement) {
+    const type = (el.type || 'text').toLowerCase();
+    return !NON_KEYBOARD_INPUT_TYPES.has(type) && !el.readOnly && !el.disabled;
+  }
+  if (el instanceof HTMLElement && el.isContentEditable) {
+    return true;
+  }
+  return false;
+}
 
 /** 侧导航项定义。 */
 const NAV_ITEMS = [
@@ -35,11 +67,83 @@ const NAV_ITEMS = [
  */
 export function SideNav() {
   const location = useLocation();
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return;
+    }
+
+    const getViewportHeight = () => window.visualViewport?.height ?? window.innerHeight;
+    let maxHeight = getViewportHeight();
+    let blurTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const handleFocusIn = (e: FocusEvent) => {
+      if (blurTimer) {
+        clearTimeout(blurTimer);
+        blurTimer = null;
+      }
+      const target = (e.target as Element | null) ?? document.activeElement;
+      if (isSoftKeyboardTarget(target)) {
+        setKeyboardOpen(true);
+      }
+    };
+
+    const handleFocusOut = () => {
+      if (blurTimer) {
+        clearTimeout(blurTimer);
+      }
+      blurTimer = setTimeout(() => {
+        const curH = getViewportHeight();
+        const isShrunk = maxHeight - curH > 120;
+        if (!isSoftKeyboardTarget(document.activeElement) && !isShrunk) {
+          setKeyboardOpen(false);
+        }
+      }, 80);
+    };
+
+    const handleViewportResize = () => {
+      const curH = getViewportHeight();
+      if (curH > maxHeight) {
+        maxHeight = curH;
+      }
+      const delta = maxHeight - curH;
+      if (delta > 120) {
+        setKeyboardOpen(true);
+      } else if (delta <= 80) {
+        // 用户通过安卓返回手势/收起键盘按钮关闭了输入法（此时输入框可能仍处于 focus 状态）
+        setKeyboardOpen(false);
+      }
+    };
+
+    document.addEventListener('focusin', handleFocusIn, true);
+    document.addEventListener('focusout', handleFocusOut, true);
+    window.addEventListener('resize', handleViewportResize);
+    window.visualViewport?.addEventListener('resize', handleViewportResize);
+
+    return () => {
+      if (blurTimer) {
+        clearTimeout(blurTimer);
+      }
+      document.removeEventListener('focusin', handleFocusIn, true);
+      document.removeEventListener('focusout', handleFocusOut, true);
+      window.removeEventListener('resize', handleViewportResize);
+      window.visualViewport?.removeEventListener('resize', handleViewportResize);
+      document.body.classList.remove('lifehub-keyboard-open');
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.body.classList.toggle('lifehub-keyboard-open', keyboardOpen);
+    }
+  }, [keyboardOpen]);
+
   return (
     <Box
       component="nav"
       aria-label="主导航"
-      className="lifehub-sidenav"
+      className={`lifehub-sidenav${keyboardOpen ? ' lifehub-sidenav--keyboard-open' : ''}`}
       sx={{ display: 'flex', flexDirection: 'column' }}
     >
       <Box sx={{ p: 2.5, pb: 1.5 }}>

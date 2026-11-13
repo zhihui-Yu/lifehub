@@ -216,6 +216,17 @@ body {
     padding: 0 16px calc(92px + env(safe-area-inset-bottom, 0px)) 16px;
     order: 1;
   }
+
+  /* 手机端唤起软键盘（输入法）时自动隐藏底部导航栏，防止导航栏被顶到输入法上方遮挡输入区 */
+  body.lifehub-keyboard-open .lifehub-sidenav,
+  .lifehub-sidenav.lifehub-sidenav--keyboard-open {
+    display: none !important;
+  }
+
+  body.lifehub-keyboard-open .lifehub-content,
+  body.lifehub-keyboard-open .lifehub-main {
+    padding-bottom: 16px !important;
+  }
 }
 
 /* 账单首页内联可视化看板隐藏（已独立为 #/stats 收支统计专页） */
