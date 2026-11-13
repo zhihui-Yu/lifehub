@@ -32,9 +32,9 @@ export function TopBar({ title, unlocked }: TopBarProps) {
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 1.5,
-        mb: { xs: 2, md: 3 },
-        pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 12px)', md: 1.5 },
-        pb: { xs: 1.25, md: 1.5 },
+        mb: { xs: 2, md: 2 },
+        pt: { xs: 'calc(env(safe-area-inset-top, 0px) + 12px)', md: 0 },
+        pb: { xs: 1.25, md: 0.5 },
         px: { xs: 2, md: 0 },
         mx: { xs: -2, md: 0 },
         position: { xs: 'sticky', md: 'static' },
@@ -42,7 +42,7 @@ export function TopBar({ title, unlocked }: TopBarProps) {
         zIndex: 20,
         backgroundColor: { xs: 'var(--lifehub-glass-bg)', md: 'transparent' },
         backdropFilter: { xs: 'blur(12px)', md: 'none' },
-        borderBottom: '1px solid var(--lifehub-border)',
+        borderBottom: { xs: '1px solid var(--lifehub-border)', md: 'none' },
       }}
     >
       <Typography

@@ -152,9 +152,34 @@ function main() {
     let buf = readFileSync(file);
 
     if (relPath === '/index.html') {
+      const desktopBootScript = `<script>
+window.__LIFEHUB_DESKTOP__ = true;
+(function(){
+  function syncDesktopTheme(){
+    try {
+      var isDark = document.documentElement.classList.contains('dark');
+      if (window.chrome && window.chrome.webview && typeof window.chrome.webview.postMessage === 'function') {
+        window.chrome.webview.postMessage(isDark ? 'theme:dark' : 'theme:light');
+      }
+    } catch (e) {}
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    syncDesktopTheme();
+    try {
+      var obs = new MutationObserver(syncDesktopTheme);
+      obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    } catch (e) {}
+  });
+  document.addEventListener('dragstart', function(e){
+    var t = e.target;
+    if (t && typeof t.closest === 'function' && t.closest('[draggable="true"]')) return;
+    e.preventDefault();
+  }, true);
+})();
+</script>`;
       const html = buf
         .toString('utf8')
-        .replace('<head>', '<head><script>window.__LIFEHUB_DESKTOP__ = true;</script>');
+        .replace('<head>', '<head>' + desktopBootScript);
       buf = Buffer.from(html, 'utf8');
     }
 
@@ -182,6 +207,7 @@ function main() {
   csLines.push(`using System.Threading;`);
   csLines.push(`using System.Windows.Forms;`);
   csLines.push(`using System.Web.Script.Serialization;`);
+  csLines.push(`using Microsoft.Win32;`);
   csLines.push(`using Microsoft.Web.WebView2.Core;`);
   csLines.push(`using Microsoft.Web.WebView2.WinForms;`);
   csLines.push(``);
@@ -206,6 +232,40 @@ function main() {
   csLines.push(``);
   csLines.push(`        [DllImport("user32.dll")]`);
   csLines.push(`        private static extern bool SetProcessDPIAware();`);
+  csLines.push(``);
+  csLines.push(`        [DllImport("dwmapi.dll")]`);
+  csLines.push(`        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);`);
+  csLines.push(``);
+  csLines.push(`        private static bool IsSystemDarkTheme() {`);
+  csLines.push(`            try {`);
+  csLines.push(`                object val = Registry.GetValue(@"HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", "AppsUseLightTheme", 1);`);
+  csLines.push(`                if (val is int) return ((int)val) == 0;`);
+  csLines.push(`            } catch { }`);
+  csLines.push(`            return false;`);
+  csLines.push(`        }`);
+  csLines.push(``);
+  csLines.push(`        private static void ApplyWindowTheme(Form form, WebView2 webView, bool isDark) {`);
+  csLines.push(`            try {`);
+  csLines.push(`                Color bgColor = isDark ? Color.FromArgb(15, 17, 23) : Color.FromArgb(247, 247, 251);`);
+  csLines.push(`                if (form != null && !form.IsDisposed) {`);
+  csLines.push(`                    form.BackColor = bgColor;`);
+  csLines.push(`                    IntPtr hwnd = form.Handle;`);
+  csLines.push(`                    int darkFlag = isDark ? 1 : 0;`);
+  csLines.push(`                    try { DwmSetWindowAttribute(hwnd, 20, ref darkFlag, sizeof(int)); } catch { }`);
+  csLines.push(`                    try { DwmSetWindowAttribute(hwnd, 19, ref darkFlag, sizeof(int)); } catch { }`);
+  csLines.push(`                    // Windows 11 自定义标题栏背景色、文字色與边框色（消除突兀的纯白标题栏边框）`);
+  csLines.push(`                    int captionColor = isDark ? 0x00231B18 : 0x00FBF7F7;`);
+  csLines.push(`                    int textColor = isDark ? 0x00F6F4F3 : 0x00271811;`);
+  csLines.push(`                    int borderColor = isDark ? 0x0046342E : 0x00EBE7E5;`);
+  csLines.push(`                    try { DwmSetWindowAttribute(hwnd, 35, ref captionColor, sizeof(int)); } catch { }`);
+  csLines.push(`                    try { DwmSetWindowAttribute(hwnd, 36, ref textColor, sizeof(int)); } catch { }`);
+  csLines.push(`                    try { DwmSetWindowAttribute(hwnd, 34, ref borderColor, sizeof(int)); } catch { }`);
+  csLines.push(`                }`);
+  csLines.push(`                if (webView != null && !webView.IsDisposed) {`);
+  csLines.push(`                    webView.DefaultBackgroundColor = bgColor;`);
+  csLines.push(`                }`);
+  csLines.push(`            } catch { }`);
+  csLines.push(`        }`);
   csLines.push(``);
   csLines.push(`        private static void EnsureNativeRuntimeExtracted() {`);
   csLines.push(`            RuntimeDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LifeHubDesktop", "Runtime_v2");`);
@@ -289,30 +349,33 @@ function main() {
   csLines.push(`            string userDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LifeHubDesktop", "UserData");`);
   csLines.push(`            Directory.CreateDirectory(userDataDir);`);
   csLines.push(`            Environment.SetEnvironmentVariable("WEBVIEW2_USER_DATA_FOLDER", userDataDir);`);
-  csLines.push(`            Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--proxy-bypass-list=<-loopback>;127.0.0.1;localhost");`);
+  csLines.push(`            Environment.SetEnvironmentVariable("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--proxy-bypass-list=<-loopback>;127.0.0.1;localhost --disable-features=ElasticOverscroll,OverscrollHistoryNavigation,TouchpadOverscrollHistoryNavigation --overscroll-history-navigation=0 --disable-pinch --disable-pull-to-refresh-effect");`);
   csLines.push(``);
+  csLines.push(`            bool initDark = IsSystemDarkTheme();`);
+  csLines.push(`            Color initBg = initDark ? Color.FromArgb(15, 17, 23) : Color.FromArgb(247, 247, 251);`);
   csLines.push(`            Form form = new Form();`);
   csLines.push(`            form.Text = "LifeHub v${APP_VERSION} · 个人生活与财务管理桌面版";`);
   csLines.push(`            form.Width = 1340;`);
   csLines.push(`            form.Height = 860;`);
   csLines.push(`            form.MinimumSize = new Size(960, 640);`);
   csLines.push(`            form.StartPosition = FormStartPosition.CenterScreen;`);
-            csLines.push(`            form.BackColor = Color.FromArgb(15, 23, 42);`);
-            csLines.push(`            try {`);
-            csLines.push(`                string icoB64 = ${JSON.stringify(appIconB64)};`);
-            csLines.push(`                if (!string.IsNullOrEmpty(icoB64)) {`);
-            csLines.push(`                    form.Icon = new Icon(new MemoryStream(Convert.FromBase64String(icoB64)));`);
-            csLines.push(`                } else {`);
-            csLines.push(`                    form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);`);
-            csLines.push(`                }`);
-            csLines.push(`            } catch {`);
-            csLines.push(`                try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }`);
-            csLines.push(`            }`);
-            csLines.push(`            MainFormInstance = form;`);
+  csLines.push(`            form.BackColor = initBg;`);
+  csLines.push(`            try {`);
+  csLines.push(`                string icoB64 = ${JSON.stringify(appIconB64)};`);
+  csLines.push(`                if (!string.IsNullOrEmpty(icoB64)) {`);
+  csLines.push(`                    form.Icon = new Icon(new MemoryStream(Convert.FromBase64String(icoB64)));`);
+  csLines.push(`                } else {`);
+  csLines.push(`                    form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);`);
+  csLines.push(`                }`);
+  csLines.push(`            } catch {`);
+  csLines.push(`                try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }`);
+  csLines.push(`            }`);
+  csLines.push(`            MainFormInstance = form;`);
   csLines.push(``);
   csLines.push(`            WebView2 webView = new WebView2();`);
   csLines.push(`            webView.Dock = DockStyle.Fill;`);
-  csLines.push(`            webView.DefaultBackgroundColor = Color.FromArgb(15, 23, 42);`);
+  csLines.push(`            webView.DefaultBackgroundColor = initBg;`);
+  csLines.push(`            ApplyWindowTheme(form, webView, initDark);`);
   csLines.push(`            webView.CreationProperties = new CoreWebView2CreationProperties {`);
   csLines.push(`                UserDataFolder = userDataDir`);
   csLines.push(`            };`);
@@ -320,6 +383,19 @@ function main() {
   csLines.push(`                if (args.IsSuccess && webView.CoreWebView2 != null) {`);
   csLines.push(`                    webView.CoreWebView2.Settings.IsStatusBarEnabled = false;`);
   csLines.push(`                    webView.CoreWebView2.Settings.AreDevToolsEnabled = true;`);
+  csLines.push(`                    try { webView.CoreWebView2.Settings.IsPinchZoomEnabled = false; } catch { }`);
+  csLines.push(`                    try { webView.CoreWebView2.Settings.IsZoomControlEnabled = false; } catch { }`);
+  csLines.push(`                    try {`);
+  csLines.push(`                        PropertyInfo swipeProp = webView.CoreWebView2.Settings.GetType().GetProperty("IsSwipeNavigationEnabled");`);
+  csLines.push(`                        if (swipeProp != null) swipeProp.SetValue(webView.CoreWebView2.Settings, false, null);`);
+  csLines.push(`                    } catch { }`);
+  csLines.push(`                    webView.CoreWebView2.WebMessageReceived += (s, msgArgs) => {`);
+  csLines.push(`                        try {`);
+  csLines.push(`                            string msg = msgArgs.TryGetWebMessageAsString();`);
+  csLines.push(`                            if (msg == "theme:dark") ApplyWindowTheme(form, webView, true);`);
+  csLines.push(`                            else if (msg == "theme:light") ApplyWindowTheme(form, webView, false);`);
+  csLines.push(`                        } catch { }`);
+  csLines.push(`                    };`);
   csLines.push(`                }`);
   csLines.push(`            };`);
   csLines.push(`            form.Controls.Add(webView);`);
