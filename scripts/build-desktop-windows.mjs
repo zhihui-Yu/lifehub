@@ -32,9 +32,57 @@ const ROOT_PKG = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'
 const APP_VERSION = ROOT_PKG.version || '0.2.0';
 const WEB_DIST_DIR = join(REPO_ROOT, 'apps', 'web', 'dist');
 const VENDOR_WEBVIEW2_DIR = join(REPO_ROOT, 'scripts', 'vendor', 'webview2');
+const APP_ICON_ICO_PATH = join(REPO_ROOT, 'scripts', 'vendor', 'app-icon.ico');
 const BUILD_TMP_DIR = join(REPO_ROOT, 'apps', 'web', '.desktop-build');
 const OUTPUT_EXE_PATH = join(REPO_ROOT, `LifeHub-Desktop-win-x64-v${APP_VERSION}.exe`);
 const CSC_PATH = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
+
+/**
+ * 若 `scripts/vendor/app-icon.ico` 不存在，则直接从 Android 端 `mipmap-*` 下的 `ic_launcher.png`
+ * 组装生成标准多尺寸 Windows `.ico` 图标，确保桌面端与安卓端应用图标 100% 一致。
+ */
+function ensureDesktopIconIco() {
+  if (existsSync(APP_ICON_ICO_PATH)) {
+    return APP_ICON_ICO_PATH;
+  }
+  const mipmapDirs = ['mipmap-mdpi', 'mipmap-hdpi', 'mipmap-xhdpi', 'mipmap-xxhdpi', 'mipmap-xxxhdpi'];
+  const pngBuffers = [];
+  for (const dir of mipmapDirs) {
+    const p = join(REPO_ROOT, 'apps', 'web', 'android', 'app', 'src', 'main', 'res', dir, 'ic_launcher.png');
+    if (existsSync(p)) {
+      pngBuffers.push(readFileSync(p));
+    }
+  }
+  if (pngBuffers.length === 0) {
+    return null;
+  }
+  const count = pngBuffers.length;
+  const headerSize = 6 + count * 16;
+  const totalPayload = pngBuffers.reduce((acc, b) => acc + b.length, 0);
+  const icoBuf = Buffer.alloc(headerSize + totalPayload);
+  icoBuf.writeUInt16LE(0, 0);
+  icoBuf.writeUInt16LE(1, 2);
+  icoBuf.writeUInt16LE(count, 4);
+  let offset = headerSize;
+  for (let i = 0; i < count; i++) {
+    const png = pngBuffers[i];
+    const w = png.readUInt32BE(16);
+    const h = png.readUInt32BE(20);
+    const entryOffset = 6 + i * 16;
+    icoBuf.writeUInt8(w >= 256 ? 0 : w, entryOffset);
+    icoBuf.writeUInt8(h >= 256 ? 0 : h, entryOffset + 1);
+    icoBuf.writeUInt8(0, entryOffset + 2);
+    icoBuf.writeUInt8(0, entryOffset + 3);
+    icoBuf.writeUInt16LE(1, entryOffset + 4);
+    icoBuf.writeUInt16LE(32, entryOffset + 6);
+    icoBuf.writeUInt32LE(png.length, entryOffset + 8);
+    icoBuf.writeUInt32LE(offset, entryOffset + 12);
+    png.copy(icoBuf, offset);
+    offset += png.length;
+  }
+  writeFileSync(APP_ICON_ICO_PATH, icoBuf);
+  return APP_ICON_ICO_PATH;
+}
 
 const MIME_MAP = {
   '.html': 'text/html; charset=utf-8',
@@ -117,6 +165,8 @@ function main() {
   const coreDllB64 = readFileSync(coreDllPath).toString('base64');
   const winformsDllB64 = readFileSync(winformsDllPath).toString('base64');
   const loaderDllB64 = readFileSync(loaderDllPath).toString('base64');
+  const iconIcoPath = ensureDesktopIconIco();
+  const appIconB64 = iconIcoPath ? readFileSync(iconIcoPath).toString('base64') : '';
 
   const csLines = [];
   csLines.push(`using System;`);
@@ -247,9 +297,18 @@ function main() {
   csLines.push(`            form.Height = 860;`);
   csLines.push(`            form.MinimumSize = new Size(960, 640);`);
   csLines.push(`            form.StartPosition = FormStartPosition.CenterScreen;`);
-  csLines.push(`            form.BackColor = Color.FromArgb(15, 23, 42);`);
-  csLines.push(`            try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }`);
-  csLines.push(`            MainFormInstance = form;`);
+            csLines.push(`            form.BackColor = Color.FromArgb(15, 23, 42);`);
+            csLines.push(`            try {`);
+            csLines.push(`                string icoB64 = ${JSON.stringify(appIconB64)};`);
+            csLines.push(`                if (!string.IsNullOrEmpty(icoB64)) {`);
+            csLines.push(`                    form.Icon = new Icon(new MemoryStream(Convert.FromBase64String(icoB64)));`);
+            csLines.push(`                } else {`);
+            csLines.push(`                    form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);`);
+            csLines.push(`                }`);
+            csLines.push(`            } catch {`);
+            csLines.push(`                try { form.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }`);
+            csLines.push(`            }`);
+            csLines.push(`            MainFormInstance = form;`);
   csLines.push(``);
   csLines.push(`            WebView2 webView = new WebView2();`);
   csLines.push(`            webView.Dock = DockStyle.Fill;`);
@@ -497,25 +556,23 @@ function main() {
   writeFileSync(csFilePath, csLines.join('\r\n'), 'utf8');
 
   console.log('[Desktop Build] 3/3 正在编译原生桌面端单文件程序 LifeHub-Desktop-win-x64.exe...');
-  execFileSync(
-    CSC_PATH,
-    [
-      '/nologo',
-      '/target:winexe',
-      '/optimize+',
-      '/platform:x64',
-      `/out:${OUTPUT_EXE_PATH}`,
-      '/r:System.dll',
-      '/r:System.Core.dll',
-      '/r:System.Drawing.dll',
-      '/r:System.Windows.Forms.dll',
-      '/r:System.Web.Extensions.dll',
-      `/r:${coreDllPath}`,
-      `/r:${winformsDllPath}`,
-      csFilePath,
-    ],
-    { stdio: 'inherit' },
-  );
+  const cscArgs = [
+    '/nologo',
+    '/target:winexe',
+    '/optimize+',
+    '/platform:x64',
+    `/out:${OUTPUT_EXE_PATH}`,
+    ...(iconIcoPath ? [`/win32icon:${iconIcoPath}`] : []),
+    '/r:System.dll',
+    '/r:System.Core.dll',
+    '/r:System.Drawing.dll',
+    '/r:System.Windows.Forms.dll',
+    '/r:System.Web.Extensions.dll',
+    `/r:${coreDllPath}`,
+    `/r:${winformsDllPath}`,
+    csFilePath,
+  ];
+  execFileSync(CSC_PATH, cscArgs, { stdio: 'inherit' });
 
   rmSync(BUILD_TMP_DIR, { recursive: true, force: true });
   console.log(`[Desktop Build] 构建成功！Windows 原生桌面版已生成：${OUTPUT_EXE_PATH}`);
