@@ -17,6 +17,7 @@ import {
   type CompletionEvent,
 } from '@/modules/shared/completion-event';
 import { getMonthRange, getWeekRange } from '@/modules/shared/date-utils';
+import { recordCloudTombstone } from '@/lib/cloud-tombstones';
 import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 import {
   expandScheduleForRange,
@@ -359,6 +360,7 @@ export class ScheduleService {
    */
   async deleteSlot(id: string): Promise<void> {
     await this.db.table<StoredScheduleSlot>('scheduleSlots').delete(id);
+    recordCloudTombstone('scheduleSlot', id);
     await this.completionRepo.deleteBySource('schedule', id);
     await this.persistModuleSnapshot();
   }

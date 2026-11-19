@@ -100,13 +100,14 @@ describe('SettingsPage', () => {
       '强制加密上传（登录密码保护）',
     );
 
-    // 切换至坚果云 WebDAV 并测试连接（通过下拉框选择，不再冗余渲染厂商卡片）
+    // 切换至坚果云 WebDAV 并测试连接（连接地址已直接包含目录，不再单独渲染 Bucket 输入框与厂商卡片）
     expect(screen.queryByTestId('cloud-provider-option-jianguoyun-webdav')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cloud-bucket-input')).not.toBeInTheDocument();
     fireEvent.change(screen.getByTestId('cloud-provider-select'), {
       target: { value: 'jianguoyun-webdav' },
     });
     expect(screen.getByTestId('cloud-endpoint-input')).toHaveValue(
-      'https://dav.jianguoyun.com/dav/',
+      'https://dav.jianguoyun.com/dav/LifeHubBackup/',
     );
     fireEvent.click(screen.getByTestId('cloud-test-button'));
     expect(await screen.findByTestId('cloud-action-banner')).toHaveTextContent(

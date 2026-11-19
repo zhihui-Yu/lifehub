@@ -14,6 +14,7 @@ import { LifeHubError } from '@lifehub/core';
 import type { LifeHubDatabase } from '@/platform/db';
 import { createDatabase } from '@/platform/db';
 import { getTodayLocalDate } from '@/modules/shared/date-utils';
+import { recordCloudTombstone } from '@/lib/cloud-tombstones';
 import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /** 树洞本地包装密钥在 localStorage 中的键名（仅本机加解密使用）。 */
@@ -523,6 +524,7 @@ export class DiaryService {
    */
   async deleteEntry(id: string): Promise<void> {
     await this.table.delete(id);
+    recordCloudTombstone('diaryEntry', id);
     await this.persistModuleSnapshot();
   }
 

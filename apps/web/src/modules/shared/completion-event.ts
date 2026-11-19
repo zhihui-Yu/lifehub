@@ -10,6 +10,7 @@
  * - 持久化全部走本地 Dexie 的 `completionEvents` 明文表（见 `platform/db.ts` 的 version(2)），
  *   不引入任何外部网络依赖。
  */
+import { recordCloudTombstone, recordCloudTombstones } from '@/lib/cloud-tombstones';
 import type { LifeHubDatabase } from '@/platform/db';
 import { createDatabase } from '@/platform/db';
 
@@ -122,6 +123,7 @@ export class CompletionEventRepository {
     const existing = await table.get(id);
     if (existing) {
       await table.delete(id);
+      recordCloudTombstone('completionEvent', id);
       return false;
     }
     const event: CompletionEvent = {
@@ -203,6 +205,7 @@ export class CompletionEventRepository {
   ): Promise<void> {
     const id = this.buildId(sourceType, sourceId, localDate);
     await this.db.table<CompletionEvent>('completionEvents').delete(id);
+    recordCloudTombstone('completionEvent', id);
   }
 
   /**
@@ -216,10 +219,13 @@ export class CompletionEventRepository {
   async deleteBySource(sourceType: CompletionSourceType, sourceId: string): Promise<void> {
     const all = await this.db.table<CompletionEvent>('completionEvents').toArray();
     const table = this.db.table<CompletionEvent>('completionEvents');
+    const deletedIds: string[] = [];
     for (const event of all) {
       if (event.sourceType === sourceType && event.sourceId === sourceId) {
         await table.delete(event.id);
+        deletedIds.push(event.id);
       }
     }
+    recordCloudTombstones('completionEvent', deletedIds);
   }
 }

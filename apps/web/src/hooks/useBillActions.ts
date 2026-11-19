@@ -24,6 +24,7 @@ import {
   persistCategoryMemoryToRepo,
   saveRememberedCategoryMapping,
 } from '@/lib/category-memory';
+import { recordCloudTombstone, recordCloudTombstones } from '@/lib/cloud-tombstones';
 import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /** 账单分类动作的附加选项。 */
@@ -218,6 +219,7 @@ export function useBillActions() {
         throw new Error('保险库未就绪');
       }
       await runtime.billRepository.delete(id);
+      recordCloudTombstone('bill', id);
       await refresh();
     },
     [runtime, refresh],
@@ -228,18 +230,20 @@ export function useBillActions() {
       if (!runtime) {
         throw new Error('保险库未就绪');
       }
+      const beforeList = await runtime.billRepository.list();
+      const targetIds = beforeList
+        .filter((bill) => bill.sourceFileId === sourceFileId)
+        .map((bill) => bill.id);
       let deleted = 0;
       if (runtime.billRepository.deleteBySourceFileId) {
         deleted = await runtime.billRepository.deleteBySourceFileId(sourceFileId);
       } else {
-        const list = await runtime.billRepository.list();
-        for (const bill of list) {
-          if (bill.sourceFileId === sourceFileId) {
-            await runtime.billRepository.delete(bill.id);
-            deleted += 1;
-          }
+        for (const id of targetIds) {
+          await runtime.billRepository.delete(id);
+          deleted += 1;
         }
       }
+      recordCloudTombstones('bill', targetIds);
       await refresh();
       return deleted;
     },
@@ -250,16 +254,18 @@ export function useBillActions() {
     if (!runtime) {
       throw new Error('保险库未就绪');
     }
+    const beforeList = await runtime.billRepository.list();
+    const allIds = beforeList.map((bill) => bill.id);
     let deleted = 0;
     if (runtime.billRepository.clearAll) {
       deleted = await runtime.billRepository.clearAll();
     } else {
-      const list = await runtime.billRepository.list();
-      for (const bill of list) {
-        await runtime.billRepository.delete(bill.id);
+      for (const id of allIds) {
+        await runtime.billRepository.delete(id);
         deleted += 1;
       }
     }
+    recordCloudTombstones('bill', allIds);
     if (runtime.importBatchRepository?.list && runtime.importBatchRepository?.delete) {
       const batches = await runtime.importBatchRepository.list();
       for (const batch of batches) {

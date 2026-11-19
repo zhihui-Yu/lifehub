@@ -22,22 +22,31 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.ProtocolException;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
+import java.util.concurrent.ConcurrentHashMap;
+import org.json.JSONObject;
 
 /**
  * LifeHub Android 主 Activity（适配小米 15 / Android 15 HyperOS）。
  *
  * 说明：
  * 1. 承载 Capacitor WebView（安全源 https://localhost，原生支持 WebCrypto 与 IndexedDB）；
- * 2. 注入 LifeHubAndroid 原生文件保存与文件夹选择桥接，使导出文件直接落盘至手机 Download 目录或指定子目录。
+ * 2. 注入 LifeHubAndroid 原生文件保存、文件夹选择与云存储免跨域 HTTP 桥接。
  */
 public class MainActivity extends BridgeActivity {
 
     private ActivityResultLauncher<Intent> directoryPickerLauncher;
+    private final ConcurrentHashMap<String, String> cloudHttpResponses = new ConcurrentHashMap<>();
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -112,10 +121,135 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
+    private void notifyWebCloudHttpDone(String requestId) {
+        runOnUiThread(() -> {
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                String escaped = (requestId == null ? "" : requestId)
+                    .replace("\\", "\\\\")
+                    .replace("'", "\\'");
+                String js = "window.dispatchEvent(new CustomEvent('lifehub:android-http-done', { detail: { requestId: '" + escaped + "' } }));";
+                getBridge().getWebView().evaluateJavascript(js, null);
+            }
+        });
+    }
+
+    private static String readStreamUtf8(InputStream stream) throws Exception {
+        if (stream == null) {
+            return "";
+        }
+        try (InputStream in = stream; ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int len;
+            while ((len = in.read(buf)) != -1) {
+                bos.write(buf, 0, len);
+            }
+            return new String(bos.toByteArray(), StandardCharsets.UTF_8);
+        }
+    }
+
     /**
-     * 供前端 downloadText 与 pickWebDirectoryHandle 调用的本地文件导出与目录选择桥接（纯本地，零网络交互）。
+     * 供前端调用的本地文件导出、目录选择与对象存储免 CORS 原生 HTTP 桥接。
      */
     public class AndroidFileBridge {
+
+        /**
+         * 在原生后台线程发起云对象存储（COS / OSS / OBS / S3 / WebDAV）HTTP 请求，绕过 WebView CORS 限制。
+         */
+        @JavascriptInterface
+        public void startCloudHttpRequest(
+            String requestId,
+            String targetUrl,
+            String method,
+            String headersJson,
+            String bodyText
+        ) {
+            final String safeId = requestId == null ? "" : requestId;
+            new Thread(() -> {
+                HttpURLConnection conn = null;
+                try {
+                    String upperMethod = (method == null || method.trim().isEmpty())
+                        ? "GET"
+                        : method.trim().toUpperCase();
+                    URL url = new URL(targetUrl);
+                    conn = (HttpURLConnection) url.openConnection();
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setConnectTimeout(15000);
+                    conn.setReadTimeout(30000);
+
+                    try {
+                        conn.setRequestMethod(upperMethod);
+                    } catch (ProtocolException pe) {
+                        JSONObject unsupported = new JSONObject();
+                        unsupported.put("proxied", true);
+                        unsupported.put("status", 405);
+                        unsupported.put("body", "");
+                        cloudHttpResponses.put(safeId, unsupported.toString());
+                        notifyWebCloudHttpDone(safeId);
+                        return;
+                    }
+
+                    if (headersJson != null && !headersJson.trim().isEmpty()) {
+                        JSONObject hdrs = new JSONObject(headersJson);
+                        Iterator<String> keys = hdrs.keys();
+                        while (keys.hasNext()) {
+                            String k = keys.next();
+                            if (k != null && !k.equalsIgnoreCase("Host")) {
+                                conn.setRequestProperty(k, hdrs.optString(k, ""));
+                            }
+                        }
+                    }
+
+                    if ("PUT".equals(upperMethod) || "POST".equals(upperMethod)) {
+                        byte[] payloadBytes = (bodyText == null ? "" : bodyText).getBytes(StandardCharsets.UTF_8);
+                        conn.setDoOutput(true);
+                        conn.setFixedLengthStreamingMode(payloadBytes.length);
+                        try (OutputStream os = conn.getOutputStream()) {
+                            os.write(payloadBytes);
+                            os.flush();
+                        }
+                    }
+
+                    int status = conn.getResponseCode();
+                    InputStream respStream = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+                    String respText = readStreamUtf8(respStream);
+
+                    JSONObject okJson = new JSONObject();
+                    okJson.put("proxied", true);
+                    okJson.put("status", status);
+                    okJson.put("body", respText);
+                    cloudHttpResponses.put(safeId, okJson.toString());
+                } catch (Exception e) {
+                    try {
+                        JSONObject errJson = new JSONObject();
+                        errJson.put("proxied", true);
+                        errJson.put("status", 502);
+                        errJson.put(
+                            "body",
+                            e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
+                        );
+                        cloudHttpResponses.put(safeId, errJson.toString());
+                    } catch (Exception ignored) {
+                    }
+                } finally {
+                    if (conn != null) {
+                        conn.disconnect();
+                    }
+                    notifyWebCloudHttpDone(safeId);
+                }
+            }).start();
+        }
+
+        /**
+         * 取出并清理已完成云存储请求的 JSON 响应结果。
+         */
+        @JavascriptInterface
+        public String takeCloudHttpResponse(String requestId) {
+            if (requestId == null) {
+                return "";
+            }
+            String res = cloudHttpResponses.remove(requestId);
+            return res == null ? "" : res;
+        }
 
         @JavascriptInterface
         public void pickDirectory() {

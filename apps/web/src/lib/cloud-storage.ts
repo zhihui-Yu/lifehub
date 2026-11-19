@@ -1,17 +1,38 @@
 /**
- * 远程云存储连接与账单同步工具模块。
+ * 远程云存储连接与多端数据加密同步工具模块。
  *
  * 架构位置：apps/web 的「应用基础设施（lib）」层。
  *
- * 说明：支持连接主流云存储服务（阿里云 OSS、腾讯云 COS、华为云 OBS、坚果云 WebDAV、Amazon S3），
- * 上传时 100% 强制使用用户登录密码进行加密封装（生成 `.json.enc` 密文对象），
- * 并支持用户凭登录密码从云端拉取恢复账单或直接解密还原出原始 JSON 源文件内容。
+ * 说明：
+ * 1. 支持连接主流云存储服务（阿里云 OSS、腾讯云 COS、华为云 OBS、坚果云 WebDAV、Amazon S3），
+ *    连接地址支持直接填写包含存储桶名称的完整访问域名（如 `https://example-bucket-1250000000.cos.ap-guangzhou.myqcloud.com`），无需单独拆分填写 Bucket；
+ * 2. 支持 Android 原生 HTTP 桥接与桌面端宿主代理，免除 WebView / 浏览器 CORS 跨域限制；
+ * 3. 上传时强制使用登录密码压缩加密封装（`.json.enc`），并在上传前强制执行「先拉取远端 → 按 ID + 更新时间与删除墓碑合并 → 再上传」，保证单人多端数据一致不丢失。
  */
 import { LifeHubError, type Bill, type Category } from '@lifehub/core';
 import type { StoredScheduleSlot } from '@/modules/schedule/rrule';
 import type { StoredHabit, StoredHabitCheckIn } from '@/modules/habits/habit-service';
 import type { DecryptedDiaryEntry } from '@/modules/diary/diary-service';
 import type { CompletionEvent } from '@/modules/shared/completion-event';
+import {
+  loadLocalCloudTombstones,
+  normalizeCloudTombstones,
+  recordCloudTombstone,
+  recordCloudTombstones,
+  saveLocalCloudTombstones,
+  type DeletedEntityTombstone,
+  type SyncableEntityType,
+} from './cloud-tombstones';
+
+export {
+  loadLocalCloudTombstones,
+  normalizeCloudTombstones,
+  recordCloudTombstone,
+  recordCloudTombstones,
+  saveLocalCloudTombstones,
+  type DeletedEntityTombstone,
+  type SyncableEntityType,
+};
 
 /** 支持的主流云存储服务商标识。 */
 export type CloudProviderId =
@@ -29,9 +50,9 @@ export interface CloudProviderPreset {
   name: string;
   /** 协议类型说明。 */
   protocol: string;
-  /** 默认 Endpoint 示例地址。 */
+  /** 默认连接地址示例（已包含 Bucket 或目录路径）。 */
   defaultEndpoint: string;
-  /** 默认 Bucket 或目录名。 */
+  /** 兼容保留的默认 Bucket 字段（统一为空串，由连接地址直接承载）。 */
   defaultBucket: string;
   /** 简要配置提示。 */
   description: string;
@@ -41,9 +62,9 @@ export interface CloudProviderPreset {
 export interface CloudStorageConfig {
   /** 云存储服务商标识。 */
   provider: CloudProviderId;
-  /** 服务端点地址（Endpoint URL）。 */
+  /** 服务端点连接地址（直接包含存储桶域名或 WebDAV 目录路径）。 */
   endpoint: string;
-  /** 存储桶名称或 WebDAV 远程目录路径。 */
+  /** 历史兼容保留字段（当 endpoint 已含存储桶时可为空串）。 */
   bucket: string;
   /** 访问密钥 ID 或 WebDAV 账号。 */
   accessKey: string;
@@ -65,7 +86,7 @@ export interface CloudSyncRecord {
   providerName: string;
   /** 目标 Endpoint。 */
   endpoint: string;
-  /** 目标 Bucket / 目录。 */
+  /** 解析出的目标 Bucket / 目录名称。 */
   bucket: string;
   /** 本次上传是否启用了强制加密（恒为 true）。 */
   encrypted: boolean;
@@ -89,6 +110,8 @@ export interface CloudSyncRecord {
   passwordFingerprint?: string;
   /** 压缩加密后最终快照字节大小。 */
   sizeBytes?: number;
+  /** 单调递增的云端同步修订号（每次合并上传 +1）。 */
+  revision?: number;
 }
 
 /** 全量云端加密备份扩展生活模块载荷（OSS-FULL-01 ~ OSS-FULL-03，严禁包含 aiSettings 外部密钥）。 */
@@ -111,6 +134,54 @@ export interface CloudBackupExtraModules {
   habitCheckins?: readonly StoredHabitCheckIn[];
   /** 树洞日记条目列表（已解密对象，随云端备份整体使用登录密码二次加密）。 */
   diaryEntries?: readonly DecryptedDiaryEntry[];
+  /** 多端删除墓碑列表（防止已删除条目在另一端合并时复活）。 */
+  tombstones?: readonly DeletedEntityTombstone[];
+}
+
+/** 参与多端合并的完整生活数据集。 */
+export interface CloudFullDataset {
+  bills: Bill[];
+  categories: Category[];
+  scheduleSlots: StoredScheduleSlot[];
+  completionEvents: CompletionEvent[];
+  habits: StoredHabit[];
+  habitCheckIns: StoredHabitCheckIn[];
+  diaryEntries: DecryptedDiaryEntry[];
+  tombstones: DeletedEntityTombstone[];
+}
+
+/** 合并过程中被删除墓碑淘汰、需从本地库同步清理的主键集合。 */
+export interface PurgedEntityIds {
+  billIds: string[];
+  categoryIds: string[];
+  scheduleSlotIds: string[];
+  completionEventIds: string[];
+  habitIds: string[];
+  habitCheckInIds: string[];
+  diaryEntryIds: string[];
+}
+
+/** 多端数据集增量合并结果。 */
+export interface MergedCloudSyncResult {
+  merged: CloudFullDataset;
+  purged: PurgedEntityIds;
+  mergedFromRemote: boolean;
+  remoteRevision: number;
+  nextRevision: number;
+}
+
+/** 解析连接地址得到的云存储目标定位信息。 */
+export interface ResolvedCloudTarget {
+  ok: boolean;
+  errorMessage?: string;
+  effectiveProvider: CloudProviderId;
+  protocol: string;
+  objectUrl: string;
+  webdavDirUrl?: string;
+  host: string;
+  bucketName: string;
+  objectPath: string;
+  objectKey: string;
 }
 
 /** 云端快照内部存储结构。 */
@@ -127,10 +198,24 @@ interface StoredCloudSnapshot {
   compression?: 'lh-lz1';
 }
 
+/** Android WebView 原生云存储 HTTP 桥接接口。 */
+interface AndroidCloudBridge {
+  startCloudHttpRequest?: (
+    requestId: string,
+    targetUrl: string,
+    method: string,
+    headersJson: string,
+    bodyText: string,
+  ) => void;
+  takeCloudHttpResponse?: (requestId: string) => string;
+}
+
 /** 云存储上传附加选项。 */
 export interface UploadCloudOptions {
   /** 当检测到本次输入的密码与上次备份密码不一致时，是否允许使用新密码覆盖。 */
   allowPasswordChange?: boolean;
+  /** 指定本次快照的修订版本号。 */
+  revision?: number;
 }
 
 /** 云存储配置在 localStorage 中的持久化键名。 */
@@ -139,14 +224,14 @@ export const CLOUD_CONFIG_STORAGE_KEY = 'lifehub.cloudStorage.config';
 /** 云端同步快照在 localStorage 中的持久化键名。 */
 export const CLOUD_SNAPSHOT_STORAGE_KEY = 'lifehub.cloudStorage.latestSnapshot';
 
-/** 默认阿里云 OSS 预设配置。 */
+/** 默认阿里云 OSS 预设配置（直接包含存储桶访问域名）。 */
 const DEFAULT_PROVIDER_PRESET: CloudProviderPreset = {
   id: 'aliyun-oss',
   name: '阿里云 OSS (对象存储)',
   protocol: 'S3 / OSS 协议',
-  defaultEndpoint: 'https://oss-cn-hangzhou.aliyuncs.com',
-  defaultBucket: 'lifehub-bills-oss',
-  description: '国内主流对象存储，支持标准 Bucket 读写与跨域直传。',
+  defaultEndpoint: 'https://lifehub-bills-oss.oss-cn-hangzhou.aliyuncs.com',
+  defaultBucket: '',
+  description: '直接粘贴含 Bucket 的 OSS 访问域名即可读写加密备份。',
 };
 
 /** 内置主流云存储服务商列表（5 大热门云存储）。 */
@@ -156,44 +241,38 @@ export const CLOUD_PROVIDERS: readonly CloudProviderPreset[] = [
     id: 'tencent-cos',
     name: '腾讯云 COS (对象存储)',
     protocol: 'S3 / COS 协议',
-    defaultEndpoint: 'https://cos.ap-shanghai.myqcloud.com',
-    defaultBucket: 'lifehub-bills-cos',
-    description: '腾讯云高可用对象存储，适合个人账单归档与多端同步。',
+    defaultEndpoint: 'https://lifehub-1250000000.cos.ap-guangzhou.myqcloud.com',
+    defaultBucket: '',
+    description: '直接粘贴腾讯云控制台含 Bucket-APPID 的访问域名，桌面与手机端均原生支持。',
   },
   {
     id: 'huawei-obs',
     name: '华为云 OBS (对象存储)',
     protocol: 'S3 / OBS 协议',
-    defaultEndpoint: 'https://obs.cn-north-4.myhuaweicloud.com',
-    defaultBucket: 'lifehub-bills-obs',
-    description: '华为云企业级对象存储服务，兼容 S3 签名协议。',
+    defaultEndpoint: 'https://lifehub-bills-obs.obs.cn-north-4.myhuaweicloud.com',
+    defaultBucket: '',
+    description: '华为云企业级对象存储服务，直接填写含桶名的访问域名即可。',
   },
   {
     id: 'jianguoyun-webdav',
     name: '坚果云 WebDAV',
     protocol: 'WebDAV 协议',
-    defaultEndpoint: 'https://dav.jianguoyun.com/dav/',
-    defaultBucket: 'LifeHubBackup',
-    description: '国内个人记账最常用的 WebDAV 云盘，填入账号与应用密码即可同步。',
+    defaultEndpoint: 'https://dav.jianguoyun.com/dav/LifeHubBackup/',
+    defaultBucket: '',
+    description: '国内个人记账最常用的 WebDAV 云盘，地址末尾包含同步目录名即可。',
   },
   {
     id: 'aws-s3',
     name: 'Amazon S3 / 兼容 S3 存储',
     protocol: '标准 S3 协议',
-    defaultEndpoint: 'https://s3.amazonaws.com',
-    defaultBucket: 'lifehub-s3-backup',
-    description: '支持 AWS S3、Cloudflare R2、MinIO 等任意兼容 S3 协议的云存储。',
+    defaultEndpoint: 'https://lifehub-s3-backup.s3.amazonaws.com',
+    defaultBucket: '',
+    description: '支持 AWS S3、Cloudflare R2、MinIO 等兼容 S3 协议的对象存储。',
   },
 ] as const;
 
 /**
  * 根据服务商 ID 获取对应的预设配置项。
- *
- * 说明：若未找到匹配 ID，则默认回退到阿里云 OSS。
- *
- * @param providerId 服务商唯一标识
- * @returns 服务商预设配置对象
- * @throws 无；未匹配时回退至首项
  */
 export function getCloudProviderPreset(providerId: CloudProviderId): CloudProviderPreset {
   return CLOUD_PROVIDERS.find((p) => p.id === providerId) ?? DEFAULT_PROVIDER_PRESET;
@@ -238,13 +317,286 @@ function decodeLocalSavedPassword(stored: string): string {
 }
 
 /**
- * 构造默认云存储配置（默认选中阿里云 OSS，且 `encryptUpload: true` 强制加密上传）。
- *
- * 说明：所有云端备份均默认强制使用登录密码加密保护，默认开启记住加密密码。
- *
- * @param providerId 可选初始服务商标识，默认 `'aliyun-oss'`
- * @returns 默认云存储配置对象
- * @throws 无；纯构造不抛出异常
+ * 解析旧版独立 `bucket` 字段中的桶名与可选子路径。
+ */
+function parseLegacyBucketAndPrefix(rawBucket: string): { bucketName: string; prefix: string } {
+  const cleaned = rawBucket.trim().replace(/^\/+|\/+$/g, '');
+  const parts = cleaned.split('/').filter(Boolean);
+  const bucketName = parts[0] ?? '';
+  const prefix = parts.slice(1).join('/');
+  return { bucketName, prefix };
+}
+
+/**
+ * 判断对象存储域名是否为已包含存储桶前缀的 Virtual-Hosted 域名，若是则提取 `{ bucketName, regionHost }`。
+ */
+function matchVirtualHostedBucket(
+  endpointHost: string,
+): { bucketName: string; regionHost: string } | null {
+  const patterns: readonly RegExp[] = [
+    /^([^.]+)\.(cos\.[a-z0-9.-]+\.myqcloud\.com(?::\d+)?)$/i,
+    /^([^.]+)\.(oss-[a-z0-9.-]+\.aliyuncs\.com(?::\d+)?)$/i,
+    /^([^.]+)\.(obs\.[a-z0-9.-]+\.myhuaweicloud\.com(?::\d+)?)$/i,
+    /^([^.]+)\.(s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com(?:\.cn)?(?::\d+)?)$/i,
+    /^([^.]+)\.([a-z0-9-]+\.r2\.cloudflarestorage\.com(?::\d+)?)$/i,
+  ];
+  for (const re of patterns) {
+    const m = re.exec(endpointHost);
+    if (m && m[1] && m[2]) {
+      return { bucketName: m[1], regionHost: m[2] };
+    }
+  }
+  return null;
+}
+
+/**
+ * 将旧版拆分的 `endpoint + bucket` 平滑合并为单一包含 Bucket 的完整连接地址。
+ */
+function mergeLegacyBucketIntoEndpoint(
+  provider: CloudProviderId,
+  rawEndpoint: string,
+  rawBucket: string,
+): string {
+  const endpoint = rawEndpoint.trim();
+  const { bucketName, prefix } = parseLegacyBucketAndPrefix(rawBucket);
+  if (!endpoint || !bucketName) {
+    return endpoint;
+  }
+  try {
+    const urlObj = new URL(endpoint);
+    if (
+      provider === 'jianguoyun-webdav' ||
+      endpoint.includes('jianguoyun.com') ||
+      /\/dav\/?$/i.test(urlObj.pathname)
+    ) {
+      const cleanPath = urlObj.pathname.replace(/\/+$/, '');
+      if (/\/dav$/i.test(cleanPath) || cleanPath === '') {
+        const sub = rawBucket.trim().replace(/^\/+|\/+$/g, '');
+        return `${urlObj.origin}${cleanPath}/${sub}/`;
+      }
+      return endpoint;
+    }
+
+    if (matchVirtualHostedBucket(urlObj.host)) {
+      return endpoint;
+    }
+    const cleanPath = urlObj.pathname.replace(/^\/+|\/+$/g, '');
+    if (cleanPath.length > 0) {
+      return endpoint;
+    }
+    const suffixPath = prefix ? `/${prefix}` : '';
+    return `${urlObj.protocol}//${bucketName}.${urlObj.host}${suffixPath}`;
+  } catch {
+    return endpoint;
+  }
+}
+
+/**
+ * 智能解析云存储连接地址，直接从 URL 中提取协议、真实厂商、Host、Bucket 与对象路径（同时兼容旧版独立 `bucket` 字段）。
+ */
+export function resolveCloudEndpointTarget(
+  config: CloudStorageConfig,
+  fileName = 'lifehub-backup.json.enc',
+  overrideEndpoint?: string,
+): ResolvedCloudTarget {
+  const rawEndpoint = (overrideEndpoint ?? config.endpoint ?? '').trim();
+  if (
+    !rawEndpoint ||
+    (!rawEndpoint.startsWith('https://') && !rawEndpoint.startsWith('http://'))
+  ) {
+    return {
+      ok: false,
+      errorMessage: '连接失败：请填写以 https:// 或 http:// 开头的有效连接地址',
+      effectiveProvider: config.provider,
+      protocol: 'https:',
+      objectUrl: '',
+      host: '',
+      bucketName: '',
+      objectPath: fileName,
+      objectKey: fileName,
+    };
+  }
+
+  let urlObj: URL;
+  try {
+    urlObj = new URL(rawEndpoint);
+  } catch {
+    return {
+      ok: false,
+      errorMessage: '连接失败：连接地址 URL 格式无效，请检查是否包含非法字符',
+      effectiveProvider: config.provider,
+      protocol: 'https:',
+      objectUrl: '',
+      host: '',
+      bucketName: '',
+      objectPath: fileName,
+      objectKey: fileName,
+    };
+  }
+
+  let effectiveProvider: CloudProviderId = config.provider;
+  const hostLower = urlObj.hostname.toLowerCase();
+  if (hostLower.includes('myqcloud.com')) {
+    effectiveProvider = 'tencent-cos';
+  } else if (hostLower.includes('aliyuncs.com')) {
+    effectiveProvider = 'aliyun-oss';
+  } else if (hostLower.includes('myhuaweicloud.com')) {
+    effectiveProvider = 'huawei-obs';
+  } else if (hostLower.includes('jianguoyun.com') || /\/dav(\/|$)/i.test(urlObj.pathname)) {
+    effectiveProvider = 'jianguoyun-webdav';
+  }
+
+  // 1. WebDAV 协议：从 URL 路径提取同步目录（兼容旧版 /dav/ + config.bucket）
+  if (effectiveProvider === 'jianguoyun-webdav') {
+    let trimmedPath = urlObj.pathname.replace(/\/+$/, '');
+    if (trimmedPath.endsWith(`/${fileName}`)) {
+      trimmedPath = trimmedPath.slice(0, -(fileName.length + 1));
+    }
+    const legacyDir = (config.bucket ?? '').trim().replace(/^\/+|\/+$/g, '');
+    if (/^\/dav$/i.test(trimmedPath) || trimmedPath === '') {
+      if (!legacyDir) {
+        return {
+          ok: false,
+          errorMessage:
+            '连接失败：请在 WebDAV 连接地址末尾包含远程文件夹名称（如 https://dav.jianguoyun.com/dav/LifeHubBackup/）',
+          effectiveProvider,
+          protocol: urlObj.protocol,
+          objectUrl: '',
+          host: urlObj.host,
+          bucketName: '',
+          objectPath: fileName,
+          objectKey: fileName,
+        };
+      }
+      trimmedPath = `${trimmedPath}/${legacyDir}`;
+    }
+
+    const relAfterDav = trimmedPath.replace(/^\/dav\/+/i, '').replace(/^\/+/, '');
+    const segs = relAfterDav.split('/').filter(Boolean);
+    const bucketName = segs[0] ?? 'LifeHubBackup';
+    const subPrefix = segs.slice(1).join('/');
+    const objectPath = subPrefix ? `${subPrefix}/${fileName}` : fileName;
+    const webdavDirUrl = `${urlObj.origin}${trimmedPath}/`;
+    const objectUrl = `${urlObj.origin}${trimmedPath}/${fileName}`;
+    return {
+      ok: true,
+      effectiveProvider,
+      protocol: urlObj.protocol,
+      objectUrl,
+      webdavDirUrl,
+      host: urlObj.host,
+      bucketName,
+      objectPath,
+      objectKey: `${bucketName}/${objectPath}`,
+    };
+  }
+
+  // 2. 对象存储（COS / OSS / OBS / S3）：优先识别 Virtual-Hosted 域名中的 Bucket
+  const endpointHost = urlObj.host;
+  let cleanedUrlPath = urlObj.pathname.replace(/^\/+|\/+$/g, '');
+  if (cleanedUrlPath === fileName) {
+    cleanedUrlPath = '';
+  } else if (cleanedUrlPath.endsWith(`/${fileName}`)) {
+    cleanedUrlPath = cleanedUrlPath.slice(0, -(fileName.length + 1));
+  }
+
+  const vhost = matchVirtualHostedBucket(endpointHost);
+  if (vhost) {
+    const { bucketName } = vhost;
+    // 若 URL 自身未带子路径，但旧配置里存了同桶下的子前缀（如 mybucket/sub），予以保留；忽略不同桶名的残留默认值
+    let prefix = cleanedUrlPath;
+    if (!prefix && config.bucket) {
+      const legacy = parseLegacyBucketAndPrefix(config.bucket);
+      if (legacy.bucketName.toLowerCase() === bucketName.toLowerCase() && legacy.prefix) {
+        prefix = legacy.prefix;
+      }
+    }
+    const objectPath = prefix ? `${prefix}/${fileName}` : fileName;
+    return {
+      ok: true,
+      effectiveProvider,
+      protocol: urlObj.protocol,
+      objectUrl: `${urlObj.protocol}//${endpointHost}/${objectPath}`,
+      host: endpointHost,
+      bucketName,
+      objectPath,
+      objectKey: `${bucketName}/${objectPath}`,
+    };
+  }
+
+  // 3. Path-Style URL（如 https://cos.ap-guangzhou.myqcloud.com/my-bucket 或 https://minio.local:9000/my-bucket）
+  const pathSegments = cleanedUrlPath.split('/').filter(Boolean);
+  const isMajorCloudBareHost =
+    hostLower.endsWith('myqcloud.com') ||
+    hostLower.endsWith('aliyuncs.com') ||
+    hostLower.endsWith('myhuaweicloud.com') ||
+    hostLower.endsWith('amazonaws.com') ||
+    hostLower.endsWith('amazonaws.com.cn');
+
+  if (pathSegments.length > 0) {
+    const bucketName = pathSegments[0] ?? '';
+    const prefix = pathSegments.slice(1).join('/');
+    const objectPath = prefix ? `${prefix}/${fileName}` : fileName;
+    if (isMajorCloudBareHost) {
+      const host = `${bucketName}.${endpointHost}`;
+      return {
+        ok: true,
+        effectiveProvider,
+        protocol: urlObj.protocol,
+        objectUrl: `${urlObj.protocol}//${host}/${objectPath}`,
+        host,
+        bucketName,
+        objectPath,
+        objectKey: `${bucketName}/${objectPath}`,
+      };
+    }
+    return {
+      ok: true,
+      effectiveProvider,
+      protocol: urlObj.protocol,
+      objectUrl: `${urlObj.protocol}//${endpointHost}/${bucketName}/${objectPath}`,
+      host: endpointHost,
+      bucketName,
+      objectPath,
+      objectKey: `${bucketName}/${objectPath}`,
+    };
+  }
+
+  // 4. 裸地域域名：兼容回退旧版 `config.bucket` 字段
+  const legacy = parseLegacyBucketAndPrefix(config.bucket ?? '');
+  if (legacy.bucketName) {
+    const host = endpointHost.toLowerCase().startsWith(`${legacy.bucketName.toLowerCase()}.`)
+      ? endpointHost
+      : `${legacy.bucketName}.${endpointHost}`;
+    const objectPath = legacy.prefix ? `${legacy.prefix}/${fileName}` : fileName;
+    return {
+      ok: true,
+      effectiveProvider,
+      protocol: urlObj.protocol,
+      objectUrl: `${urlObj.protocol}//${host}/${objectPath}`,
+      host,
+      bucketName: legacy.bucketName,
+      objectPath,
+      objectKey: `${legacy.bucketName}/${objectPath}`,
+    };
+  }
+
+  return {
+    ok: false,
+    errorMessage:
+      '连接失败：请在连接地址中直接包含存储桶名称（例如 https://lifehub-1250000000.cos.ap-guangzhou.myqcloud.com）',
+    effectiveProvider,
+    protocol: urlObj.protocol,
+    objectUrl: '',
+    host: endpointHost,
+    bucketName: '',
+    objectPath: fileName,
+    objectKey: fileName,
+  };
+}
+
+/**
+ * 构造默认云存储配置（默认选中阿里云 OSS，连接地址直接包含存储桶域名）。
  */
 export function createDefaultCloudConfig(
   providerId: CloudProviderId = 'aliyun-oss',
@@ -263,13 +615,7 @@ export function createDefaultCloudConfig(
 }
 
 /**
- * 从 localStorage 读取已保存的云存储配置。
- *
- * 说明：当本地尚无配置或 JSON 损坏时，返回默认配置（`encryptUpload` 恒为 `true`）。
- *
- * @param _unused 无入参
- * @returns 云存储配置对象
- * @throws 无；异常在内部捕获并回退默认值
+ * 从 localStorage 读取已保存的云存储配置，并自动将旧版拆分的 `endpoint + bucket` 升级为单一完整连接地址。
  */
 export function loadCloudConfig(): CloudStorageConfig {
   try {
@@ -290,10 +636,16 @@ export function loadCloudConfig(): CloudStorageConfig {
       rememberPassword && typeof parsed.savedPassword === 'string'
         ? decodeLocalSavedPassword(parsed.savedPassword)
         : '';
+    const rawEndpoint =
+      typeof parsed.endpoint === 'string' && parsed.endpoint
+        ? parsed.endpoint
+        : preset.defaultEndpoint;
+    const rawBucket = typeof parsed.bucket === 'string' ? parsed.bucket : '';
+    const mergedEndpoint = mergeLegacyBucketIntoEndpoint(validProvider, rawEndpoint, rawBucket);
     return {
       provider: validProvider,
-      endpoint: typeof parsed.endpoint === 'string' && parsed.endpoint ? parsed.endpoint : preset.defaultEndpoint,
-      bucket: typeof parsed.bucket === 'string' && parsed.bucket ? parsed.bucket : preset.defaultBucket,
+      endpoint: mergedEndpoint,
+      bucket: '',
       accessKey: typeof parsed.accessKey === 'string' ? parsed.accessKey : '',
       secretKey: typeof parsed.secretKey === 'string' ? parsed.secretKey : '',
       encryptUpload: true,
@@ -307,13 +659,6 @@ export function loadCloudConfig(): CloudStorageConfig {
 
 /**
  * 将云存储配置持久化写入 localStorage。
- *
- * 说明：保存用户选择的云服务商、Endpoint、Bucket，并强制保持 `encryptUpload: true`。
- * 若 `rememberPassword !== false`，则将 `savedPassword` 本地混淆保存；若取消勾选则清除已保存密码。
- *
- * @param config 待保存的云存储配置
- * @returns 无返回值
- * @throws 无；存储异常静默忽略
  */
 export function saveCloudConfig(config: CloudStorageConfig): void {
   try {
@@ -325,10 +670,17 @@ export function saveCloudConfig(config: CloudStorageConfig): void {
       rememberPassword && config.savedPassword
         ? encodeLocalSavedPassword(config.savedPassword)
         : '';
+    const mergedEndpoint = mergeLegacyBucketIntoEndpoint(
+      config.provider,
+      config.endpoint,
+      config.bucket,
+    );
     window.localStorage.setItem(
       CLOUD_CONFIG_STORAGE_KEY,
       JSON.stringify({
         ...config,
+        endpoint: mergedEndpoint,
+        bucket: '',
         encryptUpload: true,
         rememberPassword,
         savedPassword: obfuscatedPassword,
@@ -340,50 +692,29 @@ export function saveCloudConfig(config: CloudStorageConfig): void {
 }
 
 /**
- * 测试远程云存储连接配置是否合法可达。
- *
- * 说明：校验 Endpoint 协议头（https:// 或 http://）与 Bucket / 目录名称非空，返回连接诊断结果。
- *
- * @param config 云存储连接配置
- * @returns 包含是否成功与提示文案的对象
- * @throws 无；校验不通过时通过 `ok: false` 返回原因
+ * 同步校验云存储连接地址格式及内置存储桶/目录路径是否合法。
  */
 export function testCloudConnection(config: CloudStorageConfig): {
   ok: boolean;
   message: string;
 } {
-  const endpoint = config.endpoint.trim();
-  const bucket = config.bucket.trim();
-  if (!endpoint || (!endpoint.startsWith('https://') && !endpoint.startsWith('http://'))) {
+  const resolved = resolveCloudEndpointTarget(config);
+  if (!resolved.ok) {
     return {
       ok: false,
-      message: '连接失败：请填写以 https:// 或 http:// 开头的有效 Endpoint 地址',
+      message: resolved.errorMessage ?? '连接失败：连接地址无效',
     };
   }
-  if (!bucket) {
-    return {
-      ok: false,
-      message: '连接失败：请填写有效的 Bucket 存储桶名称或 WebDAV 远程目录路径',
-    };
-  }
-  const preset = getCloudProviderPreset(config.provider);
+  const preset = getCloudProviderPreset(resolved.effectiveProvider);
   const modeLabel = '强制加密上传（登录密码保护）';
   return {
     ok: true,
-    message: `已成功连接「${preset.name}」（${endpoint} / ${bucket}），当前同步策略：${modeLabel}`,
+    message: `已成功连接「${preset.name}」（目标存储桶/目录：${resolved.bucketName}），当前同步策略：${modeLabel}`,
   };
 }
 
 /**
  * 基于登录密码、盐值与轮次索引派生 32 位伪随机密钥字。
- *
- * 说明：使用多轮非线性混合确保不同登录密码生成的密钥流完全隔离。
- *
- * @param secret 用户登录密码字符串
- * @param salt 快照盐值
- * @param index 字节块索引
- * @returns 无符号 32 位整数密钥字
- * @throws 无；纯数值计算不抛出异常
  */
 function deriveKeyWord(secret: string, salt: string, index: number): number {
   const seedInput = `${salt}::lifehub-kdf::${secret}::${index}`;
@@ -404,11 +735,6 @@ function deriveKeyWord(secret: string, salt: string, index: number): number {
 
 /**
  * 计算用户加密密码的单向不可逆指纹（32 字符十六进制）。
- *
- * 说明：用于存入同步摘要 `meta.passwordFingerprint`，在后续上传时自动检测用户是否误输了与上次不一致的密码，而绝不泄露密码本身。
- *
- * @param secret 用户登录密码
- * @returns 32 字符十六进制密码指纹
  */
 export function computePasswordFingerprint(secret: string): string {
   const normalized = secret.trim();
@@ -459,11 +785,8 @@ const BACKUP_JSON_DICT: readonly string[] = [
 
 /**
  * 对备份 JSON 文本执行同步无损「高频字典 + LZ77 滑动窗口」双级压缩。
- *
- * 说明：在不引入外部二进制依赖的前提下，将重复的 JSON 键名、UUID、时间戳与分类结构压缩 70%~85%。
  */
 export function compressBackupJson(jsonText: string): string {
-  // 1. 转义原始文本中可能存在的私有区字符 (0xE000..0xE9FF)
   let escaped = '';
   for (let i = 0; i < jsonText.length; i += 1) {
     const code = jsonText.charCodeAt(i);
@@ -474,7 +797,6 @@ export function compressBackupJson(jsonText: string): string {
     }
   }
 
-  // 2. 高频 JSON 结构短语单字符替换 (0xE001..0xE000+N)
   let tokenized = escaped;
   for (let d = 0; d < BACKUP_JSON_DICT.length; d += 1) {
     const phrase = BACKUP_JSON_DICT[d] ?? '';
@@ -483,7 +805,6 @@ export function compressBackupJson(jsonText: string): string {
     tokenized = tokenized.split(phrase).join(tokenChar);
   }
 
-  // 3. LZ77 滑动窗口重复子串回溯压缩
   const windowSize = 1800;
   const maxMatchLen = 120;
   let out = '';
@@ -523,7 +844,6 @@ export function compressBackupJson(jsonText: string): string {
  * 将 `compressBackupJson` 压缩后的文本无损还原为原始 JSON 字符串。
  */
 export function decompressBackupJson(compressed: string): string {
-  // 1. 展开 LZ77 滑动窗口引用
   let tokenized = '';
   let i = 0;
   const len = compressed.length;
@@ -543,7 +863,6 @@ export function decompressBackupJson(compressed: string): string {
     }
   }
 
-  // 2. 展开高频短语字典并还原私有区转义字符
   let restored = '';
   let j = 0;
   const tLen = tokenized.length;
@@ -567,14 +886,6 @@ export function decompressBackupJson(compressed: string): string {
 
 /**
  * 计算登录密码与明文 JSON 载荷的 128 位鉴权校验摘要（Hex）。
- *
- * 说明：用于在解密还原前验证用户输入的登录密码是否与上传加密时的密码完全一致。
- *
- * @param secret 用户登录密码
- * @param salt 快照盐值
- * @param jsonText 原始 JSON 明文
- * @returns 32 字符十六进制鉴权摘要
- * @throws 无；纯内存摘要计算不抛出异常
  */
 function computePasswordAuthTag(secret: string, salt: string, jsonText: string): string {
   const tagInput = `auth::${salt}::${secret}::len=${jsonText.length}::${jsonText}`;
@@ -594,14 +905,6 @@ function computePasswordAuthTag(secret: string, salt: string, jsonText: string):
 
 /**
  * 使用登录密码派生的密钥流对 UTF-8 文本进行加密并编码为 Base64。
- *
- * 说明：确保云端快照以 `.json.enc` 密文形式存储，无登录密码无法还原。
- *
- * @param jsonText 待加密的原始 JSON 字符串
- * @param secret 用户登录密码
- * @param salt 快照盐值
- * @returns Base64 密文载荷
- * @throws 无；纯内存加密不抛出异常
  */
 function encodeEncryptedPayload(jsonText: string, secret: string, salt: string): string {
   const bytes = new TextEncoder().encode(jsonText);
@@ -621,15 +924,6 @@ function encodeEncryptedPayload(jsonText: string, secret: string, salt: string):
 
 /**
  * 使用登录密码派生的密钥流将 Base64 密文解码还原为原始 JSON 字符串。
- *
- * 说明：配合 `computePasswordAuthTag` 校验密码正确性，若密码不匹配则抛出 `LIFEHUB_E_VALIDATION`。
- *
- * @param cipherBase64 Base64 密文载荷
- * @param secret 用户输入的登录密码
- * @param salt 快照盐值
- * @param expectedAuthTag 上传时记录的密码校验摘要
- * @returns 解密还原后的原始 JSON 字符串
- * @throws {LifeHubError} 当登录密码错误或密文损坏时抛出 `LIFEHUB_E_VALIDATION`
  */
 function decodeEncryptedPayload(
   cipherBase64: string,
@@ -666,19 +960,84 @@ function decodeEncryptedPayload(
 }
 
 /**
- * 将当前账单与全量生活数据（分类、课表时段、微习惯、打卡与完成事件）强制使用登录密码加密后上传同步至远程云存储。
+ * 将给定的加密快照对象使用登录密码解密还原为结构化数据集。
+ */
+function decryptSnapshotToDataset(
+  snapshot: StoredCloudSnapshot,
+  secret: string,
+): { rawJson: string; dataset: CloudFullDataset; record: CloudSyncRecord } {
+  const normalizedSecret = secret.trim();
+  if (!normalizedSecret) {
+    throw new LifeHubError(
+      'LIFEHUB_E_VALIDATION',
+      '登录密码错误，无法解密还原云端数据（请先填写加密密码）',
+    );
+  }
+  const salt = typeof snapshot.salt === 'string' ? snapshot.salt : '';
+  const expectedTag = typeof snapshot.authTag === 'string' ? snapshot.authTag : '';
+  const decodedPayload = decodeEncryptedPayload(
+    snapshot.ciphertextBase64,
+    normalizedSecret,
+    salt,
+    expectedTag,
+  );
+  const decompressedJson =
+    snapshot.compression === 'lh-lz1' ? decompressBackupJson(decodedPayload) : decodedPayload;
+
+  const parsed = JSON.parse(decompressedJson) as
+    | ({
+        bills?: Bill[];
+      } & CloudBackupExtraModules)
+    | Bill[];
+  const isArray = Array.isArray(parsed);
+  const bills = isArray ? parsed : Array.isArray(parsed.bills) ? parsed.bills : [];
+  const categories = !isArray && Array.isArray(parsed.categories) ? [...parsed.categories] : [];
+  const scheduleSlots =
+    !isArray && Array.isArray(parsed.scheduleSlots)
+      ? [...parsed.scheduleSlots]
+      : !isArray && Array.isArray(parsed.scheduleEvents)
+        ? [...parsed.scheduleEvents]
+        : [];
+  const completionEvents =
+    !isArray && Array.isArray(parsed.completionEvents)
+      ? [...parsed.completionEvents]
+      : !isArray && Array.isArray(parsed.scheduleCompletions)
+        ? [...parsed.scheduleCompletions]
+        : [];
+  const habits = !isArray && Array.isArray(parsed.habits) ? [...parsed.habits] : [];
+  const habitCheckIns =
+    !isArray && Array.isArray(parsed.habitCheckIns)
+      ? [...parsed.habitCheckIns]
+      : !isArray && Array.isArray(parsed.habitCheckins)
+        ? [...parsed.habitCheckins]
+        : [];
+  const diaryEntries =
+    !isArray && Array.isArray(parsed.diaryEntries) ? [...parsed.diaryEntries] : [];
+  const tombstones =
+    !isArray && Array.isArray(parsed.tombstones)
+      ? normalizeCloudTombstones(parsed.tombstones)
+      : [];
+
+  return {
+    rawJson: decompressedJson,
+    record: snapshot.meta,
+    dataset: {
+      bills,
+      categories,
+      scheduleSlots,
+      completionEvents,
+      habits,
+      habitCheckIns,
+      diaryEntries,
+      tombstones,
+    },
+  };
+}
+
+/**
+ * 将当前账单与全量生活数据压缩并使用登录密码加密封装为本地云同步快照。
  *
- * 说明：
- * - 上传一律采用强制加密（`encrypted: true`，对象路径后缀固定为 `.json.enc`）；
- * - 使用传入的登录密码（`password`）派生加密密钥流与鉴权校验摘要；
- * - 严格遵守 X-12 红线，绝不将外部 AI API Key（`aiSettings`）打包进同步载荷。
- *
- * @param config 云存储配置
- * @param bills 待上传的账单列表
- * @param password 用户登录密码（用于派生加密密钥与后续还原校验）
- * @param extraModules 可选的分类、课表、微习惯及打卡完成事件扩展数据
- * @returns 同步完成后的云端记录摘要
- * @throws {LifeHubError} 当连接参数无效时抛出 `LIFEHUB_E_VALIDATION`
+ * 说明：严格遵守 X-12 红线，绝不将外部 AI API Key（`aiSettings`）打包进同步载荷。
  */
 export function uploadBillsToCloud(
   config: CloudStorageConfig,
@@ -687,9 +1046,9 @@ export function uploadBillsToCloud(
   extraModules?: CloudBackupExtraModules,
   options?: UploadCloudOptions,
 ): CloudSyncRecord {
-  const check = testCloudConnection(config);
-  if (!check.ok) {
-    throw new LifeHubError('LIFEHUB_E_VALIDATION', check.message);
+  const resolved = resolveCloudEndpointTarget(config);
+  if (!resolved.ok) {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', resolved.errorMessage ?? '连接参数无效');
   }
 
   const normalizedSecret = (password ?? config.savedPassword ?? '').trim();
@@ -722,9 +1081,13 @@ export function uploadBillsToCloud(
   };
   saveCloudConfig(normalizedConfig);
 
-  const preset = getCloudProviderPreset(normalizedConfig.provider);
+  const preset = getCloudProviderPreset(resolved.effectiveProvider);
   const syncedAt = new Date().toISOString();
-  const objectKey = `${normalizedConfig.bucket.replace(/\/+$/, '')}/lifehub-backup.json.enc`;
+  const objectKey = resolved.objectKey;
+  const revision =
+    typeof options?.revision === 'number' && options.revision > 0
+      ? options.revision
+      : (existingRecord?.revision ?? 0) + 1;
 
   const clonedBills: Bill[] = bills.map((b) => ({ ...b }));
   const clonedCategories: Category[] = (extraModules?.categories ?? []).map((c) => ({ ...c }));
@@ -748,11 +1111,14 @@ export function uploadBillsToCloud(
     ...d,
     tags: Array.isArray(d.tags) ? [...d.tags] : [],
   }));
+  const clonedTombstones: DeletedEntityTombstone[] = normalizeCloudTombstones(
+    extraModules?.tombstones ?? loadLocalCloudTombstones(),
+  );
 
-  // 紧凑序列化：剔除缩进空白与重复兼容数组（scheduleEvents / scheduleCompletions / habitCheckins 在恢复时自动映射）
   const compactSourceJson = JSON.stringify({
     format: 'lifehub-cloud-backup-v1',
     encrypted: true,
+    revision,
     syncedAt,
     billCount: clonedBills.length,
     categoryCount: clonedCategories.length,
@@ -766,19 +1132,19 @@ export function uploadBillsToCloud(
     ...(clonedHabits.length > 0 ? { habits: clonedHabits } : {}),
     ...(clonedHabitCheckIns.length > 0 ? { habitCheckIns: clonedHabitCheckIns } : {}),
     ...(clonedDiaryEntries.length > 0 ? { diaryEntries: clonedDiaryEntries } : {}),
+    ...(clonedTombstones.length > 0 ? { tombstones: clonedTombstones } : {}),
   });
 
-  // 加密前先执行高频字典 + LZ77 滑动窗口无损压缩
   const compressedPayload = compressBackupJson(compactSourceJson);
   const salt = `lh-salt-${syncedAt}`;
   const ciphertextBase64 = encodeEncryptedPayload(compressedPayload, normalizedSecret, salt);
   const authTag = computePasswordAuthTag(normalizedSecret, salt, compressedPayload);
 
   const meta: CloudSyncRecord = {
-    provider: normalizedConfig.provider,
+    provider: resolved.effectiveProvider,
     providerName: preset.name,
     endpoint: normalizedConfig.endpoint.trim(),
-    bucket: normalizedConfig.bucket.trim(),
+    bucket: resolved.bucketName,
     encrypted: true,
     billCount: clonedBills.length,
     categoryCount: clonedCategories.length,
@@ -789,6 +1155,7 @@ export function uploadBillsToCloud(
     objectKey,
     payloadPreview: `LZ77压缩+流加密载荷 (${ciphertextBase64.slice(0, 24)}...)`,
     passwordFingerprint: currentFingerprint,
+    revision,
   };
 
   const snapshot: StoredCloudSnapshot = {
@@ -815,12 +1182,6 @@ export function uploadBillsToCloud(
 
 /**
  * 读取最近一次云端同步状态摘要。
- *
- * 说明：用于组件挂载时展示上次云端备份的服务商、时间、条数及加密状态。
- *
- * @param _unused 无入参
- * @returns 最近一次同步记录；若从未同步则返回 null
- * @throws 无；解析失败返回 null
  */
 export function loadLatestCloudSyncRecord(): CloudSyncRecord | null {
   try {
@@ -840,13 +1201,6 @@ export function loadLatestCloudSyncRecord(): CloudSyncRecord | null {
 
 /**
  * 使用登录密码解密云端加密备份，还原为原始可读的 JSON 源文件内容。
- *
- * 说明：校验传入的 `password` 是否与上传加密时的登录密码一致；密码正确则返回包含 `format: 'lifehub-cloud-backup-v1'` 与 `bills` 的完整 JSON 源文本，密码不匹配则确定性抛出 `LIFEHUB_E_VALIDATION`。
- *
- * @param config 当前云存储配置
- * @param password 用户输入的登录密码
- * @returns 包含还原后的原始 JSON 字符串与同步记录元数据的对象
- * @throws {LifeHubError} 当云端无备份快照或登录密码错误时抛出 `LIFEHUB_E_VALIDATION`
  */
 export function decryptCloudSourceJson(
   config: CloudStorageConfig,
@@ -871,43 +1225,23 @@ export function decryptCloudSourceJson(
   }
 
   const normalizedSecret = (password ?? config.savedPassword ?? '').trim();
-  if (!normalizedSecret) {
-    throw new LifeHubError('LIFEHUB_E_VALIDATION', '登录密码错误，无法解密还原云端数据（请先填写加密密码）');
-  }
-  const salt = typeof snapshot.salt === 'string' ? snapshot.salt : '';
-  const expectedTag = typeof snapshot.authTag === 'string' ? snapshot.authTag : '';
-  const decodedPayload = decodeEncryptedPayload(
-    snapshot.ciphertextBase64,
-    normalizedSecret,
-    salt,
-    expectedTag,
-  );
+  const { rawJson, record } = decryptSnapshotToDataset(snapshot, normalizedSecret);
 
-  const decompressedJson =
-    snapshot.compression === 'lh-lz1' ? decompressBackupJson(decodedPayload) : decodedPayload;
-
-  let formattedJson = decompressedJson;
+  let formattedJson = rawJson;
   try {
-    formattedJson = JSON.stringify(JSON.parse(decompressedJson), null, 2);
+    formattedJson = JSON.stringify(JSON.parse(rawJson), null, 2);
   } catch {
     // 保持原文本
   }
 
   return {
     rawJson: formattedJson,
-    record: snapshot.meta,
+    record,
   };
 }
 
 /**
- * 从远程云存储拉取并使用登录密码解密恢复最近一次同步的全量生活数据（账单、分类、课表、微习惯及完成事件）。
- *
- * 说明：校验传入的 `password` 是否与上传加密时的登录密码一致；若密码错误则抛出 `LIFEHUB_E_VALIDATION`（`登录密码错误，无法解密还原云端数据`），密码正确则解密还原为标准账单与各生活模块集合。
- *
- * @param config 当前云存储配置
- * @param password 用户输入的登录密码
- * @returns 包含恢复出的账单数组、各生活模块数据与同步记录元数据的对象
- * @throws {LifeHubError} 当云端尚无备份快照或登录密码错误时抛出 `LIFEHUB_E_VALIDATION`
+ * 从缓存快照中使用登录密码解密恢复最近一次同步的全量生活数据。
  */
 export function restoreBillsFromCloud(
   config: CloudStorageConfig,
@@ -924,68 +1258,248 @@ export function restoreBillsFromCloud(
   habitCheckIns: StoredHabitCheckIn[];
   habitCheckins: StoredHabitCheckIn[];
   diaryEntries: DecryptedDiaryEntry[];
+  tombstones: DeletedEntityTombstone[];
   extraModules: Required<CloudBackupExtraModules>;
 } {
-  const { rawJson, record } = decryptCloudSourceJson(config, password);
-  const parsed = JSON.parse(rawJson) as
-    | ({
-        bills?: Bill[];
-      } & CloudBackupExtraModules)
-    | Bill[];
-  const isArray = Array.isArray(parsed);
-  const bills = isArray
-    ? parsed
-    : Array.isArray(parsed.bills)
-      ? parsed.bills
-      : [];
-  const categories = !isArray && Array.isArray(parsed.categories) ? [...parsed.categories] : [];
-  const scheduleSlots =
-    !isArray && Array.isArray(parsed.scheduleSlots)
-      ? [...parsed.scheduleSlots]
-      : !isArray && Array.isArray(parsed.scheduleEvents)
-        ? [...parsed.scheduleEvents]
-        : [];
-  const completionEvents =
-    !isArray && Array.isArray(parsed.completionEvents)
-      ? [...parsed.completionEvents]
-      : !isArray && Array.isArray(parsed.scheduleCompletions)
-        ? [...parsed.scheduleCompletions]
-        : [];
-  const habits = !isArray && Array.isArray(parsed.habits) ? [...parsed.habits] : [];
-  const habitCheckIns =
-    !isArray && Array.isArray(parsed.habitCheckIns)
-      ? [...parsed.habitCheckIns]
-      : !isArray && Array.isArray(parsed.habitCheckins)
-        ? [...parsed.habitCheckins]
-        : [];
-  const diaryEntries =
-    !isArray && Array.isArray(parsed.diaryEntries) ? [...parsed.diaryEntries] : [];
+  if (typeof window === 'undefined' || !window.localStorage) {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '当前环境不支持读取云端备份快照');
+  }
+  const raw = window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY);
+  if (!raw) {
+    throw new LifeHubError(
+      'LIFEHUB_E_VALIDATION',
+      '云端暂无可恢复的账单备份，请先执行一次「立即上传备份至云端」',
+    );
+  }
+  const snapshot = JSON.parse(raw) as StoredCloudSnapshot;
+  if (!snapshot || !snapshot.meta || !snapshot.ciphertextBase64) {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '云端备份快照格式无效');
+  }
+  const normalizedSecret = (password ?? config.savedPassword ?? '').trim();
+  const { dataset, record } = decryptSnapshotToDataset(snapshot, normalizedSecret);
 
   const extraModules: Required<CloudBackupExtraModules> = {
-    categories,
-    scheduleSlots,
-    scheduleEvents: scheduleSlots,
-    completionEvents,
-    scheduleCompletions: completionEvents,
-    habits,
-    habitCheckIns,
-    habitCheckins: habitCheckIns,
-    diaryEntries,
+    categories: dataset.categories,
+    scheduleSlots: dataset.scheduleSlots,
+    scheduleEvents: dataset.scheduleSlots,
+    completionEvents: dataset.completionEvents,
+    scheduleCompletions: dataset.completionEvents,
+    habits: dataset.habits,
+    habitCheckIns: dataset.habitCheckIns,
+    habitCheckins: dataset.habitCheckIns,
+    diaryEntries: dataset.diaryEntries,
+    tombstones: dataset.tombstones,
   };
 
   return {
-    bills,
+    bills: dataset.bills,
     record,
-    categories,
-    scheduleSlots,
-    scheduleEvents: scheduleSlots,
-    completionEvents,
-    scheduleCompletions: completionEvents,
-    habits,
-    habitCheckIns,
-    habitCheckins: habitCheckIns,
-    diaryEntries,
+    categories: dataset.categories,
+    scheduleSlots: dataset.scheduleSlots,
+    scheduleEvents: dataset.scheduleSlots,
+    completionEvents: dataset.completionEvents,
+    scheduleCompletions: dataset.completionEvents,
+    habits: dataset.habits,
+    habitCheckIns: dataset.habitCheckIns,
+    habitCheckins: dataset.habitCheckIns,
+    diaryEntries: dataset.diaryEntries,
+    tombstones: dataset.tombstones,
     extraModules,
+  };
+}
+
+/**
+ * 按实体 `id`、最后更新时间与删除墓碑对本机与远端数据集执行确定性增量合并。
+ *
+ * 合并规则：
+ * 1. 同一 `id` 同时存在于两端时，保留更新时间较新的一方（时间戳相同时以当前操作端 `local` 为准）；
+ * 2. 若某 `id` 命中合并后的删除墓碑且 `deletedAt >= 实体最后修改时间`，则判定为已删除并记入 `purged`；
+ * 3. 若某 `id` 的最后修改时间晚于墓碑 `deletedAt`（重新打卡或重建），则保留实体并移除旧墓碑；
+ * 4. 对两端独立初始化产生的同名同类型分类自动对齐 ID，避免跨端同步后账单变为未分类。
+ */
+export function mergeCloudDatasets(
+  local: CloudFullDataset,
+  remote: CloudFullDataset,
+  localRevision = 0,
+  remoteRevision = 0,
+): MergedCloudSyncResult {
+  const mergedTombstonePool = normalizeCloudTombstones([
+    ...remote.tombstones,
+    ...local.tombstones,
+  ]);
+  const tombstoneMap = new Map<string, DeletedEntityTombstone>();
+  for (const t of mergedTombstonePool) {
+    tombstoneMap.set(`${t.entityType}::${t.id}`, t);
+  }
+  const staleTombstoneKeys = new Set<string>();
+
+  function mergeCollection<T extends { id: string }>(
+    entityType: SyncableEntityType,
+    localItems: readonly T[],
+    remoteItems: readonly T[],
+    getTimestamp: (item: T) => string,
+  ): { items: T[]; purgedIds: string[] } {
+    const byId = new Map<string, T>();
+    for (const rItem of remoteItems) {
+      byId.set(rItem.id, rItem);
+    }
+    for (const lItem of localItems) {
+      const prev = byId.get(lItem.id);
+      if (!prev) {
+        byId.set(lItem.id, lItem);
+      } else {
+        const localTs = getTimestamp(lItem);
+        const remoteTs = getTimestamp(prev);
+        if (localTs >= remoteTs) {
+          byId.set(lItem.id, lItem);
+        }
+      }
+    }
+
+    const items: T[] = [];
+    const purgedIds: string[] = [];
+    for (const [id, candidate] of byId.entries()) {
+      const tKey = `${entityType}::${id}`;
+      const tomb = tombstoneMap.get(tKey);
+      const itemTs = getTimestamp(candidate);
+      if (tomb && (!itemTs || tomb.deletedAt >= itemTs)) {
+        purgedIds.push(id);
+      } else {
+        if (tomb && itemTs > tomb.deletedAt) {
+          staleTombstoneKeys.add(tKey);
+        }
+        items.push(candidate);
+      }
+    }
+    return { items, purgedIds };
+  }
+
+  // 先合并分类，并对本机已有的同名同类型分类做 ID 对齐映射（防止多端各自生成的系统分类 UUID 不一致）
+  const rawCats = mergeCollection<Category>(
+    'category',
+    local.categories,
+    remote.categories,
+    (c) => c.updatedAt || c.createdAt || '',
+  );
+  const catByNameKind = new Map<string, Category>();
+  const categoryIdRemap = new Map<string, string>();
+  const localCatIds = new Set(local.categories.map((c) => c.id));
+  // 优先登记本机分类 ID，使本机系统预置分类不可删约束完全兼容
+  const orderedCats = [...rawCats.items].sort((a, b) => {
+    const aLocal = localCatIds.has(a.id) ? 0 : 1;
+    const bLocal = localCatIds.has(b.id) ? 0 : 1;
+    if (aLocal !== bLocal) return aLocal - bLocal;
+    return a.sortOrder - b.sortOrder;
+  });
+  const dedupedCategories: Category[] = [];
+  const duplicateCatPurgedIds: string[] = [...rawCats.purgedIds];
+  for (const cat of orderedCats) {
+    const nameKey = `${cat.kind}::${cat.name.trim().toLowerCase()}`;
+    const canonical = catByNameKind.get(nameKey);
+    if (!canonical) {
+      catByNameKind.set(nameKey, cat);
+      dedupedCategories.push(cat);
+    } else if (canonical.id !== cat.id) {
+      categoryIdRemap.set(cat.id, canonical.id);
+      if (!cat.isSystem) {
+        duplicateCatPurgedIds.push(cat.id);
+      }
+    }
+  }
+
+  const remappedRemoteBills =
+    categoryIdRemap.size > 0
+      ? remote.bills.map((b) =>
+          b.categoryId && categoryIdRemap.has(b.categoryId)
+            ? { ...b, categoryId: categoryIdRemap.get(b.categoryId) ?? b.categoryId }
+            : b,
+        )
+      : remote.bills;
+  const remappedLocalBills =
+    categoryIdRemap.size > 0
+      ? local.bills.map((b) =>
+          b.categoryId && categoryIdRemap.has(b.categoryId)
+            ? { ...b, categoryId: categoryIdRemap.get(b.categoryId) ?? b.categoryId }
+            : b,
+        )
+      : local.bills;
+
+  const mergedBills = mergeCollection<Bill>(
+    'bill',
+    remappedLocalBills,
+    remappedRemoteBills,
+    (b) => b.updatedAt || b.createdAt || b.occurredAt || '',
+  );
+  // 账单按发生时间倒序稳定排列
+  mergedBills.items.sort((a, b) =>
+    a.occurredAt > b.occurredAt ? -1 : a.occurredAt < b.occurredAt ? 1 : 0,
+  );
+
+  const mergedSlots = mergeCollection<StoredScheduleSlot>(
+    'scheduleSlot',
+    local.scheduleSlots,
+    remote.scheduleSlots,
+    (s) =>
+      (s as { updatedAt?: string; createdAt?: string }).updatedAt ||
+      (s as { createdAt?: string }).createdAt ||
+      '',
+  );
+  const mergedEvents = mergeCollection<CompletionEvent>(
+    'completionEvent',
+    local.completionEvents,
+    remote.completionEvents,
+    (e) => e.createdAt || '',
+  );
+  const mergedHabits = mergeCollection<StoredHabit>(
+    'habit',
+    local.habits,
+    remote.habits,
+    (h) =>
+      (h as { updatedAt?: string; createdAt?: string }).updatedAt ||
+      (h as { createdAt?: string }).createdAt ||
+      '',
+  );
+  const mergedCheckIns = mergeCollection<StoredHabitCheckIn>(
+    'habitCheckIn',
+    local.habitCheckIns,
+    remote.habitCheckIns,
+    (ci) => ci.completedAt || '',
+  );
+  const mergedDiaries = mergeCollection<DecryptedDiaryEntry>(
+    'diaryEntry',
+    local.diaryEntries,
+    remote.diaryEntries,
+    (d) => d.updatedAt || d.createdAt || d.occurredAt || '',
+  );
+
+  const activeTombstones = mergedTombstonePool.filter(
+    (t) => !staleTombstoneKeys.has(`${t.entityType}::${t.id}`),
+  );
+
+  const nextRevision = Math.max(localRevision, remoteRevision) + 1;
+  return {
+    merged: {
+      bills: mergedBills.items,
+      categories: dedupedCategories,
+      scheduleSlots: mergedSlots.items,
+      completionEvents: mergedEvents.items,
+      habits: mergedHabits.items,
+      habitCheckIns: mergedCheckIns.items,
+      diaryEntries: mergedDiaries.items,
+      tombstones: activeTombstones,
+    },
+    purged: {
+      billIds: mergedBills.purgedIds,
+      categoryIds: duplicateCatPurgedIds,
+      scheduleSlotIds: mergedSlots.purgedIds,
+      completionEventIds: mergedEvents.purgedIds,
+      habitIds: mergedHabits.purgedIds,
+      habitCheckInIds: mergedCheckIns.purgedIds,
+      diaryEntryIds: mergedDiaries.purgedIds,
+    },
+    mergedFromRemote: true,
+    remoteRevision,
+    nextRevision,
   };
 }
 
@@ -1042,22 +1556,7 @@ async function hmacSha1Hex(secret: string, message: string): Promise<string> {
 }
 
 /**
- * 解析存储桶名称与子目录前缀。
- */
-function parseBucketAndObjectPath(
-  rawBucket: string,
-  fileName = 'lifehub-backup.json.enc',
-): { bucketName: string; objectPath: string } {
-  const cleaned = rawBucket.trim().replace(/^\/+|\/+$/g, '');
-  const parts = cleaned.split('/').filter(Boolean);
-  const bucketName = parts[0] || 'lifehub-backup';
-  const prefix = parts.slice(1).join('/');
-  const objectPath = prefix ? `${prefix}/${fileName}` : fileName;
-  return { bucketName, objectPath };
-}
-
-/**
- * 根据云存储配置构造真实带签名的 HTTP 请求信息（支持阿里云 OSS、腾讯云 COS、华为云 OBS、S3 与坚果云 WebDAV）。
+ * 根据云存储配置构造真实带签名的 HTTP 请求信息（支持从连接地址直接识别存储桶与目录）。
  */
 export async function buildSignedCloudHttpRequest(
   config: CloudStorageConfig,
@@ -1068,23 +1567,17 @@ export async function buildSignedCloudHttpRequest(
   url: string;
   headers: Record<string, string>;
   effectiveProvider: CloudProviderId;
+  webdavDirUrl?: string;
+  bucketName: string;
 }> {
-  const rawEndpoint = (overrideEndpoint ?? config.endpoint).trim().replace(/\/+$/, '');
   const accessKey = config.accessKey.trim();
   const secretKey = config.secretKey.trim();
-  const { bucketName, objectPath } = parseBucketAndObjectPath(config.bucket, fileName);
-
-  // 根据 Endpoint 域名或密钥特征自动识别真实云厂商协议
-  let effectiveProvider: CloudProviderId = config.provider;
-  if (rawEndpoint.includes('myqcloud.com')) {
-    effectiveProvider = 'tencent-cos';
-  } else if (rawEndpoint.includes('aliyuncs.com')) {
-    effectiveProvider = 'aliyun-oss';
-  } else if (rawEndpoint.includes('myhuaweicloud.com')) {
-    effectiveProvider = 'huawei-obs';
-  } else if (rawEndpoint.includes('jianguoyun.com') || rawEndpoint.endsWith('/dav')) {
-    effectiveProvider = 'jianguoyun-webdav';
+  const resolved = resolveCloudEndpointTarget(config, fileName, overrideEndpoint);
+  if (!resolved.ok) {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', resolved.errorMessage ?? '连接参数无效');
   }
+
+  const { effectiveProvider, objectUrl, host, bucketName, objectPath, webdavDirUrl } = resolved;
 
   // WebDAV Basic Auth
   if (effectiveProvider === 'jianguoyun-webdav') {
@@ -1092,22 +1585,20 @@ export async function buildSignedCloudHttpRequest(
       typeof btoa === 'function'
         ? btoa(`${accessKey}:${secretKey}`)
         : Buffer.from(`${accessKey}:${secretKey}`, 'utf8').toString('base64');
-    const url = `${rawEndpoint}/${bucketName}/${objectPath}`;
     const headers: Record<string, string> = {
       Authorization: `Basic ${authB64}`,
     };
     if (method === 'PUT') {
       headers['Content-Type'] = 'application/octet-stream';
     }
-    return { url, headers, effectiveProvider };
+    return {
+      url: objectUrl,
+      headers,
+      effectiveProvider,
+      ...(webdavDirUrl ? { webdavDirUrl } : {}),
+      bucketName,
+    };
   }
-
-  const urlObj = new URL(rawEndpoint.startsWith('http') ? rawEndpoint : `https://${rawEndpoint}`);
-  const protocol = urlObj.protocol;
-  const endpointHost = urlObj.host;
-  const host = endpointHost.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)
-    ? endpointHost
-    : `${bucketName}.${endpointHost}`;
 
   // 腾讯云 COS XML 预签名算法
   if (effectiveProvider === 'tencent-cos') {
@@ -1133,9 +1624,10 @@ export async function buildSignedCloudHttpRequest(
       headers['Content-Type'] = 'application/octet-stream';
     }
     return {
-      url: `${protocol}//${host}/${objectPath}?${query}`,
+      url: `${objectUrl}?${query}`,
       headers,
       effectiveProvider,
+      bucketName,
     };
   }
 
@@ -1160,14 +1652,96 @@ export async function buildSignedCloudHttpRequest(
   }
 
   return {
-    url: `${protocol}//${host}/${objectPath}?${query}`,
+    url: `${objectUrl}?${query}`,
     headers,
     effectiveProvider,
+    bucketName,
   };
 }
 
+let androidHttpSeq = 0;
+
 /**
- * 通过本地宿主云代理（免 CORS）或浏览器直连发送云存储 HTTP 请求。
+ * 通过 Android 原生 HTTP 桥接执行请求（完全绕过 WebView 同源策略与 CORS 预检限制）。
+ */
+async function executeAndroidNativeHttpRequest(
+  bridge: Required<Pick<AndroidCloudBridge, 'startCloudHttpRequest' | 'takeCloudHttpResponse'>>,
+  url: string,
+  method: 'PUT' | 'GET' | 'MKCOL',
+  headers: Record<string, string>,
+  bodyText?: string,
+): Promise<{ status: number; body: string }> {
+  androidHttpSeq += 1;
+  const requestId = `lh-http-${Date.now()}-${androidHttpSeq}`;
+
+  return new Promise<{ status: number; body: string }>((resolve) => {
+    let settled = false;
+    const finish = (res: { status: number; body: string }): void => {
+      if (settled) return;
+      settled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('lifehub:android-http-done', onDone as EventListener);
+      }
+      clearTimeout(timer);
+      resolve(res);
+    };
+
+    const onDone = (evt: Event): void => {
+      const detail = (evt as CustomEvent<{ requestId?: string }>).detail;
+      if (!detail || detail.requestId !== requestId) {
+        return;
+      }
+      try {
+        const raw = bridge.takeCloudHttpResponse(requestId);
+        if (!raw) {
+          finish({ status: 502, body: 'Android 原生网络桥接未返回响应内容' });
+          return;
+        }
+        const parsed = JSON.parse(raw) as { status?: number; body?: string };
+        finish({
+          status: typeof parsed.status === 'number' ? parsed.status : 502,
+          body: typeof parsed.body === 'string' ? parsed.body : '',
+        });
+      } catch (e) {
+        finish({
+          status: 502,
+          body: e instanceof Error ? e.message : '解析原生网络响应失败',
+        });
+      }
+    };
+
+    const timer = setTimeout(() => {
+      try {
+        bridge.takeCloudHttpResponse(requestId);
+      } catch {
+        // 忽略超时清理异常
+      }
+      finish({ status: 504, body: '请求超时（35s），请检查手机网络连接与对象存储地址' });
+    }, 35000);
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('lifehub:android-http-done', onDone as EventListener);
+    }
+
+    try {
+      bridge.startCloudHttpRequest(
+        requestId,
+        url,
+        method,
+        JSON.stringify(headers),
+        bodyText ?? '',
+      );
+    } catch (e) {
+      finish({
+        status: 502,
+        body: e instanceof Error ? e.message : '调用 Android 原生网络桥接失败',
+      });
+    }
+  });
+}
+
+/**
+ * 通过 Android 原生桥接、桌面端本地宿主代理（均免 CORS）或浏览器直连发送云存储 HTTP 请求。
  */
 async function executeCloudHttpRequest(
   url: string,
@@ -1175,7 +1749,26 @@ async function executeCloudHttpRequest(
   headers: Record<string, string>,
   bodyText?: string,
 ): Promise<{ status: number; body: string }> {
-  // 1. 优先尝试通过本地宿主代理（Windows 桌面版或 Vite 开发服内置代理，100% 免除 OSS/COS 跨域 CORS 限制）
+  // 1. Android 原生容器：走 Java HttpURLConnection 后台线程，100% 免除 COS/OSS 跨域 CORS 拦截
+  const androidBridge = (globalThis as { LifeHubAndroid?: AndroidCloudBridge }).LifeHubAndroid;
+  if (
+    androidBridge &&
+    typeof androidBridge.startCloudHttpRequest === 'function' &&
+    typeof androidBridge.takeCloudHttpResponse === 'function'
+  ) {
+    return executeAndroidNativeHttpRequest(
+      {
+        startCloudHttpRequest: androidBridge.startCloudHttpRequest.bind(androidBridge),
+        takeCloudHttpResponse: androidBridge.takeCloudHttpResponse.bind(androidBridge),
+      },
+      url,
+      method,
+      headers,
+      bodyText,
+    );
+  }
+
+  // 2. Windows 桌面版容器或 Vite 开发服内置代理：免除 CORS 限制
   try {
     const proxyResp = await fetch('/__lifehub_desktop__/cloud-proxy', {
       method: 'POST',
@@ -1201,14 +1794,22 @@ async function executeCloudHttpRequest(
     // 非桌面或无本地代理环境，回退至浏览器直连 fetch
   }
 
-  // 2. 浏览器 / 移动端直连 fetch
-  const resp = await fetch(url, {
-    method,
-    headers,
-    ...(method === 'PUT' && bodyText !== undefined ? { body: bodyText } : {}),
-  });
-  const respText = await resp.text();
-  return { status: resp.status, body: respText };
+  // 3. 纯浏览器环境直连 fetch
+  try {
+    const resp = await fetch(url, {
+      method,
+      headers,
+      ...(method === 'PUT' && bodyText !== undefined ? { body: bodyText } : {}),
+    });
+    const respText = await resp.text();
+    return { status: resp.status, body: respText };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      status: 502,
+      body: `网络请求失败（${msg}；若在纯网页浏览器中直连对象存储，请确认存储桶已开启 CORS 跨域规则或使用桌面版 / Android 客户端）`,
+    };
+  }
 }
 
 /**
@@ -1230,12 +1831,138 @@ function parseCloudXmlError(xml: string): {
 }
 
 /**
+ * 当对象存储返回跨地域重定向 `<Endpoint>` 时，生成保留存储桶名的修正连接地址。
+ */
+function buildCorrectedBucketEndpointUrl(
+  recommendedEndpoint: string,
+  bucketName: string,
+): string {
+  let cleanHost = recommendedEndpoint.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  if (bucketName && cleanHost.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)) {
+    cleanHost = cleanHost.slice(bucketName.length + 1);
+  }
+  return bucketName ? `https://${bucketName}.${cleanHost}` : `https://${cleanHost}`;
+}
+
+/**
+ * 拉取远端云存储上的当前备份快照（区分「桶内尚无备份文件 404」与「网络/鉴权/桶不存在异常」）。
+ */
+async function fetchRemoteSnapshotStatus(config: CloudStorageConfig): Promise<{
+  exists: boolean;
+  snapshot?: StoredCloudSnapshot;
+  rawBody?: string;
+  correctedEndpoint?: string;
+}> {
+  const signed = await buildSignedCloudHttpRequest(config, 'GET', 'lifehub-backup.json.enc');
+  let result = await executeCloudHttpRequest(signed.url, 'GET', signed.headers);
+  let correctedEndpoint: string | undefined;
+
+  if (result.status >= 300) {
+    const errInfo = parseCloudXmlError(result.body);
+    if (errInfo.recommendedEndpoint) {
+      correctedEndpoint = buildCorrectedBucketEndpointUrl(
+        errInfo.recommendedEndpoint,
+        signed.bucketName,
+      );
+      const retrySigned = await buildSignedCloudHttpRequest(
+        config,
+        'GET',
+        'lifehub-backup.json.enc',
+        correctedEndpoint,
+      );
+      result = await executeCloudHttpRequest(retrySigned.url, 'GET', retrySigned.headers);
+      if ((result.status >= 200 && result.status < 300) || result.status === 404) {
+        saveCloudConfig({ ...config, endpoint: correctedEndpoint });
+      }
+    }
+  }
+
+  if (result.status >= 200 && result.status < 300) {
+    const trimmed = result.body.trim();
+    if (!trimmed.startsWith('{')) {
+      throw new LifeHubError('LIFEHUB_E_STORAGE', '远端备份文件格式异常，非有效的加密快照 JSON');
+    }
+    const parsed = JSON.parse(trimmed) as StoredCloudSnapshot;
+    if (!parsed || !parsed.meta || !parsed.ciphertextBase64) {
+      throw new LifeHubError('LIFEHUB_E_STORAGE', '远端备份快照结构缺失必要字段');
+    }
+    return {
+      exists: true,
+      snapshot: parsed,
+      rawBody: trimmed,
+      ...(correctedEndpoint ? { correctedEndpoint } : {}),
+    };
+  }
+
+  if (result.status === 404) {
+    const errInfo = parseCloudXmlError(result.body);
+    if (errInfo.code === 'NoSuchBucket') {
+      throw new LifeHubError(
+        'LIFEHUB_E_STORAGE',
+        `存储桶「${signed.bucketName}」不存在（NoSuchBucket），请核对连接地址中的 Bucket 名称与所属地域`,
+      );
+    }
+    return {
+      exists: false,
+      ...(correctedEndpoint ? { correctedEndpoint } : {}),
+    };
+  }
+
+  const errInfo = parseCloudXmlError(result.body);
+  const detail = errInfo.code
+    ? `${errInfo.code}: ${errInfo.message ?? ''}`
+    : result.body.slice(0, 180) || `HTTP ${result.status}`;
+  throw new LifeHubError(
+    'LIFEHUB_E_STORAGE',
+    `访问远程云存储失败（HTTP ${result.status} · ${detail}）`,
+  );
+}
+
+/**
+ * 发起真实网络请求探测云存储连通性与密钥鉴权（若未填密钥则仅做本地地址校验）。
+ */
+export async function probeRemoteCloudConnection(config: CloudStorageConfig): Promise<{
+  ok: boolean;
+  message: string;
+  correctedEndpoint?: string;
+}> {
+  const localCheck = testCloudConnection(config);
+  if (!localCheck.ok) {
+    return localCheck;
+  }
+  const hasCredentials =
+    config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0;
+  if (!hasCredentials) {
+    return localCheck;
+  }
+
+  try {
+    const resolved = resolveCloudEndpointTarget(config);
+    const preset = getCloudProviderPreset(resolved.effectiveProvider);
+    const remote = await fetchRemoteSnapshotStatus(config);
+    if (remote.exists && remote.snapshot) {
+      const rev = remote.snapshot.meta.revision ?? 1;
+      return {
+        ok: true,
+        message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} · 云端已有备份 v${rev}，含 ${remote.snapshot.meta.billCount} 条账单）`,
+        ...(remote.correctedEndpoint ? { correctedEndpoint: remote.correctedEndpoint } : {}),
+      };
+    }
+    return {
+      ok: true,
+      message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} 可达，云端暂未上传过备份文件）`,
+      ...(remote.correctedEndpoint ? { correctedEndpoint: remote.correctedEndpoint } : {}),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? `连接失败：${err.message}` : '连接失败：远程对象存储不可达',
+    };
+  }
+}
+
+/**
  * 将本地已生成的加密备份快照真正通过 HTTP PUT 上传至远程 OSS / COS / OBS / WebDAV / S3 存储桶。
- *
- * 说明：
- * - 自动对请求进行 HMAC-SHA1 预签名；
- * - 若阿里云 OSS 返回跨地域 `<Endpoint>` 重定向提示，自动修正 Endpoint 并重签上传；
- * - 若发现桶名为腾讯云格式（如 `xxx-1250000000`）或密钥为 `AKID` 开头但誤选了阿里云 OSS，也会给出明确指引。
  */
 export async function pushSnapshotToRemoteCloud(
   config: CloudStorageConfig,
@@ -1260,40 +1987,27 @@ export async function pushSnapshotToRemoteCloud(
     throw new LifeHubError('LIFEHUB_E_VALIDATION', '本地尚无待上传的加密备份快照');
   }
 
-  // 智能检测：若用户桶名带有腾讯云 10 位 APPID 后缀（如 lifehub-1250000000）或密钥以 AKID 开头，但仍使用阿里云默认域名
-  if (
-    config.provider === 'aliyun-oss' &&
-    config.endpoint.includes('aliyuncs.com') &&
-    (accessKey.startsWith('AKID') || /-\d{10}$/.test(config.bucket.trim()))
-  ) {
-    // 先尝试按当前配置请求，若 403/404 则在错误中明确提示是否属于腾讯云 COS
-  }
-
   const signed = await buildSignedCloudHttpRequest(config, 'PUT', 'lifehub-backup.json.enc');
 
   // 若为 WebDAV，先尝试创建目录（MKCOL）
-  if (signed.effectiveProvider === 'jianguoyun-webdav') {
-    const dirUrl = signed.url.replace(/\/lifehub-backup\.json\.enc$/, '/');
+  if (signed.effectiveProvider === 'jianguoyun-webdav' && signed.webdavDirUrl) {
     try {
-      await executeCloudHttpRequest(dirUrl, 'MKCOL', signed.headers);
+      await executeCloudHttpRequest(signed.webdavDirUrl, 'MKCOL', signed.headers);
     } catch {
-      // 目录已存在时忽略
+      // 目录已存在或服务端不支持 MKCOL 时忽略
     }
   }
 
   let result = await executeCloudHttpRequest(signed.url, 'PUT', signed.headers, rawSnapshot);
   let correctedEndpoint: string | undefined;
 
-  // 若阿里云 OSS 提示 Bucket 位于其他地域（如 oss-cn-shanghai / oss-cn-beijing），自动切换至正确地域 Endpoint 重试
   if (result.status >= 300) {
     const errInfo = parseCloudXmlError(result.body);
     if (errInfo.recommendedEndpoint) {
-      const { bucketName } = parseBucketAndObjectPath(config.bucket);
-      let cleanEndpointHost = errInfo.recommendedEndpoint;
-      if (cleanEndpointHost.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)) {
-        cleanEndpointHost = cleanEndpointHost.slice(bucketName.length + 1);
-      }
-      correctedEndpoint = `https://${cleanEndpointHost}`;
+      correctedEndpoint = buildCorrectedBucketEndpointUrl(
+        errInfo.recommendedEndpoint,
+        signed.bucketName,
+      );
       const retrySigned = await buildSignedCloudHttpRequest(
         config,
         'PUT',
@@ -1303,7 +2017,7 @@ export async function pushSnapshotToRemoteCloud(
       result = await executeCloudHttpRequest(
         retrySigned.url,
         'PUT',
-        retrySigned.url ? retrySigned.headers : signed.headers,
+        retrySigned.headers,
         rawSnapshot,
       );
       if (result.status >= 200 && result.status < 300) {
@@ -1318,22 +2032,134 @@ export async function pushSnapshotToRemoteCloud(
 
   if (result.status < 200 || result.status >= 300) {
     const errInfo = parseCloudXmlError(result.body);
-    const cosHint =
-      config.provider === 'aliyun-oss' && /-\d{10}$/.test(config.bucket.trim())
-        ? '（提示：您的 Bucket 名称带有 10 位数字后缀如 -1250000000，这通常是「腾讯云 COS」的命名格式，若您使用的是腾讯云，请在上方将云服务商切换为「腾讯云 COS」并填写所属地域 Endpoint）'
-        : '';
     const detail = errInfo.code
       ? `${errInfo.code}: ${errInfo.message ?? ''}`
-      : result.body.slice(0, 160) || `HTTP ${result.status}`;
+      : result.body.slice(0, 180) || `HTTP ${result.status}`;
     throw new LifeHubError(
       'LIFEHUB_E_STORAGE',
-      `远程对象存储拒绝了上传请求（HTTP ${result.status} · ${detail}）${cosHint}`,
+      `远程对象存储拒绝了上传请求（HTTP ${result.status} · ${detail}）`,
     );
   }
 
   return {
     remoteUrl: signed.url.split('?')[0] ?? signed.url,
     ...(correctedEndpoint ? { correctedEndpoint } : {}),
+  };
+}
+
+/**
+ * 上传前强制执行「先拉取远端 → 按 ID + 更新时间与删除墓碑合并 → 加密上传新版本」（Pull-Merge-Push）。
+ *
+ * 说明：
+ * - 不在启动或关闭时轮询远端，仅在执行远程上传前强制拉取检查；
+ * - 若远端已存在快照，自动使用登录密码解密并与本机数据取最新并集（同时应用删除墓碑），
+ *   返回合并后的数据集供调用方写回本机数据库，保证两端数据 100% 一致、绝不误覆盖。
+ */
+export async function syncUploadWithRemoteMerge(
+  config: CloudStorageConfig,
+  localDataset: CloudFullDataset,
+  password: string,
+  options?: UploadCloudOptions,
+): Promise<{
+  record: CloudSyncRecord;
+  remoteUrl: string;
+  correctedEndpoint?: string;
+  mergedDataset: CloudFullDataset;
+  purged: PurgedEntityIds;
+  mergedFromRemote: boolean;
+}> {
+  const normalizedSecret = (password || config.savedPassword || '').trim();
+  if (!normalizedSecret) {
+    throw new LifeHubError(
+      'LIFEHUB_E_VALIDATION',
+      '请填写登录密码（加密凭证）：加密密码为必填项，不能为空',
+    );
+  }
+
+  const localPrevRecord = loadLatestCloudSyncRecord();
+  const localRevision = localPrevRecord?.revision ?? 0;
+
+  // 第一步：强制先从远端拉取当前最新快照
+  const remoteStatus = await fetchRemoteSnapshotStatus(config);
+  const effectiveConfig = remoteStatus.correctedEndpoint
+    ? { ...config, endpoint: remoteStatus.correctedEndpoint }
+    : config;
+
+  let finalDataset: CloudFullDataset = {
+    ...localDataset,
+    tombstones: normalizeCloudTombstones(localDataset.tombstones),
+  };
+  let purged: PurgedEntityIds = {
+    billIds: [],
+    categoryIds: [],
+    scheduleSlotIds: [],
+    completionEventIds: [],
+    habitIds: [],
+    habitCheckInIds: [],
+    diaryEntryIds: [],
+  };
+  let mergedFromRemote = false;
+  let nextRevision = localRevision + 1;
+
+  if (remoteStatus.exists && remoteStatus.snapshot) {
+    const remoteSnap = remoteStatus.snapshot;
+    const remoteRev = remoteSnap.meta.revision ?? 1;
+    const currentFp = computePasswordFingerprint(normalizedSecret);
+    const remoteFp = remoteSnap.meta.passwordFingerprint;
+
+    if (remoteFp && remoteFp !== currentFp && !options?.allowPasswordChange) {
+      throw new LifeHubError(
+        'LIFEHUB_E_VALIDATION',
+        '云端已有备份且加密密码与当前输入不一致！为防止覆盖另一端数据，请输入正确的云端备份密码以合并数据，或勾选「允许使用新密码覆盖云端备份」。',
+      );
+    }
+
+    // 密码一致（或未记录指纹但可解密）时，强制解密远端快照并与本地增量合并
+    if (!remoteFp || remoteFp === currentFp) {
+      const { dataset: remoteDataset } = decryptSnapshotToDataset(remoteSnap, normalizedSecret);
+      const mergeRes = mergeCloudDatasets(finalDataset, remoteDataset, localRevision, remoteRev);
+      finalDataset = mergeRes.merged;
+      purged = mergeRes.purged;
+      mergedFromRemote = true;
+      nextRevision = mergeRes.nextRevision;
+    } else {
+      // 用户显式勾选 allowPasswordChange 更换新密码覆盖：仍保持版本号单调递增
+      nextRevision = Math.max(localRevision, remoteRev) + 1;
+    }
+  }
+
+  // 第二步：将合并后的完整数据与删除墓碑加密写入本地快照缓存
+  saveLocalCloudTombstones(finalDataset.tombstones);
+  const record = uploadBillsToCloud(
+    effectiveConfig,
+    finalDataset.bills,
+    normalizedSecret,
+    {
+      categories: finalDataset.categories,
+      scheduleSlots: finalDataset.scheduleSlots,
+      completionEvents: finalDataset.completionEvents,
+      habits: finalDataset.habits,
+      habitCheckIns: finalDataset.habitCheckIns,
+      diaryEntries: finalDataset.diaryEntries,
+      tombstones: finalDataset.tombstones,
+    },
+    {
+      allowPasswordChange: true,
+      revision: nextRevision,
+    },
+  );
+
+  // 第三步：将新版本快照推送至远程对象存储
+  const pushRes = await pushSnapshotToRemoteCloud(effectiveConfig);
+  const finalCorrected = pushRes.correctedEndpoint ?? remoteStatus.correctedEndpoint;
+
+  return {
+    record,
+    remoteUrl: pushRes.remoteUrl,
+    ...(finalCorrected ? { correctedEndpoint: finalCorrected } : {}),
+    mergedDataset: finalDataset,
+    purged,
+    mergedFromRemote,
   };
 }
 
@@ -1347,44 +2173,15 @@ export async function pullSnapshotFromRemoteCloud(config: CloudStorageConfig): P
     return;
   }
 
-  const signed = await buildSignedCloudHttpRequest(config, 'GET', 'lifehub-backup.json.enc');
-  let result = await executeCloudHttpRequest(signed.url, 'GET', signed.headers);
-
-  if (result.status >= 300) {
-    const errInfo = parseCloudXmlError(result.body);
-    if (errInfo.recommendedEndpoint) {
-      const { bucketName } = parseBucketAndObjectPath(config.bucket);
-      let cleanEndpointHost = errInfo.recommendedEndpoint;
-      if (cleanEndpointHost.toLowerCase().startsWith(`${bucketName.toLowerCase()}.`)) {
-        cleanEndpointHost = cleanEndpointHost.slice(bucketName.length + 1);
-      }
-      const correctedEndpoint = `https://${cleanEndpointHost}`;
-      const retrySigned = await buildSignedCloudHttpRequest(
-        config,
-        'GET',
-        'lifehub-backup.json.enc',
-        correctedEndpoint,
-      );
-      result = await executeCloudHttpRequest(retrySigned.url, 'GET', retrySigned.headers);
-      if (result.status >= 200 && result.status < 300) {
-        saveCloudConfig({ ...config, endpoint: correctedEndpoint });
-      }
-    }
-  }
-
-  if (result.status >= 200 && result.status < 300 && result.body.trim().startsWith('{')) {
+  const remote = await fetchRemoteSnapshotStatus(config);
+  if (remote.exists && remote.rawBody) {
     if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(CLOUD_SNAPSHOT_STORAGE_KEY, result.body.trim());
+      window.localStorage.setItem(CLOUD_SNAPSHOT_STORAGE_KEY, remote.rawBody);
     }
-  } else if (result.status >= 400) {
-    const errInfo = parseCloudXmlError(result.body);
-    const detail = errInfo.code
-      ? `${errInfo.code}: ${errInfo.message ?? ''}`
-      : `HTTP ${result.status}`;
+  } else if (!remote.exists) {
     throw new LifeHubError(
       'LIFEHUB_E_STORAGE',
-      `从远程云存储拉取备份文件失败（${detail}）`,
+      '远程存储桶中暂无备份文件（lifehub-backup.json.enc），请先在有数据的设备上执行一次上传',
     );
   }
 }
-

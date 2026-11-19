@@ -14,6 +14,7 @@ import {
   CATEGORY_LOCAL_DEVICE_ID,
   type CategoryInput,
 } from '@/lib/category-factory';
+import { recordCloudTombstone } from '@/lib/cloud-tombstones';
 import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /** 分类 Hook 的返回值。 */
@@ -117,6 +118,7 @@ export function useCategories(): UseCategoriesResult {
         throw new Error('保险库未就绪');
       }
       await runtime.categoryRepository.delete(id);
+      recordCloudTombstone('category', id);
       await reload();
     },
     [runtime, reload],
