@@ -7,6 +7,7 @@
  */
 import type { ReactNode } from 'react';
 import { Box } from '@mui/material';
+import { useLocation } from 'react-router-dom';
 import { SideNav } from './SideNav';
 
 /** 应用外壳组件的属性。 */
@@ -18,17 +19,23 @@ export interface AppShellProps {
 /**
  * 渲染应用外壳。
  *
- * 说明：承载左侧导航栏与自适应全宽主内容容器。
+ * 说明：承载左侧导航栏与自适应全宽主内容容器；在 `/ai` 等全屏会话页自动锁定外层视口滚动，仅保留内部消息流滚动。
  *
  * @param props 组件属性
  * @returns React 节点
  * @throws 无；纯布局组件不抛出异常
  */
 export function AppShell({ children }: AppShellProps) {
+  const { pathname } = useLocation();
+  const isViewportLocked = pathname === '/ai' || pathname.startsWith('/ai/');
+
   return (
-    <Box className="lifehub-shell">
+    <Box className={`lifehub-shell${isViewportLocked ? ' lifehub-shell--locked' : ''}`}>
       <SideNav />
-      <Box component="main" className="lifehub-content lifehub-main">
+      <Box
+        component="main"
+        className={`lifehub-content lifehub-main${isViewportLocked ? ' lifehub-content--locked' : ''}`}
+      >
         {children}
       </Box>
     </Box>
