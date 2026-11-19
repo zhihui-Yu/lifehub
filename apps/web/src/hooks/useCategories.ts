@@ -14,6 +14,7 @@ import {
   CATEGORY_LOCAL_DEVICE_ID,
   type CategoryInput,
 } from '@/lib/category-factory';
+import { recordCloudTombstone } from '@/lib/cloud-tombstones';
 import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /** 分类 Hook 的返回值。 */
@@ -27,7 +28,7 @@ export interface UseCategoriesResult {
   /** 重新加载。 */
   reload: () => Promise<void>;
   /** 新增分类。 */
-  addCategory: (input: CategoryInput) => Promise<void>;
+  addCategory: (input: CategoryInput) => Promise<Category>;
   /** 更新分类。 */
   updateCategory: (existing: Category, input: CategoryInput) => Promise<void>;
   /** 删除分类（系统预置会抛错）。 */
@@ -85,7 +86,7 @@ export function useCategories(): UseCategoriesResult {
   }, [reload]);
 
   const addCategory = useCallback(
-    async (input: CategoryInput): Promise<void> => {
+    async (input: CategoryInput): Promise<Category> => {
       if (!runtime) {
         throw new Error('保险库未就绪');
       }
@@ -95,6 +96,7 @@ export function useCategories(): UseCategoriesResult {
       });
       await runtime.categoryRepository.save(category);
       await reload();
+      return category;
     },
     [runtime, reload],
   );
@@ -117,6 +119,7 @@ export function useCategories(): UseCategoriesResult {
         throw new Error('保险库未就绪');
       }
       await runtime.categoryRepository.delete(id);
+      recordCloudTombstone('category', id);
       await reload();
     },
     [runtime, reload],

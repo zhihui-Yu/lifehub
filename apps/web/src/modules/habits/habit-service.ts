@@ -22,6 +22,7 @@ import {
   getWeekRange,
   weekdayOf,
 } from '@/modules/shared/date-utils';
+import { recordCloudTombstone, recordCloudTombstones } from '@/lib/cloud-tombstones';
 import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /**
@@ -539,14 +540,18 @@ export class HabitService {
    */
   async deleteHabit(id: string): Promise<void> {
     await this.db.table<StoredHabit>('habits').delete(id);
+    recordCloudTombstone('habit', id);
     await this.completionRepo.deleteBySource('habit', id);
     const checkInTable = this.db.table<StoredHabitCheckIn>('habitCheckIns');
     const allCheckIns = await checkInTable.toArray();
+    const deletedCheckInIds: string[] = [];
     for (const item of allCheckIns) {
       if (item.habitId === id) {
         await checkInTable.delete(item.id);
+        deletedCheckInIds.push(item.id);
       }
     }
+    recordCloudTombstones('habitCheckIn', deletedCheckInIds);
     await this.persistModuleSnapshot();
   }
 
@@ -576,6 +581,7 @@ export class HabitService {
       });
     } else {
       await checkInTable.delete(checkInId);
+      recordCloudTombstone('habitCheckIn', checkInId);
     }
     await this.persistModuleSnapshot();
     return completed;

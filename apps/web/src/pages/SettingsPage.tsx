@@ -314,7 +314,7 @@ export function SettingsPage() {
           data-testid="mobile-settings-quick-nav"
           sx={{
             display: 'grid',
-            gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(3, minmax(0, 1fr))' },
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
             gap: 1.25,
           }}
         >
@@ -329,18 +329,6 @@ export function SettingsPage() {
             sx={{ py: 1.25, borderRadius: 2.5, justifyContent: 'flex-start' }}
           >
             📂 导入账单文件
-          </Button>
-          <Button
-            variant="outlined"
-            data-testid="quick-nav-categories"
-            onClick={() => {
-              if (typeof window !== 'undefined') {
-                window.location.hash = '#/categories';
-              }
-            }}
-            sx={{ py: 1.25, borderRadius: 2.5, justifyContent: 'flex-start' }}
-          >
-            🏷️ 分类管理
           </Button>
           <Button
             variant="outlined"

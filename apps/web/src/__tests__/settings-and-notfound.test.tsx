@@ -100,13 +100,14 @@ describe('SettingsPage', () => {
       '强制加密上传（登录密码保护）',
     );
 
-    // 切换至坚果云 WebDAV 并测试连接（通过下拉框选择，不再冗余渲染厂商卡片）
+    // 切换至坚果云 WebDAV 并测试连接（连接地址已直接包含目录，不再单独渲染 Bucket 输入框与厂商卡片）
     expect(screen.queryByTestId('cloud-provider-option-jianguoyun-webdav')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('cloud-bucket-input')).not.toBeInTheDocument();
     fireEvent.change(screen.getByTestId('cloud-provider-select'), {
       target: { value: 'jianguoyun-webdav' },
     });
     expect(screen.getByTestId('cloud-endpoint-input')).toHaveValue(
-      'https://dav.jianguoyun.com/dav/',
+      'https://dav.jianguoyun.com/dav/LifeHubBackup/',
     );
     fireEvent.click(screen.getByTestId('cloud-test-button'));
     expect(await screen.findByTestId('cloud-action-banner')).toHaveTextContent(
@@ -159,7 +160,7 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('cloud-download-source-button')).toBeInTheDocument();
   });
 
-  it('展示移动端快捷功能中心（导入账单 / 分类管理 / 习惯打卡）并支持一键跳转，不再暴露多余的安全与加密入口', () => {
+  it('展示移动端快捷功能中心（导入账单 / 习惯打卡）并支持一键跳转，分类管理已收敛至账单页且不再暴露多余的安全与加密入口', () => {
     render(<SettingsPage />);
 
     expect(screen.getByTestId('mobile-quick-hub-card')).toBeInTheDocument();
@@ -168,12 +169,10 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByTestId('quick-nav-import'));
     expect(window.location.hash).toBe('#/import');
 
-    fireEvent.click(screen.getByTestId('quick-nav-categories'));
-    expect(window.location.hash).toBe('#/categories');
-
     fireEvent.click(screen.getByTestId('quick-nav-habits'));
     expect(window.location.hash).toBe('#/habits');
 
+    expect(screen.queryByTestId('quick-nav-categories')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quick-nav-security')).not.toBeInTheDocument();
   });
 

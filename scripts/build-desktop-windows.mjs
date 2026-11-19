@@ -24,7 +24,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { extname, join, relative, sep } from 'node:path';
+import { extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -34,7 +34,20 @@ const WEB_DIST_DIR = join(REPO_ROOT, 'apps', 'web', 'dist');
 const VENDOR_WEBVIEW2_DIR = join(REPO_ROOT, 'scripts', 'vendor', 'webview2');
 const APP_ICON_ICO_PATH = join(REPO_ROOT, 'scripts', 'vendor', 'app-icon.ico');
 const BUILD_TMP_DIR = join(REPO_ROOT, 'apps', 'web', '.desktop-build');
-const OUTPUT_EXE_PATH = join(REPO_ROOT, `LifeHub-Desktop-win-x64-v${APP_VERSION}.exe`);
+const CLI_ARGS = process.argv.slice(2);
+const SKIP_WEB_BUILD = CLI_ARGS.includes('--skip-web-build');
+
+function resolveOutputExePath() {
+  const outIdx = CLI_ARGS.indexOf('--out');
+  const cliOut = outIdx >= 0 && CLI_ARGS[outIdx + 1] ? CLI_ARGS[outIdx + 1] : '';
+  const customOut = cliOut || process.env.LIFEHUB_OUTPUT_EXE || '';
+  if (customOut.trim()) {
+    return resolve(REPO_ROOT, customOut.trim());
+  }
+  return join(REPO_ROOT, `LifeHub-Desktop-win-x64-v${APP_VERSION}.exe`);
+}
+
+const OUTPUT_EXE_PATH = resolveOutputExePath();
 const CSC_PATH = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
 
 /**
@@ -128,11 +141,15 @@ function main() {
     process.exit(1);
   }
 
-  console.log('[Desktop Build] 1/3 正在构建 @lifehub/web 生产前端资源...');
-  execSync('npm run build --workspace @lifehub/web', {
-    cwd: REPO_ROOT,
-    stdio: 'inherit',
-  });
+  if (SKIP_WEB_BUILD && existsSync(WEB_DIST_DIR)) {
+    console.log('[Desktop Build] 1/3 检测到 --skip-web-build，直接复用现有 apps/web/dist 静态资源...');
+  } else {
+    console.log('[Desktop Build] 1/3 正在构建 @lifehub/web 生产前端资源...');
+    execSync('npm run build --workspace @lifehub/web', {
+      cwd: REPO_ROOT,
+      stdio: 'inherit',
+    });
+  }
 
   if (!existsSync(WEB_DIST_DIR)) {
     console.error(`[Desktop Build] 未找到前端构建目录: ${WEB_DIST_DIR}`);

@@ -124,4 +124,59 @@ describe('BillEditDialog', () => {
     expect((await screen.findByLabelText('日期') as HTMLInputElement).value).toBe('2026-10-20');
     expect((screen.getByLabelText('时间（可选）') as HTMLInputElement).value).toBe('01:30');
   });
+
+  it('记一笔弹窗内提供「管理 / + 新建分类」快捷入口，并在新建分类后自动选中该分类', async () => {
+    const onOpenCategoryManager = vi.fn();
+    const onSubmit = vi.fn().mockResolvedValue(true);
+    const newCat: Category = {
+      id: 'c-new',
+      name: '宠物开销',
+      kind: 'expense',
+      parentId: null,
+      color: '#F59E0B',
+      icon: 'more',
+      isSystem: false,
+      sortOrder: 500,
+      createdAt: '2026-11-19T00:00:00.000Z',
+      updatedAt: '2026-11-19T00:00:00.000Z',
+      version: 1,
+      deviceId: 'local',
+    };
+
+    const { rerender } = render(
+      <BillEditDialog
+        open
+        initial={null}
+        categories={CATEGORIES}
+        onClose={() => {}}
+        onSubmit={onSubmit}
+        onOpenCategoryManager={onOpenCategoryManager}
+      />,
+    );
+
+    const manageBtn = screen.getByTestId('bill-dialog-manage-categories-button');
+    fireEvent.click(manageBtn);
+    expect(onOpenCategoryManager).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(screen.getByLabelText('金额（元）'), { target: { value: '88' } });
+
+    rerender(
+      <BillEditDialog
+        open
+        initial={null}
+        categories={[...CATEGORIES, newCat]}
+        onClose={() => {}}
+        onSubmit={onSubmit}
+        onOpenCategoryManager={onOpenCategoryManager}
+        autoSelectCategoryId="c-new"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '记一笔' }));
+    await waitFor(() => {
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+    expect(onSubmit.mock.calls[0]?.[0]?.categoryId).toBe('c-new');
+    expect(onSubmit.mock.calls[0]?.[0]?.amountText).toBe('88');
+  });
 });

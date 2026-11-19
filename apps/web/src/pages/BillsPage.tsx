@@ -22,6 +22,7 @@ import {
 } from '@mui/material';
 import AddOutlined from '@mui/icons-material/AddOutlined';
 import BarChartOutlined from '@mui/icons-material/BarChartOutlined';
+import CategoryOutlined from '@mui/icons-material/CategoryOutlined';
 import DeleteOutline from '@mui/icons-material/DeleteOutline';
 import DeleteSweepOutlined from '@mui/icons-material/DeleteSweepOutlined';
 import EditOutlined from '@mui/icons-material/EditOutlined';
@@ -33,6 +34,7 @@ import { BillGroupList } from '@/components/bills/BillGroupList';
 import { BillVirtualList } from '@/components/bills/BillVirtualList';
 import { BillEditDialog } from '@/components/bills/BillEditDialog';
 import { BillVisualDashboard } from '@/components/bills/BillVisualDashboard';
+import { CategoryManagerDialog } from '@/components/categories/CategoryManagerDialog';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { EmptyState } from '@/components/common/EmptyState';
 import { LoadingOverlay } from '@/components/common/LoadingOverlay';
@@ -186,7 +188,8 @@ function triggerBrowserDownload(content: string, fileName: string, mimeType: str
 export function BillsPage() {
   const { runtime, status } = useVault();
   const { groups, bills, loading, error } = useBillList();
-  const { categories } = useCategories();
+  const categoriesState = useCategories();
+  const { categories } = categoriesState;
   const { addBill, updateBill, deleteBill, clearAllBills, setBillCategoryId, markBillsAsTransfer } =
     useBillActions();
   const filters = useBillStore((state) => state.filters);
@@ -197,6 +200,8 @@ export function BillsPage() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Bill | null>(null);
+  const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
+  const [autoSelectCategoryId, setAutoSelectCategoryId] = useState<string | null>(null);
   const [clearAllOpen, setClearAllOpen] = useState(false);
   const [sourceFileNames, setSourceFileNames] = useState<Record<string, string>>({});
   const [exportMessage, setExportMessage] = useState<string | null>(null);
@@ -418,15 +423,33 @@ export function BillsPage() {
       open={dialogOpen}
       initial={editing}
       categories={categories}
-      onClose={() => setDialogOpen(false)}
+      onClose={() => {
+        setDialogOpen(false);
+        setAutoSelectCategoryId(null);
+      }}
       onSubmit={handleSubmit}
+      onOpenCategoryManager={interactive ? () => setCategoryManagerOpen(true) : undefined}
+      autoSelectCategoryId={autoSelectCategoryId}
+    />
+  );
+
+  const categoryManagerModal = (
+    <CategoryManagerDialog
+      open={categoryManagerOpen}
+      onClose={() => setCategoryManagerOpen(false)}
+      categoriesState={categoriesState}
+      onCategoryCreated={(created) => {
+        if (dialogOpen) {
+          setAutoSelectCategoryId(created.id);
+        }
+      }}
     />
   );
 
   if (interactive && allBills.length === 0 && !loading) {
     return (
       <div data-testid="bills-page">
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, mb: 2 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 1, mb: 2 }}>
           <Button
             variant="outlined"
             startIcon={<BarChartOutlined />}
@@ -439,6 +462,14 @@ export function BillsPage() {
           >
             收支统计
           </Button>
+          <Button
+            variant="outlined"
+            startIcon={<CategoryOutlined />}
+            onClick={() => setCategoryManagerOpen(true)}
+            data-testid="open-category-manager-button"
+          >
+            分类管理
+          </Button>
           <Button variant="contained" startIcon={<AddOutlined />} onClick={openCreate}>
             记一笔
           </Button>
@@ -448,6 +479,7 @@ export function BillsPage() {
           description="你可以直接「记一笔」手动记账，或导入一个 CSV 账单文件，这里会按日期分组展示。"
         />
         {dialog}
+        {categoryManagerModal}
       </div>
     );
   }
@@ -494,6 +526,17 @@ export function BillsPage() {
           >
             收支统计
           </Button>
+          {interactive ? (
+            <Button
+              variant="outlined"
+              startIcon={<CategoryOutlined />}
+              onClick={() => setCategoryManagerOpen(true)}
+              data-testid="open-category-manager-button"
+              sx={{ flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
+            >
+              分类管理
+            </Button>
+          ) : null}
           {interactive ? (
             <>
               {allBills.length > 0 ? (
@@ -767,6 +810,7 @@ export function BillsPage() {
         </Button>
       ) : null}
       {dialog}
+      {categoryManagerModal}
       <ConfirmDialog
         open={clearAllOpen}
         title="清空全部账单？"

@@ -4,7 +4,7 @@
 >
 > 记账数据只存在你自己的设备上；即使使用同步服务，**服务端也只见密文**。
 
-**文档版本**：v1.4（应用版本 v0.2.1） ｜ **日期**：2026-11-12 ｜ **当前阶段**：全模块交付（记账 / 统计看板 / 课表 / 习惯打卡 / 树洞日记 / AI 分析 / 5 大云存储端到端压缩加密同步 / Windows EXE + Android APK 双端打包）
+**文档版本**：v1.5（应用版本 v0.2.2） ｜ **日期**：2026-11-19 ｜ **当前阶段**：全模块交付（记账 / 统计看板 / 课表 / 习惯打卡 / 树洞日记 / AI 分析 / 5 大云存储端到端压缩加密与多端增量合并同步 / Windows EXE + Android APK 双端打包）
 
 ---
 
@@ -313,6 +313,8 @@ IndexedDB（密文 payload + 7 个索引明文列）
 | `apps/sync-server` | `npm run test --workspace @lifehub/sync-server` | 运行同步服务测试（起真实实例 + `fetch`，83 例） |
 | `apps/sync-server` | `npm run coverage --workspace @lifehub/sync-server` | 同步服务覆盖率报告（当前语句覆盖 91.1% / 分支 84.2%） |
 | 仓库根 | `node scripts/snapshot.mjs` | 同步服务 SQLite 在线快照（保留 N 份，见 `scripts/snapshot.sh`） |
+| 仓库根 | `./scripts/build-apk.sh` | 独立打包 Android 手机端安装包（支持 `--test` / `--release` / `--skip-web-build`） |
+| 仓库根 | `./scripts/build-exe.sh` | 独立打包 Windows 原生单文件桌面版（支持 `--test` / `--release` / `--skip-web-build`） |
 
 > 三个 `check:*` 脚本是**可执行的红线断言**，建议接入 CI；它们不依赖任何第三方包。
 > `npm run ci` 会把 lint / typecheck / test / coverage / 三个 `check:*` / bench 串成一条完整的质量门禁。
@@ -429,7 +431,7 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 | S5 | W9-10 | 自托管同步服务 | 多设备同步（只搬密文）+ 密钥轮换 |
 | S6 | W11-12 | AI 分析层 + 日记加密 | 模块 D / E；小程序轻量版最后做 |
 
-### 7.2 当前交付范围（v0.2.1）
+### 7.2 当前交付范围（v0.2.2）
 
 已全面交付：**核心层 + Web 全模块（记账、统计看板、分类管理、生活课表、习惯打卡、树洞加密日记、AI 智能分析）+ 5 大对象存储双级压缩与端到端加密同步（`lifehub-backup.json.enc`）+ 自托管同步服务 + Windows 单文件 `.exe` 与 Android `.apk` 一键打包**。
 
