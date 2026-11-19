@@ -15,27 +15,37 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
-function bumpSemver(version) {
+function resolveBumpMode(argv) {
+  if (argv.includes('--major')) return 'major';
+  if (argv.includes('--minor')) return 'minor';
+  return 'patch';
+}
+
+function bumpSemver(version, mode = 'patch') {
   const parts = String(version || '0.1.0')
     .split('.')
     .map((n) => parseInt(n, 10) || 0);
   const major = parts[0] ?? 0;
   const minor = parts[1] ?? 1;
   const patch = parts[2] ?? 0;
-  // 从 0.1.0 首次升级至 0.2.0，后续每次打包自动递增 patch 版本（如 0.2.1, 0.2.2...）
-  if (major === 0 && minor === 1 && patch === 0) {
-    return '0.2.0';
+
+  if (mode === 'major') {
+    return `${major + 1}.0.0`;
   }
+  if (mode === 'minor') {
+    return `${major}.${minor + 1}.0`;
+  }
+  // 本地日常打包默认递增末尾位 patch（如 0.2.5 -> 0.2.6）；正式 push 发版传 --minor 递增第二位（如 0.2.x -> 0.3.0）
   return `${major}.${minor}.${patch + 1}`;
 }
 
-function updateVersionFiles() {
+function updateVersionFiles(mode = 'patch') {
   const rootPkgPath = join(REPO_ROOT, 'package.json');
   const webPkgPath = join(REPO_ROOT, 'apps', 'web', 'package.json');
   const gradlePath = join(REPO_ROOT, 'apps', 'web', 'android', 'app', 'build.gradle');
 
   const rootPkg = JSON.parse(readFileSync(rootPkgPath, 'utf8'));
-  const nextVersion = bumpSemver(rootPkg.version);
+  const nextVersion = bumpSemver(rootPkg.version, mode);
   rootPkg.version = nextVersion;
   writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + '\n', 'utf8');
 
@@ -87,7 +97,8 @@ function cleanOldDeliverables() {
 }
 
 function main() {
-  const version = updateVersionFiles();
+  const mode = resolveBumpMode(process.argv.slice(2));
+  const version = updateVersionFiles(mode);
   cleanOldDeliverables();
 
   console.log(`[Release] 1/2 开始构建 Windows 桌面版 LifeHub-Desktop-win-x64-v${version}.exe ...`);

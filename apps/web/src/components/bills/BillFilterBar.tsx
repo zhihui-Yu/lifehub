@@ -4,9 +4,21 @@
  * 架构位置：apps/web 的「账单组件」层。
  *
  * 说明：搜索（200ms 防抖）+ 方向 + 日期区间 + 分类可组合筛选，一键清空（PRD A-09 ①②③）。
+ * 采用无外框轻量内联工具条布局，消除卡片套卡片的视觉累赘。
  */
 import { useState } from 'react';
-import { Box, Button, Checkbox, ListItemText, MenuItem, Select, TextField } from '@mui/material';
+import {
+  Box,
+  Button,
+  Checkbox,
+  InputAdornment,
+  ListItemText,
+  MenuItem,
+  Select,
+  TextField,
+} from '@mui/material';
+import SearchOutlined from '@mui/icons-material/SearchOutlined';
+import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import type { Direction } from '@lifehub/core';
 import type { BillFilters } from '@/store/bill-store';
 
@@ -30,15 +42,17 @@ const DIRECTION_OPTIONS: { value: Direction; label: string }[] = [
 ];
 
 /**
- * 渲染过滤栏。
- *
- * 说明：全宽工具栏容器，搜索框在大屏下自适应延展，收支方向与分类均支持多选组合筛选，与上方可视化看板和下方分组列表左右边缘对齐。
+ * 渲染轻量内联过滤栏。
  *
  * @param props 组件属性
  * @returns React 节点
- * @throws 无；纯受控过滤栏组件不抛出异常
  */
-export function BillFilterBar({ filters, onChange, onClear, categoryOptions = [] }: BillFilterBarProps) {
+export function BillFilterBar({
+  filters,
+  onChange,
+  onClear,
+  categoryOptions = [],
+}: BillFilterBarProps) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= 768,
   );
@@ -49,32 +63,47 @@ export function BillFilterBar({ filters, onChange, onClear, categoryOptions = []
         ? [filters.categoryId]
         : [];
 
+  const hasActiveFilters =
+    filters.keyword.trim() !== '' ||
+    filters.directions.length > 0 ||
+    filters.dateFrom !== '' ||
+    filters.dateTo !== '' ||
+    selectedCategoryIds.length > 0;
+
+  const compactInputSx = {
+    backgroundColor: 'var(--lifehub-surface)',
+    borderRadius: '8px',
+  };
+
   return (
     <Box
       sx={{
         display: 'flex',
         flexWrap: 'wrap',
-        gap: 1.5,
+        gap: 1,
         alignItems: 'center',
         width: '100%',
         boxSizing: 'border-box',
-        p: { xs: 2, sm: 2 },
         mb: 2,
-        borderRadius: 3,
-        backgroundColor: 'var(--lifehub-surface)',
-        border: '1px solid var(--lifehub-border)',
-        boxShadow: 'var(--lifehub-shadow-sm)',
       }}
       data-testid="bill-filter-bar"
     >
       <TextField
         size="small"
-        label="搜索对方或备注"
+        placeholder="搜索对方或备注"
         value={filters.keyword}
         onChange={(event) => onChange({ keyword: event.target.value })}
+        InputProps={{
+          startAdornment: (
+            <InputAdornment position="start">
+              <SearchOutlined sx={{ fontSize: 18, color: 'var(--lifehub-text-muted)' }} />
+            </InputAdornment>
+          ),
+        }}
         sx={{
-          flex: { xs: '1 1 calc(100% - 120px)', sm: '1 1 100%', md: '1 1 220px' },
+          flex: { xs: '1 1 calc(100% - 96px)', sm: '1 1 200px', md: '1 1 220px' },
           minWidth: { xs: 0, md: 200 },
+          '& .MuiOutlinedInput-root': compactInputSx,
         }}
         inputProps={{ 'aria-label': '搜索对方或备注' }}
       />
@@ -89,17 +118,22 @@ export function BillFilterBar({ filters, onChange, onClear, categoryOptions = []
       >
         <Button
           size="small"
-          variant="outlined"
+          variant={mobileFiltersOpen || hasActiveFilters ? 'contained' : 'outlined'}
+          disableElevation
+          startIcon={<TuneOutlined sx={{ fontSize: 16 }} />}
           onClick={(e) => {
             e.stopPropagation();
             setMobileFiltersOpen((prev) => !prev);
           }}
           data-testid="toggle-mobile-filters-button"
           sx={{
+            height: 40,
+            borderRadius: '8px',
+            px: 1.5,
             whiteSpace: 'nowrap',
           }}
         >
-          {mobileFiltersOpen ? '收起筛选 ▴' : '高级筛选 ▾'}
+          筛选
         </Button>
       </Box>
       <Select
@@ -135,8 +169,9 @@ export function BillFilterBar({ filters, onChange, onClear, categoryOptions = []
         }}
         sx={{
           display: mobileFiltersOpen ? 'inline-flex' : 'none',
-          flex: { xs: '1 1 calc(50% - 6px)', sm: '0 0 auto' },
-          minWidth: { xs: 0, sm: 130 },
+          flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
+          minWidth: { xs: 0, sm: 120 },
+          ...compactInputSx,
         }}
         inputProps={{ 'aria-label': '收支方向', 'data-testid': 'filter-direction-select' }}
       >
@@ -162,8 +197,9 @@ export function BillFilterBar({ filters, onChange, onClear, categoryOptions = []
         onChange={(event) => onChange({ dateFrom: event.target.value })}
         sx={{
           display: mobileFiltersOpen ? 'inline-flex' : 'none',
-          flex: { xs: '1 1 calc(50% - 6px)', sm: '0 0 auto' },
-          minWidth: { xs: 0, sm: 145 },
+          flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
+          minWidth: { xs: 0, sm: 142 },
+          '& .MuiOutlinedInput-root': compactInputSx,
         }}
         InputLabelProps={{ shrink: true }}
       />
@@ -175,8 +211,9 @@ export function BillFilterBar({ filters, onChange, onClear, categoryOptions = []
         onChange={(event) => onChange({ dateTo: event.target.value })}
         sx={{
           display: mobileFiltersOpen ? 'inline-flex' : 'none',
-          flex: { xs: '1 1 calc(50% - 6px)', sm: '0 0 auto' },
-          minWidth: { xs: 0, sm: 145 },
+          flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
+          minWidth: { xs: 0, sm: 142 },
+          '& .MuiOutlinedInput-root': compactInputSx,
         }}
         InputLabelProps={{ shrink: true }}
       />
@@ -212,8 +249,9 @@ export function BillFilterBar({ filters, onChange, onClear, categoryOptions = []
         }}
         sx={{
           display: mobileFiltersOpen ? 'inline-flex' : 'none',
-          flex: { xs: '1 1 calc(50% - 6px)', sm: '0 0 auto' },
-          minWidth: { xs: 0, sm: 150 },
+          flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
+          minWidth: { xs: 0, sm: 136 },
+          ...compactInputSx,
         }}
         inputProps={{ 'aria-label': '分类', 'data-testid': 'filter-category-select' }}
       >
@@ -232,11 +270,13 @@ export function BillFilterBar({ filters, onChange, onClear, categoryOptions = []
         ))}
       </Select>
       <Button
+        size="small"
         variant="text"
         onClick={onClear}
         sx={{
           display: mobileFiltersOpen ? 'inline-flex' : 'none',
           flex: { xs: '1 1 100%', sm: '0 0 auto' },
+          color: hasActiveFilters ? 'primary.main' : 'var(--lifehub-text-muted)',
         }}
       >
         清空筛选

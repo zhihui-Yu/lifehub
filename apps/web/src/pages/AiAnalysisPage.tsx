@@ -1,31 +1,36 @@
 /**
- * AI 分析与生活复盘页面（DeepSeek 网页版 chat.deepseek.com 极简风格 · 模块 E：E-01 ~ E-05 / X-12 ~ X-14）。
+ * AI 分析与生活复盘页面（极简一屏响应式布局 · 模块 E：E-01 ~ E-05 / X-12 ~ X-14）。
  *
  * 架构位置：apps/web 的「页面组件」层，路由 `/ai`。
  *
  * 核心设计：
- * 1. **强制全量默认脱敏（X-14）**：所有选定时间段内的账单、生活课表、习惯打卡与树洞随笔均由系统强制自动脱敏，严禁关闭脱敏；
- * 2. **数据时间段选择（最长半年）**：支持选择 `近 7 天`、`近 1 个月`、`近 3 个月`、`近半年（最长）`；
- * 3. **1:1 还原 DeepSeek 网页版交互体验**：
- *    - 固定视口高度一屏聊天布局，发送消息与收到回复时**自动平滑滚动到底部**，无需手动下拉；
- *    - 系统自动构建的脱敏数据 Prompt 在对话流中以**可折叠胶囊卡片**呈现，既透明可见又不遮挡正文；
- *    - AI 回复采用结构化 **Markdown 富文本渲染**（支持二级标题、表格、引用高亮块、列表、加粗与 R1 深度思考过程折叠）；
- *    - 底部采用 DeepSeek 标志性的大圆角一体式输入舱（内置深度思考 R1 切换、模块切换、时间段选择与快捷键发送）。
+ * 1. **强制全量默认脱敏（X-14）**：选定时间段内的账单、课表、微习惯与树洞随笔均在本地自动脱敏；
+ * 2. **桌面与移动端极简一屏体验**：
+ *    - 移动端合并为单行 46px 顶栏（侧滑历史抽屉 + 主题/时间聚合菜单 + 新建/设置图标）与紧凑输入舱；
+ *    - 桌面端左侧精简会话栏 + 右侧无干扰阅读流，配置与审计收纳至独立弹窗；
+ * 3. **适配 DeepSeek V4 模型体系**：原生支持 `deepseek-flash` 与 `deepseek-v4-pro` 及 `thinking` 深度思考开关。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Badge,
   Box,
   Button,
   Chip,
   CircularProgress,
   Collapse,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
+  Drawer,
   FormControl,
   IconButton,
   InputLabel,
   MenuItem,
   Paper,
+  Popover,
   Select,
   Stack,
   Table,
@@ -38,19 +43,19 @@ import {
   Typography,
 } from '@mui/material';
 import AddCommentOutlined from '@mui/icons-material/AddCommentOutlined';
+import ArrowUpwardRounded from '@mui/icons-material/ArrowUpwardRounded';
 import AutoAwesomeOutlined from '@mui/icons-material/AutoAwesomeOutlined';
+import CloseRounded from '@mui/icons-material/CloseRounded';
 import ContentCopyOutlined from '@mui/icons-material/ContentCopyOutlined';
 import DeleteOutline from '@mui/icons-material/DeleteOutline';
 import ExpandLess from '@mui/icons-material/ExpandLess';
 import ExpandMore from '@mui/icons-material/ExpandMore';
 import HistoryOutlined from '@mui/icons-material/HistoryOutlined';
-import LockOutlined from '@mui/icons-material/LockOutlined';
+import KeyboardArrowDownRounded from '@mui/icons-material/KeyboardArrowDownRounded';
 import PsychologyOutlined from '@mui/icons-material/PsychologyOutlined';
 import RefreshOutlined from '@mui/icons-material/RefreshOutlined';
-import SendOutlined from '@mui/icons-material/SendOutlined';
 import SettingsOutlined from '@mui/icons-material/SettingsOutlined';
 import ShieldOutlined from '@mui/icons-material/ShieldOutlined';
-import VisibilityOutlined from '@mui/icons-material/VisibilityOutlined';
 import { addDays, type Bill } from '@lifehub/core';
 import { useBillStore } from '@/store';
 import { useVault } from '@/hooks/useVault';
@@ -73,6 +78,8 @@ import {
 } from '@/modules/ai/prompt-builder';
 import {
   AiStorageService,
+  DEFAULT_DEEPSEEK_MODEL,
+  DEEPSEEK_OFFICIAL_MODELS,
   type AIAnalysisRequestRecord,
   type AiProviderType,
 } from '@/modules/ai/ai-storage';
@@ -124,92 +131,83 @@ function createSessionId(): string {
 }
 
 /**
- * 会话流中展示的「系统自动构建脱敏 Prompt」可折叠胶囊组件（默认折叠为一行，点击可展开查看完整发送内容）。
+ * 会话流中展示的轻量上下文折叠条（默认单行低调呈现，点击可查看完整 Prompt）。
  */
 function SystemPromptContextCard({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(false);
-  const firstLine = content.split('\n')[0] || '系统已自动构建并注入当前模块的脱敏数据 Prompt';
+  const firstLine = content.split('\n')[0] || '数据上下文';
 
   return (
-    <Box
-      sx={{
-        alignSelf: 'stretch',
-        my: 0.5,
-      }}
-    >
-      <Paper
-        variant="outlined"
+    <Box sx={{ alignSelf: 'stretch', my: 0.25 }}>
+      <Box
+        onClick={() => setExpanded((prev) => !prev)}
         sx={{
-          borderRadius: 2.5,
+          px: 1.25,
+          py: 0.6,
+          borderRadius: '8px',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 1,
+          userSelect: 'none',
           backgroundColor: 'var(--lifehub-bg)',
-          borderColor: 'var(--lifehub-border)',
-          overflow: 'hidden',
+          border: '1px solid var(--lifehub-border)',
+          '&:hover': {
+            borderColor: 'primary.main',
+          },
         }}
       >
+        <Stack direction="row" spacing={0.75} alignItems="center" sx={{ minWidth: 0 }}>
+          <ShieldOutlined sx={{ fontSize: 14, color: 'success.main', flexShrink: 0 }} />
+          <Typography
+            variant="caption"
+            noWrap
+            sx={{ color: 'var(--lifehub-text-muted)', fontSize: 12 }}
+          >
+            {firstLine}
+          </Typography>
+        </Stack>
+        <Stack direction="row" spacing={0.25} alignItems="center" sx={{ flexShrink: 0 }}>
+          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 11.5 }}>
+            {expanded ? '收起' : '查看'}
+          </Typography>
+          {expanded ? (
+            <ExpandLess sx={{ fontSize: 15, color: 'var(--lifehub-text-muted)' }} />
+          ) : (
+            <ExpandMore sx={{ fontSize: 15, color: 'var(--lifehub-text-muted)' }} />
+          )}
+        </Stack>
+      </Box>
+      <Collapse in={expanded}>
         <Box
-          onClick={() => setExpanded((prev) => !prev)}
+          component="pre"
           sx={{
-            px: 1.75,
-            py: 0.9,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 1,
-            userSelect: 'none',
-            '&:hover': {
-              backgroundColor: 'rgba(99, 102, 241, 0.04)',
-            },
+            mt: 0.75,
+            mb: 0,
+            p: 1.5,
+            borderRadius: 2,
+            backgroundColor: 'var(--lifehub-bg)',
+            border: '1px solid var(--lifehub-border)',
+            fontSize: 11.5,
+            lineHeight: 1.55,
+            maxHeight: 220,
+            overflowY: 'auto',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+            color: 'var(--lifehub-text-muted)',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
           }}
         >
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
-            <ShieldOutlined sx={{ fontSize: 16, color: 'success.main', flexShrink: 0 }} />
-            <Typography
-              variant="caption"
-              noWrap
-              sx={{ fontWeight: 600, color: 'var(--lifehub-text-muted)' }}
-            >
-              {firstLine}
-            </Typography>
-          </Stack>
-          <Stack direction="row" spacing={0.5} alignItems="center" sx={{ flexShrink: 0 }}>
-            <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 600, fontSize: 11.5 }}>
-              {expanded ? '收起 Prompt' : '脱敏 Prompt'}
-            </Typography>
-            {expanded ? (
-              <ExpandLess sx={{ fontSize: 16, color: 'primary.main' }} />
-            ) : (
-              <ExpandMore sx={{ fontSize: 16, color: 'primary.main' }} />
-            )}
-          </Stack>
+          {content}
         </Box>
-        <Collapse in={expanded}>
-          <Box
-            component="pre"
-            sx={{
-              m: 0,
-              p: 1.75,
-              borderTop: '1px solid var(--lifehub-border)',
-              fontSize: 12,
-              lineHeight: 1.6,
-              maxHeight: 260,
-              overflowY: 'auto',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              color: 'var(--lifehub-text-muted)',
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-            }}
-          >
-            {content}
-          </Box>
-        </Collapse>
-      </Paper>
+      </Collapse>
     </Box>
   );
 }
 
 /**
- * 渲染 DeepSeek 网页风格极简 AI 分析与多轮对话页面。
+ * 渲染极简一屏 AI 分析与多轮对话页面。
  */
 export function AiAnalysisPage() {
   const { runtime, status } = useVault();
@@ -229,19 +227,20 @@ export function AiAnalysisPage() {
   const [habitSummary, setHabitSummary] = useState<AiHabitSummaryInput | undefined>(undefined);
   const [diaryEntries, setDiaryEntries] = useState<DecryptedDiaryEntry[]>([]);
 
-  // 配置表单状态（默认指向 DeepSeek 官方接口）
+  // 配置状态（默认指向 DeepSeek V4 主力模型 deepseek-flash）
   const [provider, setProvider] = useState<AiProviderType>('deepseek');
   const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com');
-  const [model, setModel] = useState('deepseek-chat');
+  const [model, setModel] = useState<string>(DEFAULT_DEEPSEEK_MODEL);
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState('');
   const [hasEncryptedKey, setHasEncryptedKey] = useState(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
 
-  // 分析模块 & 时间段（最长半年 180 天）
+  // 分析主题 & 时间段
   const [selectedTopic, setSelectedTopic] = useState<AiAnalysisTopic>('comprehensive');
   const [timeRange, setTimeRange] = useState<AiTimeRangePreset>('1m');
 
-  // DeepSeek 风格多会话管理状态
+  // 会话管理与弹窗状态
   const [sessions, setSessions] = useState<AiChatSession[]>(() => loadSavedSessions());
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
     const initial = loadSavedSessions();
@@ -253,14 +252,14 @@ export function AiAnalysisPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [auditHistory, setAuditHistory] = useState<AIAnalysisRequestRecord[]>([]);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [showPromptDrawer, setShowPromptDrawer] = useState(false);
-  const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
 
-  // 自动滚动到底部的引用
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [diagnosticsExpanded, setDiagnosticsExpanded] = useState(false);
+  const [mobileHistoryOpen, setMobileHistoryOpen] = useState(false);
+  const [contextAnchorEl, setContextAnchorEl] = useState<HTMLElement | null>(null);
+
   const chatScrollContainerRef = useRef<HTMLDivElement | null>(null);
   const chatBottomAnchorRef = useRef<HTMLDivElement | null>(null);
-  const advancedSectionRef = useRef<HTMLDivElement | null>(null);
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
@@ -272,28 +271,48 @@ export function AiAnalysisPage() {
     [activeSession],
   );
 
-  // 自动将消息流滚动到最底部（无需用户手动下拉）
   const scrollToBottom = useCallback((smooth = true) => {
     const container = chatScrollContainerRef.current;
-    if (container && typeof container.scrollTo === 'function') {
+    if (container) {
+      if (typeof container.scrollTo === 'function') {
+        try {
+          container.scrollTo({
+            top: container.scrollHeight,
+            behavior: smooth ? 'smooth' : 'auto',
+          });
+          return;
+        } catch {
+          // 降级直接赋值 scrollTop，避免触发外层窗口滚动
+        }
+      }
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  // 进入 AI 页面时锁定外层 html/body 视口并归零外层残留滚动条，确保仅内部会话区可滑动
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return undefined;
+    }
+    const html = document.documentElement;
+    const body = document.body;
+    html.classList.add('lifehub-ai-locked');
+    body.classList.add('lifehub-ai-locked');
+    if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
       try {
-        container.scrollTo({
-          top: container.scrollHeight,
-          behavior: smooth ? 'smooth' : 'auto',
-        });
-        return;
+        window.scrollTo(0, 0);
       } catch {
-        container.scrollTop = container.scrollHeight;
-        return;
+        // 忽略测试环境无 scrollTo 实现
       }
     }
-    if (chatBottomAnchorRef.current && typeof chatBottomAnchorRef.current.scrollIntoView === 'function') {
-      try {
-        chatBottomAnchorRef.current.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'end' });
-      } catch {
-        // 忽略 JSDOM 单测环境无 scrollIntoView 实现
-      }
+    const mainEl = document.querySelector('.lifehub-content');
+    if (mainEl instanceof HTMLElement) {
+      mainEl.scrollTop = 0;
     }
+    return () => {
+      html.classList.remove('lifehub-ai-locked');
+      body.classList.remove('lifehub-ai-locked');
+    };
   }, []);
 
   useEffect(() => {
@@ -304,12 +323,11 @@ export function AiAnalysisPage() {
     return undefined;
   }, [currentMessages.length, analyzing, activeSessionId, scrollToBottom]);
 
-  // 根据选定的时间段（最长半年 180 天）计算闭区间 [fromDate, toDate]
   const dateWindow = useMemo(() => {
     const opt =
       AI_TIME_RANGE_OPTIONS.find((o) => o.value === timeRange) ?? {
-        value: '30d' as const,
-        label: '近 1 个月（30 天）',
+        value: '1m' as const,
+        label: '近 1 个月',
         days: 30,
       };
     const safeDays = Math.min(180, Math.max(1, opt.days));
@@ -324,7 +342,6 @@ export function AiAnalysisPage() {
     );
   }, [dateWindow.fromDate, dateWindow.toDate, loadedBills, storeBills]);
 
-  // 强制默认脱敏选定时间段内的全部树洞记录（不可关闭脱敏）
   const rangedDiaries = useMemo(
     () =>
       diaryEntries.filter(
@@ -353,6 +370,7 @@ export function AiAnalysisPage() {
       setProvider(configRec.provider);
       setBaseUrl(configRec.baseUrl);
       setModel(configRec.model);
+      setThinkingEnabled(Boolean(configRec.thinkingEnabled));
       setHasEncryptedKey(configRec.hasApiKey);
       setAuditHistory(audits);
       setDiaryEntries(loadedDiaries);
@@ -448,7 +466,7 @@ export function AiAnalysisPage() {
           id: createSessionId(),
           title:
             customTitle ||
-            `${AI_TOPIC_META[selectedTopic].label} (${dateWindow.label})`,
+            `${AI_TOPIC_META[selectedTopic].label} · ${dateWindow.label}`,
           topic: selectedTopic,
           timeRange,
           fromDate: dateWindow.fromDate,
@@ -468,7 +486,15 @@ export function AiAnalysisPage() {
       saveSessionsToLocal(nextSessions);
       return updated;
     },
-    [activeSessionId, dateWindow.fromDate, dateWindow.label, dateWindow.toDate, selectedTopic, sessions, timeRange],
+    [
+      activeSessionId,
+      dateWindow.fromDate,
+      dateWindow.label,
+      dateWindow.toDate,
+      selectedTopic,
+      sessions,
+      timeRange,
+    ],
   );
 
   const handleNewSession = () => {
@@ -519,23 +545,26 @@ export function AiAnalysisPage() {
       trimmedKey.length > 0 ||
       existing.provider !== provider ||
       existing.baseUrl !== baseUrl.trim() ||
-      existing.model !== model.trim()
+      existing.model !== model.trim() ||
+      Boolean(existing.thinkingEnabled) !== thinkingEnabled
     ) {
       const updated = await aiStorage.saveConfig({
         provider,
         baseUrl,
         model,
+        thinkingEnabled,
         ...(trimmedKey.length > 0 ? { apiKey: trimmedKey } : {}),
       });
       setProvider(updated.provider);
       setBaseUrl(updated.baseUrl);
       setModel(updated.model);
+      setThinkingEnabled(Boolean(updated.thinkingEnabled));
       setHasEncryptedKey(updated.hasApiKey);
       if (trimmedKey.length > 0) {
         setApiKeyInput('');
       }
     }
-  }, [aiStorage, apiKeyInput, baseUrl, model, provider]);
+  }, [aiStorage, apiKeyInput, baseUrl, model, provider, thinkingEnabled]);
 
   const handleSaveConfig = async () => {
     try {
@@ -544,28 +573,43 @@ export function AiAnalysisPage() {
         provider,
         baseUrl,
         model,
+        thinkingEnabled,
         ...(apiKeyInput.trim().length > 0 ? { apiKey: apiKeyInput.trim() } : {}),
       });
       setProvider(updated.provider);
       setBaseUrl(updated.baseUrl);
       setModel(updated.model);
+      setThinkingEnabled(Boolean(updated.thinkingEnabled));
       setHasEncryptedKey(updated.hasApiKey);
       setApiKeyInput('');
-      setSaveSuccessMsg('AI 接口与密钥配置已通过 WebCrypto AES-GCM 加密保存至本地');
+      setSaveSuccessMsg(null);
+      setSettingsOpen(false);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : '保存配置失败');
     }
   };
 
-  /**
-   * 构建系统自动生成的首条脱敏上下文消息（在会话流中折叠展示系统发给 AI 的脱敏 Prompt）。
-   */
+  const handleToggleThinking = async () => {
+    const nextThinking = !thinkingEnabled;
+    setThinkingEnabled(nextThinking);
+    try {
+      await aiStorage.saveConfig({
+        provider,
+        baseUrl,
+        model,
+        thinkingEnabled: nextThinking,
+      });
+    } catch {
+      // 忽略持久化非致命异常
+    }
+  };
+
   const buildSystemContextUserBubble = (actionLabel: string): AiChatMessage => ({
     role: 'user',
     isSystemPromptContext: true,
     timestamp: new Date().toISOString(),
     content: [
-      `已注入系统脱敏数据 Prompt · ${AI_TOPIC_META[selectedTopic].label} | ${dateWindow.label}（${dateWindow.fromDate} ~ ${dateWindow.toDate} · ${actionLabel}）`,
+      `上下文 · ${AI_TOPIC_META[selectedTopic].label} · ${dateWindow.label}（${actionLabel}）`,
       '',
       builtPrompt.userPrompt,
     ].join('\n'),
@@ -575,7 +619,7 @@ export function AiAnalysisPage() {
     try {
       setAnalyzing(true);
       setErrorMsg(null);
-      const sysUserBubble = buildSystemContextUserBubble('本地智能复盘');
+      const sysUserBubble = buildSystemContextUserBubble('本地速览');
       const result = await executeLocalSmartAnalysis(promptContext, { storage: aiStorage });
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
@@ -595,7 +639,7 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : '生成本地智能总结失败');
+      setErrorMsg(err instanceof Error ? err.message : '生成本地总结失败');
     } finally {
       setAnalyzing(false);
     }
@@ -606,7 +650,7 @@ export function AiAnalysisPage() {
       setAnalyzing(true);
       setErrorMsg(null);
       await syncFormConfigIfNeeded();
-      const sysUserBubble = buildSystemContextUserBubble('发送脱敏 Prompt 至 AI 模型');
+      const sysUserBubble = buildSystemContextUserBubble('AI 深度复盘');
       const result = await executeRemoteAiAnalysis(builtPrompt, { storage: aiStorage });
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
@@ -644,7 +688,7 @@ export function AiAnalysisPage() {
 
     const prefixMessages: AiChatMessage[] =
       currentMessages.length === 0
-        ? [buildSystemContextUserBubble('自动注入脱敏上下文')]
+        ? [buildSystemContextUserBubble('自动注入')]
         : [];
 
     const userMsg: AiChatMessage = {
@@ -659,13 +703,13 @@ export function AiAnalysisPage() {
         ...cur,
         title:
           cur.messages.length === 0
-            ? `${AI_TOPIC_META[selectedTopic].icon} ${question.slice(0, 18)}`
+            ? question.slice(0, 18)
             : cur.title,
         topic: selectedTopic,
         timeRange,
         messages: nextHistory,
       }),
-      `${AI_TOPIC_META[selectedTopic].icon} ${question.slice(0, 18)}`,
+      question.slice(0, 18),
     );
 
     try {
@@ -698,7 +742,7 @@ export function AiAnalysisPage() {
           ...nextHistory,
           {
             role: 'assistant',
-            content: `> ⚠️ **请求未调通**：${msg}\n\n请点击左下角「⚙️ 模型与 DeepSeek Key 设置」检查 API Key 或网络状态。`,
+            content: `> ⚠️ **请求未调通**：${msg}\n\n请点击右上角或侧栏的「⚙️ 模型设置」检查 API Key 或网络状态。`,
             timestamp: new Date().toISOString(),
           },
         ],
@@ -739,266 +783,250 @@ export function AiAnalysisPage() {
     }
   };
 
-  const isReasonerModel = model === 'deepseek-reasoner';
+  const isRemoteReady =
+    provider === 'ollama' ||
+    ((provider === 'deepseek' || provider === 'openai-compatible') && hasEncryptedKey);
+
+  const activeModelBadgeLabel = isRemoteReady ? model : '本地模式';
+  const isCustomDeepSeekModel =
+    provider === 'deepseek' &&
+    !(DEEPSEEK_OFFICIAL_MODELS as readonly string[]).includes(model);
+
+  const renderSessionListContent = (closeDrawerOnSelect: boolean) => (
+    <Stack
+      spacing={0.5}
+      sx={{
+        flex: 1,
+        minHeight: 0,
+        overflowY: 'auto',
+        overscrollBehavior: 'contain',
+        pr: 0.25,
+      }}
+      data-testid="ai-session-list"
+    >
+      {sessions.length === 0 ? (
+        <Typography
+          variant="caption"
+          sx={{
+            color: 'var(--lifehub-text-muted)',
+            py: 4,
+            px: 1,
+            textAlign: 'center',
+            lineHeight: 1.7,
+          }}
+        >
+          暂无历史对话
+        </Typography>
+      ) : (
+        sessions.map((sess) => {
+          const isSelected = sess.id === activeSessionId;
+          return (
+            <Box
+              key={sess.id}
+              onClick={() => {
+                handleSelectSession(sess);
+                if (closeDrawerOnSelect) {
+                  setMobileHistoryOpen(false);
+                }
+              }}
+              data-testid={`ai-session-item-${sess.id}`}
+              sx={{
+                px: 1.25,
+                py: 0.75,
+                borderRadius: '8px',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 0.5,
+                backgroundColor: isSelected ? 'var(--lifehub-surface)' : 'transparent',
+                border: isSelected ? '1px solid var(--lifehub-border)' : '1px solid transparent',
+                '&:hover': {
+                  backgroundColor: 'var(--lifehub-surface)',
+                  '& .session-delete-btn': { opacity: 0.8 },
+                },
+              }}
+            >
+              <Typography
+                variant="body2"
+                noWrap
+                sx={{ flex: 1, minWidth: 0, fontWeight: isSelected ? 600 : 400, fontSize: 13 }}
+              >
+                {sess.title}
+              </Typography>
+              <IconButton
+                className="session-delete-btn"
+                size="small"
+                onClick={(e) => handleDeleteSession(sess.id, e)}
+                aria-label="删除会话"
+                sx={{ p: 0.35, opacity: { xs: 0.65, md: isSelected ? 0.65 : 0 }, transition: 'opacity 0.15s' }}
+              >
+                <DeleteOutline sx={{ fontSize: 15 }} />
+              </IconButton>
+            </Box>
+          );
+        })
+      )}
+    </Stack>
+  );
 
   return (
-    <Box data-testid="ai-page" sx={{ width: '100%' }}>
+    <Box
+      data-testid="ai-page"
+      sx={{
+        width: '100%',
+        flex: 1,
+        minHeight: 0,
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
       {errorMsg && (
-        <Alert severity="error" sx={{ mb: 1.5 }} onClose={() => setErrorMsg(null)}>
+        <Alert severity="error" sx={{ mb: 1, flexShrink: 0 }} onClose={() => setErrorMsg(null)}>
           {errorMsg}
         </Alert>
       )}
 
       {saveSuccessMsg && (
-        <Alert severity="success" sx={{ mb: 1.5 }} onClose={() => setSaveSuccessMsg(null)}>
+        <Alert
+          severity="success"
+          sx={{ mb: 1, flexShrink: 0 }}
+          onClose={() => setSaveSuccessMsg(null)}
+        >
           {saveSuccessMsg}
         </Alert>
       )}
 
-      {/* 1:1 DeepSeek 风格固定视口高度聊天主容器（大留白、轻边框、内部独立平滑滚动） */}
+      {/* 一屏聊天主容器（自适应填满视口剩余高度，外层零滚动条，仅内部会话流滚动） */}
       <Paper
         variant="outlined"
         data-testid="ai-quick-summary-card"
         sx={{
           display: 'flex',
-          flexDirection: { xs: 'column', md: 'row' },
-          height: { xs: 'calc(100dvh - 122px)', md: 'calc(100vh - 104px)' },
-          minHeight: { xs: 500, md: 580 },
-          maxHeight: 940,
+          flexDirection: 'row',
+          flex: 1,
+          minHeight: 0,
+          height: '100%',
           width: '100%',
-          maxWidth: '100%',
-          borderRadius: { xs: 3, md: 4 },
+          borderRadius: { xs: '10px', md: '12px' },
           overflow: 'hidden',
           backgroundColor: 'var(--lifehub-surface)',
           borderColor: 'var(--lifehub-border)',
-          mb: 2.5,
-          boxShadow: '0 8px 32px rgba(15, 23, 42, 0.05)',
         }}
       >
-        {/* 左侧：桌面端会话侧栏 / 移动端极简顶栏 */}
+        {/* 桌面端左侧精简会话栏（顶部 48px 标题行与右侧顶栏严丝合缝对齐） */}
         <Box
           data-testid="ai-sessions-sidebar"
           sx={{
-            width: { xs: '100%', md: 248 },
+            display: { xs: 'none', md: 'flex' },
+            width: 224,
+            height: '100%',
+            minHeight: 0,
+            overflow: 'hidden',
             flexShrink: 0,
-            borderRight: { xs: 'none', md: '1px solid var(--lifehub-border)' },
-            borderBottom: { xs: '1px solid var(--lifehub-border)', md: 'none' },
-            px: { xs: 2, md: 2 },
-            py: { xs: 1.25, md: 2.25 },
-            display: 'flex',
+            borderRight: '1px solid var(--lifehub-border)',
             flexDirection: 'column',
             backgroundColor: 'var(--lifehub-bg)',
           }}
         >
-          {/* 顶行：新建对话 + 移动端抽屉入口 */}
           <Stack
-            direction={{ xs: 'row', md: 'column' }}
-            spacing={1}
-            alignItems={{ xs: 'center', md: 'stretch' }}
+            direction="row"
+            alignItems="center"
             justifyContent="space-between"
+            sx={{
+              height: 48,
+              px: 1.5,
+              borderBottom: '1px solid var(--lifehub-border)',
+              flexShrink: 0,
+            }}
           >
+            <Typography
+              variant="subtitle2"
+              sx={{ fontWeight: 700, fontSize: 13, color: 'var(--lifehub-text)' }}
+            >
+              对话
+            </Typography>
             <Button
-              variant="contained"
-              startIcon={<AddCommentOutlined sx={{ fontSize: 17 }} />}
-              onClick={() => {
-                handleNewSession();
-                setMobileHistoryOpen(false);
-              }}
+              size="small"
+              variant="text"
+              startIcon={<AddCommentOutlined sx={{ fontSize: 15 }} />}
+              onClick={handleNewSession}
               data-testid="ai-new-session-button"
               sx={{
-                mb: { xs: 0, md: 1.75 },
-                borderRadius: '999px',
-                py: { xs: 0.65, md: 1 },
-                px: { xs: 2, md: 2.25 },
-                fontSize: { xs: 13, md: 13.5 },
-                fontWeight: 700,
+                borderRadius: '8px',
+                px: 1,
+                py: 0.4,
+                fontSize: 12.5,
+                fontWeight: 600,
                 textTransform: 'none',
-                boxShadow: 'none',
-                whiteSpace: 'nowrap',
+                color: 'primary.main',
+                '&:hover': {
+                  backgroundColor: 'var(--lifehub-primary-soft)',
+                },
               }}
             >
-              开启新对话
+              新对话
             </Button>
+          </Stack>
 
-            {/* 移动端右侧轻巧入口：历史会话 + Key 设置 */}
-            <Stack
-              direction="row"
-              spacing={0.75}
-              alignItems="center"
-              sx={{ display: { xs: 'flex', md: 'none' } }}
-            >
+          <Box
+            sx={{
+              p: 1.25,
+              flex: 1,
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            {renderSessionListContent(false)}
+
+            <Divider sx={{ my: 1 }} />
+
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={0.5}>
               <Button
                 size="small"
-                variant={mobileHistoryOpen ? 'contained' : 'outlined'}
-                color={mobileHistoryOpen ? 'primary' : 'inherit'}
-                startIcon={<HistoryOutlined sx={{ fontSize: 15 }} />}
-                onClick={() => setMobileHistoryOpen((prev) => !prev)}
-                sx={{
-                  borderRadius: '999px',
-                  fontSize: 12.5,
-                  py: 0.45,
-                  px: 1.35,
-                  textTransform: 'none',
-                  borderColor: 'var(--lifehub-border)',
-                  color: mobileHistoryOpen ? '#fff' : 'var(--lifehub-text)',
-                }}
-              >
-                历史 ({sessions.length})
-              </Button>
-              <Button
-                size="small"
-                variant={advancedOpen ? 'contained' : 'outlined'}
-                color={advancedOpen ? 'primary' : 'inherit'}
+                variant="text"
                 startIcon={<SettingsOutlined sx={{ fontSize: 15 }} />}
-                onClick={() => {
-                  setAdvancedOpen((prev) => {
-                    const next = !prev;
-                    if (next) {
-                      setTimeout(() => {
-                        advancedSectionRef.current?.scrollIntoView?.({
-                          behavior: 'smooth',
-                          block: 'start',
-                        });
-                      }, 60);
-                    }
-                    return next;
-                  });
-                }}
+                onClick={() => setSettingsOpen(true)}
+                data-testid="ai-toggle-advanced-button"
                 sx={{
-                  borderRadius: '999px',
+                  flex: 1,
+                  justifyContent: 'flex-start',
                   fontSize: 12.5,
-                  py: 0.45,
-                  px: 1.35,
+                  py: 0.55,
+                  px: 1,
+                  borderRadius: '8px',
+                  color: 'var(--lifehub-text-muted)',
                   textTransform: 'none',
-                  borderColor: 'var(--lifehub-border)',
-                  color: advancedOpen ? '#fff' : 'var(--lifehub-text)',
+                  '&:hover': {
+                    color: 'var(--lifehub-text)',
+                    backgroundColor: 'var(--lifehub-surface)',
+                  },
                 }}
               >
                 模型设置
               </Button>
+              <Tooltip title="上下文与记录">
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    setDiagnosticsExpanded(true);
+                    setSettingsOpen(true);
+                  }}
+                  data-testid="ai-toggle-prompt-preview-button"
+                  aria-label="查看脱敏上下文"
+                  sx={{ borderRadius: '8px', color: 'var(--lifehub-text-muted)' }}
+                >
+                  <ShieldOutlined sx={{ fontSize: 15 }} />
+                </IconButton>
+              </Tooltip>
             </Stack>
-          </Stack>
-
-          <Stack
-            direction="row"
-            spacing={0.75}
-            alignItems="center"
-            sx={{ display: { xs: 'none', md: 'flex' }, mb: 1, px: 0.5 }}
-          >
-            <HistoryOutlined sx={{ fontSize: 15, color: 'var(--lifehub-text-muted)' }} />
-            <Typography variant="caption" sx={{ fontWeight: 700, color: 'var(--lifehub-text-muted)' }}>
-              历史对话 ({sessions.length})
-            </Typography>
-          </Stack>
-
-          <Stack
-            spacing={0.75}
-            sx={{
-              display: { xs: mobileHistoryOpen ? 'flex' : 'none', md: 'flex' },
-              flex: { xs: 'none', md: 1 },
-              mt: { xs: 1.25, md: 0 },
-              pt: { xs: 1.25, md: 0 },
-              borderTop: { xs: '1px dashed var(--lifehub-border)', md: 'none' },
-              maxHeight: { xs: 180, md: 'none' },
-              overflowY: 'auto',
-              pr: 0.25,
-            }}
-            data-testid="ai-session-list"
-          >
-            {sessions.length === 0 ? (
-              <Typography
-                variant="caption"
-                sx={{ color: 'var(--lifehub-text-muted)', py: { xs: 1.5, md: 4 }, px: 1, textAlign: 'center', lineHeight: 1.7 }}
-              >
-                暂无历史会话
-                <br />
-                选择下方主题即可开启分析
-              </Typography>
-            ) : (
-              sessions.map((sess) => {
-                const isSelected = sess.id === activeSessionId;
-                return (
-                  <Box
-                    key={sess.id}
-                    onClick={() => {
-                      handleSelectSession(sess);
-                      setMobileHistoryOpen(false);
-                    }}
-                    data-testid={`ai-session-item-${sess.id}`}
-                    sx={{
-                      px: 1.5,
-                      py: 1,
-                      borderRadius: 2.5,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      backgroundColor: isSelected ? 'var(--lifehub-surface)' : 'transparent',
-                      border: isSelected
-                        ? '1px solid var(--lifehub-border)'
-                        : '1px solid transparent',
-                      transition: 'all 0.15s ease',
-                      '&:hover': {
-                        backgroundColor: 'var(--lifehub-surface)',
-                      },
-                    }}
-                  >
-                    <Box sx={{ minWidth: 0, flex: 1 }}>
-                      <Typography
-                        variant="body2"
-                        noWrap
-                        sx={{ fontWeight: isSelected ? 700 : 500, fontSize: 13.5 }}
-                      >
-                        {sess.title}
-                      </Typography>
-                      <Typography
-                        variant="caption"
-                        sx={{ color: 'var(--lifehub-text-muted)', fontSize: 11.5 }}
-                      >
-                        {sess.fromDate.slice(5)} ~ {sess.toDate.slice(5)}
-                      </Typography>
-                    </Box>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => handleDeleteSession(sess.id, e)}
-                      aria-label="删除会话"
-                      sx={{ opacity: 0.65, '&:hover': { opacity: 1 } }}
-                    >
-                      <DeleteOutline sx={{ fontSize: 16 }} />
-                    </IconButton>
-                  </Box>
-                );
-              })
-            )}
-          </Stack>
-
-          <Divider sx={{ display: { xs: 'none', md: 'block' }, my: 1.5 }} />
-
-          <Stack spacing={0.75} sx={{ display: { xs: 'none', md: 'flex' } }}>
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<VisibilityOutlined fontSize="small" />}
-              onClick={() => setShowPromptDrawer((prev) => !prev)}
-              data-testid="ai-toggle-prompt-preview-button"
-              sx={{ justifyContent: 'flex-start', fontSize: 12.5, py: 0.6, color: 'var(--lifehub-text-muted)', textTransform: 'none' }}
-            >
-              {showPromptDrawer ? '隐藏底层脱敏 Prompt' : '查看底层脱敏 Prompt'}
-            </Button>
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<SettingsOutlined fontSize="small" />}
-              onClick={() => setAdvancedOpen((prev) => !prev)}
-              data-testid="ai-toggle-advanced-button"
-              sx={{ justifyContent: 'flex-start', fontSize: 12.5, py: 0.6, fontWeight: 600, textTransform: 'none' }}
-            >
-              {advancedOpen ? '收起 API Key 设置' : '模型与 DeepSeek Key 设置'}
-            </Button>
-          </Stack>
+          </Box>
         </Box>
 
-        {/* 右侧：DeepSeek 风格宽敞主对话区 */}
+        {/* 右侧主对话区 */}
         <Box
           sx={{
             flex: 1,
@@ -1006,119 +1034,101 @@ export function AiAnalysisPage() {
             flexDirection: 'column',
             minWidth: 0,
             minHeight: 0,
-            height: { xs: 'auto', md: '100%' },
-            overflow: 'hidden',
+            height: '100%',
           }}
         >
-          {/* 顶部舒展控制栏：左侧分析维度胶囊（圆润间距充足） + 右侧轻量时间段选择 */}
+          {/* 统一极简顶栏（手机端与桌面端均仅占 1 行 46px） */}
           <Stack
-            direction={{ xs: 'column', lg: 'row' }}
+            direction="row"
+            alignItems="center"
             justifyContent="space-between"
-            alignItems={{ xs: 'stretch', lg: 'center' }}
-            spacing={1.25}
+            spacing={1}
             sx={{
-              px: { xs: 2, sm: 3.5 },
-              py: { xs: 1.35, sm: 1.75 },
+              height: 48,
+              px: { xs: 1, sm: 2.25 },
               borderBottom: '1px solid var(--lifehub-border)',
               flexShrink: 0,
-              backgroundColor: 'var(--lifehub-surface)',
             }}
           >
-            {/* 模块选择胶囊（圆润大胶囊、充足间距、手机端平滑横滑） */}
-            <Stack
-              direction="row"
-              spacing={1}
-              flexWrap={{ xs: 'nowrap', md: 'wrap' }}
-              useFlexGap
-              data-testid="ai-topic-selector"
-              sx={{
-                overflowX: { xs: 'auto', md: 'visible' },
-                maxWidth: '100%',
-                py: 0.25,
-                '&::-webkit-scrollbar': { display: 'none' },
-                scrollbarWidth: 'none',
-              }}
-            >
-              {(Object.keys(AI_TOPIC_META) as AiAnalysisTopic[]).map((topicKey) => {
-                const meta = AI_TOPIC_META[topicKey];
-                const active = selectedTopic === topicKey;
-                return (
-                  <Chip
-                    key={topicKey}
-                    label={`${meta.icon} ${meta.label}`}
-                    color={active ? 'primary' : 'default'}
-                    variant={active ? 'filled' : 'outlined'}
-                    onClick={() => setSelectedTopic(topicKey)}
-                    data-testid={`ai-topic-chip-${topicKey}`}
-                    sx={{
-                      cursor: 'pointer',
-                      fontWeight: active ? 700 : 500,
-                      borderRadius: '999px',
-                      height: 32,
-                      px: 0.5,
-                      flexShrink: 0,
-                      fontSize: 13,
-                      borderColor: active ? 'primary.main' : 'var(--lifehub-border)',
-                    }}
-                  />
-                );
-              })}
+            {/* 左：移动端历史抽屉图标 + 主题/时间范围聚合选择器 */}
+            <Stack direction="row" alignItems="center" spacing={0.5} sx={{ minWidth: 0 }}>
+              <IconButton
+                size="small"
+                onClick={() => setMobileHistoryOpen(true)}
+                aria-label="历史对话"
+                sx={{ display: { xs: 'inline-flex', md: 'none' } }}
+              >
+                <Badge
+                  color="primary"
+                  variant="dot"
+                  invisible={sessions.length === 0}
+                >
+                  <HistoryOutlined sx={{ fontSize: 20 }} />
+                </Badge>
+              </IconButton>
+
+              <Button
+                size="small"
+                variant="text"
+                onClick={(e) => setContextAnchorEl(e.currentTarget)}
+                endIcon={<KeyboardArrowDownRounded sx={{ fontSize: 18 }} />}
+                data-testid="ai-context-trigger"
+                sx={{
+                  borderRadius: '8px',
+                  px: 1.1,
+                  py: 0.45,
+                  fontSize: 13.5,
+                  fontWeight: 600,
+                  color: 'var(--lifehub-text)',
+                  textTransform: 'none',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {AI_TOPIC_META[selectedTopic].icon} {AI_TOPIC_META[selectedTopic].label} · {dateWindow.label}
+              </Button>
             </Stack>
 
-            {/* 数据时间段选择（去掉笨重的浮动 Label，改为干净清爽的圆角下拉框） + 强制脱敏徽章 */}
-            <Stack
-              direction="row"
-              spacing={1.25}
-              alignItems="center"
-              justifyContent="space-between"
-              sx={{ width: { xs: '100%', lg: 'auto' }, flexShrink: 0 }}
-            >
-              <FormControl size="small" sx={{ minWidth: 148 }}>
-                <Select
-                  displayEmpty
-                  value={timeRange}
-                  onChange={(e) => setTimeRange(e.target.value as AiTimeRangePreset)}
-                  data-testid="ai-time-range-select"
-                  sx={{
-                    borderRadius: '999px',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    height: 32,
-                    backgroundColor: 'var(--lifehub-bg)',
-                    '& .MuiSelect-select': {
-                      py: 0.5,
-                      px: 1.75,
-                    },
-                  }}
-                >
-                  {AI_TIME_RANGE_OPTIONS.map((opt) => (
-                    <MenuItem key={opt.value} value={opt.value} sx={{ fontSize: 13 }}>
-                      📅 {opt.label}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-
+            {/* 右：桌面端显示当前模型标签；移动端仅保留「新对话」与「设置」两个纯图标按钮 */}
+            <Stack direction="row" alignItems="center" spacing={0.5} sx={{ flexShrink: 0 }}>
               <Chip
-                icon={<LockOutlined sx={{ fontSize: 13 }} />}
                 size="small"
-                color="success"
                 variant="outlined"
-                data-testid="ai-mandatory-redaction-chip"
-                label="本地已脱敏"
+                label={activeModelBadgeLabel}
+                onClick={() => setSettingsOpen(true)}
                 sx={{
-                  fontWeight: 600,
+                  display: { xs: 'none', sm: 'inline-flex' },
+                  height: 26,
                   fontSize: 12,
-                  height: 30,
-                  borderRadius: '999px',
-                  px: 0.5,
-                  flexShrink: 0,
+                  borderRadius: '6px',
+                  borderColor: 'var(--lifehub-border)',
+                  color: 'var(--lifehub-text-muted)',
+                  cursor: 'pointer',
                 }}
               />
+
+              <IconButton
+                size="small"
+                onClick={handleNewSession}
+                aria-label="新建对话"
+                sx={{ display: { xs: 'inline-flex', md: 'none' } }}
+              >
+                <AddCommentOutlined sx={{ fontSize: 19 }} />
+              </IconButton>
+
+              <IconButton
+                size="small"
+                onClick={() => setSettingsOpen(true)}
+                aria-label="模型设置"
+                sx={{ display: { xs: 'inline-flex', md: 'none' } }}
+              >
+                <Badge color="success" variant="dot" invisible={!hasEncryptedKey}>
+                  <SettingsOutlined sx={{ fontSize: 19 }} />
+                </Badge>
+              </IconButton>
             </Stack>
           </Stack>
 
-          {/* 中间：独立滚动消息流（宽敞呼吸感留白） */}
+          {/* 中间消息流（唯一主纵向滚动容器） */}
           <Box
             ref={chatScrollContainerRef}
             data-testid="ai-chat-history"
@@ -1127,8 +1137,10 @@ export function AiAnalysisPage() {
               minHeight: 0,
               overflowY: 'auto',
               overflowX: 'hidden',
-              px: { xs: 2, sm: 4 },
-              py: { xs: 2.5, sm: 3.5 },
+              overscrollBehavior: 'contain',
+              WebkitOverflowScrolling: 'touch',
+              px: { xs: 1.75, sm: 3.5 },
+              py: { xs: 2, sm: 3 },
               display: 'flex',
               flexDirection: 'column',
             }}
@@ -1136,141 +1148,107 @@ export function AiAnalysisPage() {
             <Box
               sx={{
                 width: '100%',
-                maxWidth: 780,
+                maxWidth: 740,
                 mx: 'auto',
                 flex: 1,
                 display: 'flex',
                 flexDirection: 'column',
-                gap: 2.75,
+                gap: 2.25,
                 minWidth: 0,
               }}
             >
               {currentMessages.length === 0 ? (
-                /* DeepSeek 风格大留白欢迎页 */
+                /* 清爽欢迎空状态 */
                 <Box
                   sx={{
                     my: 'auto',
                     textAlign: 'center',
-                    maxWidth: 580,
+                    maxWidth: 480,
                     width: '100%',
                     mx: 'auto',
-                    py: { xs: 2, sm: 4 },
+                    py: 2,
                   }}
                 >
-                  <Box
-                    sx={{
-                      width: 56,
-                      height: 56,
-                      borderRadius: '18px',
-                      backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                      color: 'primary.main',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontSize: 28,
-                      mb: 2,
-                    }}
-                  >
-                    {AI_TOPIC_META[selectedTopic].icon}
-                  </Box>
                   <Typography
                     variant="h6"
-                    sx={{ fontWeight: 800, mb: 1, fontSize: { xs: '1.15rem', sm: '1.35rem' } }}
+                    sx={{ fontWeight: 700, mb: 2, fontSize: { xs: '1.08rem', sm: '1.22rem' } }}
                   >
-                    有什么可以帮您复盘？
-                  </Typography>
-                  <Typography
-                    variant="body2"
-                    sx={{
-                      color: 'var(--lifehub-text-muted)',
-                      mb: 3,
-                      lineHeight: 1.75,
-                      fontSize: { xs: 13.5, sm: 14.5 },
-                    }}
-                  >
-                    已就绪：<strong>{AI_TOPIC_META[selectedTopic].label}</strong> ·{' '}
-                    <strong>{dateWindow.label}</strong>（{dateWindow.fromDate.slice(5)} 至{' '}
-                    {dateWindow.toDate.slice(5)}）脱敏数据
+                    需要帮你复盘哪方面？
                   </Typography>
 
+                  {/* 单行紧凑操作按钮 */}
                   <Stack
-                    direction={{ xs: 'column', sm: 'row' }}
-                    spacing={1.5}
+                    direction="row"
+                    spacing={1}
                     justifyContent="center"
-                    sx={{ mb: 3.5 }}
+                    sx={{ mb: 2.5 }}
                   >
                     <Button
                       variant="contained"
-                      color="primary"
+                      size="small"
                       disabled={analyzing}
-                      onClick={() => void handleRemoteAnalyze()}
+                      onClick={() => void (isRemoteReady ? handleRemoteAnalyze() : handleLocalSummary())}
                       data-testid="ai-remote-analyze-button"
                       sx={{
-                        borderRadius: '14px',
-                        px: 3,
-                        py: 1.2,
-                        fontWeight: 700,
+                        borderRadius: '8px',
+                        px: 2,
+                        py: 0.7,
+                        fontWeight: 600,
                         textTransform: 'none',
-                        fontSize: 14,
-                        boxShadow: '0 4px 14px rgba(99, 102, 241, 0.22)',
+                        fontSize: 13,
+                        boxShadow: 'none',
                       }}
                     >
-                      🚀 DeepSeek 深度分析报告
+                      {isRemoteReady ? 'AI 深度复盘' : '一键生成复盘'}
                     </Button>
                     <Button
                       variant="outlined"
-                      color="secondary"
+                      size="small"
+                      color="inherit"
                       disabled={analyzing}
                       onClick={() => void handleLocalSummary()}
                       data-testid="ai-local-summary-button"
                       sx={{
-                        borderRadius: '14px',
-                        px: 2.75,
-                        py: 1.2,
-                        fontWeight: 600,
+                        borderRadius: '8px',
+                        px: 1.75,
+                        py: 0.7,
+                        fontWeight: 500,
                         textTransform: 'none',
-                        fontSize: 14,
+                        fontSize: 13,
+                        borderColor: 'var(--lifehub-border)',
+                        color: 'var(--lifehub-text-muted)',
                       }}
                     >
-                      ⚡ 生成本地秒级总结
+                      本地速览
                     </Button>
                   </Stack>
 
-                  {/* 预设快捷追问：从挤在一起的小胶囊升级为整齐舒展的列表卡片 */}
-                  <Stack spacing={1.25} alignItems="stretch" sx={{ width: '100%', textAlign: 'left' }}>
-                    <Typography
-                      variant="caption"
-                      sx={{ color: 'var(--lifehub-text-muted)', px: 0.5, fontWeight: 600 }}
-                    >
-                      猜你想问（点击直接提问）：
-                    </Typography>
-                    <Stack spacing={1} sx={{ width: '100%' }}>
-                      {AI_TOPIC_META[selectedTopic].starterQuestions.map((q, idx) => (
-                        <Box
-                          key={idx}
-                          onClick={() => void handleSendChat(q)}
-                          data-testid={`ai-starter-question-${idx}`}
-                          sx={{
-                            cursor: 'pointer',
-                            px: 2,
-                            py: 1.35,
-                            borderRadius: '14px',
-                            backgroundColor: 'var(--lifehub-bg)',
-                            border: '1px solid var(--lifehub-border)',
-                            fontSize: 13.5,
-                            lineHeight: 1.55,
-                            color: 'var(--lifehub-text)',
-                            transition: 'all 0.15s ease',
-                            '&:hover': {
-                              borderColor: 'primary.main',
-                              backgroundColor: 'rgba(99, 102, 241, 0.04)',
-                            },
-                          }}
-                        >
-                          💬 {q}
-                        </Box>
-                      ))}
-                    </Stack>
+                  {/* 精简快捷提问 */}
+                  <Stack spacing={0.75} sx={{ width: '100%', textAlign: 'left' }}>
+                    {AI_TOPIC_META[selectedTopic].starterQuestions.map((q, idx) => (
+                      <Box
+                        key={idx}
+                        onClick={() => void handleSendChat(q)}
+                        data-testid={`ai-starter-question-${idx}`}
+                        sx={{
+                          cursor: 'pointer',
+                          px: 1.5,
+                          py: 0.95,
+                          borderRadius: '8px',
+                          backgroundColor: 'var(--lifehub-bg)',
+                          border: '1px solid var(--lifehub-border)',
+                          fontSize: 13,
+                          lineHeight: 1.5,
+                          color: 'var(--lifehub-text)',
+                          transition: 'border-color 0.15s ease',
+                          '&:hover': {
+                            borderColor: 'primary.main',
+                          },
+                        }}
+                      >
+                        {q}
+                      </Box>
+                    ))}
                   </Stack>
                 </Box>
               ) : (
@@ -1285,17 +1263,16 @@ export function AiAnalysisPage() {
                         key={idx}
                         sx={{
                           alignSelf: 'flex-end',
-                          maxWidth: { xs: '88%', sm: '75%' },
-                          px: 2.25,
-                          py: 1.35,
-                          borderRadius: '20px 20px 6px 20px',
+                          maxWidth: { xs: '88%', sm: '76%' },
+                          px: 1.75,
+                          py: 1.05,
+                          borderRadius: '12px 12px 4px 12px',
                           backgroundColor: 'primary.main',
                           color: '#fff',
-                          fontSize: 14.5,
-                          lineHeight: 1.65,
+                          fontSize: 14,
+                          lineHeight: 1.6,
                           whiteSpace: 'pre-wrap',
                           wordBreak: 'break-word',
-                          boxShadow: '0 2px 10px rgba(99, 102, 241, 0.18)',
                         }}
                       >
                         {msg.content}
@@ -1303,21 +1280,21 @@ export function AiAnalysisPage() {
                     );
                   }
 
-                  // AI 顾问回复：宽敞舒适的阅读卡片
+                  // AI 回复：去边框平铺阅读布局，省去多层框线与虚线分割
                   return (
                     <Stack
                       key={idx}
                       direction="row"
-                      spacing={{ xs: 0, sm: 1.75 }}
+                      spacing={{ xs: 0, sm: 1.5 }}
                       alignItems="flex-start"
-                      sx={{ width: '100%', py: 0.5, minWidth: 0 }}
+                      sx={{ width: '100%', minWidth: 0 }}
                     >
                       <Box
                         sx={{
-                          width: 34,
-                          height: 34,
-                          borderRadius: '12px',
-                          backgroundColor: 'rgba(99, 102, 241, 0.12)',
+                          width: 28,
+                          height: 28,
+                          borderRadius: '9px',
+                          backgroundColor: 'rgba(99, 102, 241, 0.1)',
                           color: 'primary.main',
                           display: { xs: 'none', sm: 'flex' },
                           alignItems: 'center',
@@ -1326,101 +1303,56 @@ export function AiAnalysisPage() {
                           mt: 0.25,
                         }}
                       >
-                        <AutoAwesomeOutlined sx={{ fontSize: 18 }} />
+                        <AutoAwesomeOutlined sx={{ fontSize: 16 }} />
                       </Box>
 
                       <Box sx={{ flex: 1, minWidth: 0, maxWidth: '100%' }}>
-                        <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.85 }}>
-                          <AutoAwesomeOutlined
-                            sx={{ fontSize: 16, color: 'primary.main', display: { xs: 'inline-flex', sm: 'none' } }}
-                          />
-                          <Typography variant="caption" sx={{ fontWeight: 700, fontSize: 13, color: 'var(--lifehub-text)' }}>
-                            DeepSeek 顾问
-                          </Typography>
-                          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 12 }}>
-                            · {AI_TOPIC_META[selectedTopic].label}
-                          </Typography>
-                        </Stack>
+                        <AiMarkdownRenderer content={msg.content} />
 
-                        <Paper
-                          variant="outlined"
-                          sx={{
-                            p: { xs: 2, sm: 2.75 },
-                            borderRadius: '18px',
-                            backgroundColor: 'var(--lifehub-bg)',
-                            borderColor: 'var(--lifehub-border)',
-                            overflow: 'hidden',
-                          }}
-                        >
-                          <AiMarkdownRenderer content={msg.content} />
+                        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.75, ml: -0.5 }}>
+                          <Tooltip title={copiedIdx === idx ? '已复制' : '复制内容'}>
+                            <IconButton
+                              size="small"
+                              onClick={() => handleCopyMessage(msg.content, idx)}
+                              aria-label="复制内容"
+                              sx={{ color: 'var(--lifehub-text-muted)', p: 0.5 }}
+                            >
+                              <ContentCopyOutlined sx={{ fontSize: 14 }} />
+                            </IconButton>
+                          </Tooltip>
 
-                          <Stack
-                            direction="row"
-                            spacing={1.5}
-                            alignItems="center"
-                            sx={{
-                              mt: 1.75,
-                              pt: 1.1,
-                              borderTop: '1px dashed var(--lifehub-border)',
-                            }}
-                          >
-                            <Tooltip title={copiedIdx === idx ? '已复制' : '复制 Markdown 内容'}>
-                              <Button
-                                size="small"
-                                variant="text"
-                                startIcon={<ContentCopyOutlined sx={{ fontSize: 14 }} />}
-                                onClick={() => handleCopyMessage(msg.content, idx)}
-                                sx={{ fontSize: 12, py: 0.3, px: 1, color: 'var(--lifehub-text-muted)', textTransform: 'none' }}
-                              >
-                                {copiedIdx === idx ? '已复制' : '复制内容'}
-                              </Button>
+                          {idx === currentMessages.length - 1 && (
+                            <Tooltip title="重新生成">
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  disabled={analyzing}
+                                  onClick={() => void (isRemoteReady ? handleRemoteAnalyze() : handleLocalSummary())}
+                                  aria-label="重新生成"
+                                  sx={{ color: 'var(--lifehub-text-muted)', p: 0.5 }}
+                                >
+                                  <RefreshOutlined sx={{ fontSize: 15 }} />
+                                </IconButton>
+                              </span>
                             </Tooltip>
-
-                            {idx === currentMessages.length - 1 && (
-                              <Button
-                                size="small"
-                                variant="text"
-                                startIcon={<RefreshOutlined sx={{ fontSize: 14 }} />}
-                                disabled={analyzing}
-                                onClick={() => void handleRemoteAnalyze()}
-                                sx={{ fontSize: 12, py: 0.3, px: 1, color: 'var(--lifehub-text-muted)', textTransform: 'none' }}
-                              >
-                                重新深度分析
-                              </Button>
-                            )}
-                          </Stack>
-                        </Paper>
+                          )}
+                        </Stack>
                       </Box>
                     </Stack>
                   );
                 })
               )}
 
-              {/* 实时思考中动画气泡 */}
               {analyzing && (
-                <Stack direction="row" spacing={1.5} alignItems="center" sx={{ py: 1.25 }}>
-                  <Box
-                    sx={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: '10px',
-                      backgroundColor: 'rgba(99, 102, 241, 0.12)',
-                      color: 'primary.main',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                    }}
-                  >
-                    <CircularProgress size={16} thickness={5} />
-                  </Box>
-                  <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontWeight: 500, fontSize: 13.5 }}>
-                    DeepSeek 正在思考并生成结构化分析，请稍候…
+                <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.75 }}>
+                  <CircularProgress size={15} thickness={5} />
+                  <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 13 }}>
+                    正在思考…
                   </Typography>
                 </Stack>
               )}
 
-              {/* 保留 data-testid="ai-analysis-output" 兼容回归校验 */}
+              {/* 保留回归校验锚点 */}
               {analysisOutput && (
                 <Box
                   data-testid="ai-analysis-output"
@@ -1430,34 +1362,33 @@ export function AiAnalysisPage() {
                 </Box>
               )}
 
-              <Box ref={chatBottomAnchorRef} sx={{ height: 6 }} />
+              <Box ref={chatBottomAnchorRef} sx={{ height: 4 }} />
             </Box>
           </Box>
 
-          {/* 底部：极简宽敞的 DeepSeek 风格输入舱（去除多余按钮，左一右一清爽呼吸感） */}
+          {/* 底部紧凑输入舱：仅保留「深度思考」开关与圆形「发送」图标 */}
           <Box
             data-testid="ai-chat-panel"
             sx={{
-              px: { xs: 2, sm: 4 },
-              pb: { xs: 2, sm: 2.5 },
-              pt: 1,
-              backgroundColor: 'var(--lifehub-surface)',
+              px: { xs: 1.25, sm: 3.5 },
+              pb: { xs: 1.25, sm: 2 },
+              pt: 0.5,
               flexShrink: 0,
             }}
           >
             <Paper
               variant="outlined"
               sx={{
-                maxWidth: 780,
+                maxWidth: 740,
                 mx: 'auto',
-                p: { xs: 1.5, sm: 1.75 },
-                borderRadius: '20px',
+                px: 1.5,
+                py: 1,
+                borderRadius: '12px',
                 backgroundColor: 'var(--lifehub-bg)',
                 borderColor: 'var(--lifehub-border)',
-                transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
+                transition: 'border-color 0.2s ease',
                 '&:focus-within': {
                   borderColor: 'primary.main',
-                  boxShadow: '0 0 0 3px rgba(99, 102, 241, 0.12)',
                 },
               }}
             >
@@ -1468,7 +1399,7 @@ export function AiAnalysisPage() {
                 minRows={1}
                 maxRows={4}
                 variant="standard"
-                placeholder={`给 DeepSeek 发送消息（当前：${AI_TOPIC_META[selectedTopic].label}）…`}
+                placeholder="输入问题，回车发送…"
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -1479,309 +1410,398 @@ export function AiAnalysisPage() {
                 }}
                 InputProps={{
                   disableUnderline: true,
-                  sx: { px: 0.75, py: 0.5, fontSize: 14.5, lineHeight: 1.65 },
+                  sx: { px: 0.25, py: 0.25, fontSize: 14, lineHeight: 1.55 },
                 }}
                 inputProps={{ 'data-testid': 'ai-chat-input' }}
               />
 
-              {/* 输入框底栏：仅保留左侧「深度思考 (R1)」与右侧「发送」，告别按钮拥挤 */}
               <Stack
                 direction="row"
                 justifyContent="space-between"
                 alignItems="center"
-                spacing={1.5}
-                sx={{ mt: 1, pt: 0.5, px: 0.5 }}
+                sx={{ mt: 0.5 }}
               >
                 <Chip
-                  icon={<PsychologyOutlined sx={{ fontSize: 16 }} />}
-                  label="深度思考 (R1)"
-                  color={isReasonerModel ? 'primary' : 'default'}
-                  variant={isReasonerModel ? 'filled' : 'outlined'}
-                  onClick={() => {
-                    const nextModel = isReasonerModel ? 'deepseek-chat' : 'deepseek-reasoner';
-                    setProvider('deepseek');
-                    setBaseUrl('https://api.deepseek.com');
-                    setModel(nextModel);
-                  }}
+                  icon={<PsychologyOutlined sx={{ fontSize: 15 }} />}
+                  label="深度思考"
+                  size="small"
+                  color={thinkingEnabled ? 'primary' : 'default'}
+                  variant={thinkingEnabled ? 'filled' : 'outlined'}
+                  onClick={() => void handleToggleThinking()}
+                  data-testid="ai-thinking-toggle"
                   sx={{
                     cursor: 'pointer',
-                    borderRadius: '999px',
-                    height: 32,
-                    px: 0.5,
-                    fontWeight: isReasonerModel ? 700 : 500,
-                    fontSize: 12.5,
+                    borderRadius: '6px',
+                    height: 26,
+                    fontSize: 12,
+                    fontWeight: thinkingEnabled ? 600 : 400,
+                    borderColor: thinkingEnabled ? 'primary.main' : 'var(--lifehub-border)',
                   }}
                 />
 
-                <Button
-                  variant="contained"
+                <IconButton
+                  color="primary"
                   disabled={analyzing || chatInput.trim().length === 0}
                   onClick={() => void handleSendChat()}
-                  endIcon={<SendOutlined sx={{ fontSize: 15 }} />}
                   data-testid="ai-chat-send-button"
+                  aria-label="发送"
                   sx={{
-                    whiteSpace: 'nowrap',
-                    flexShrink: 0,
-                    px: 2.5,
-                    py: 0.7,
-                    borderRadius: '999px',
-                    fontWeight: 700,
-                    fontSize: 13.5,
-                    textTransform: 'none',
-                    boxShadow: 'none',
+                    width: 30,
+                    height: 30,
+                    borderRadius: '8px',
+                    backgroundColor:
+                      analyzing || chatInput.trim().length === 0
+                        ? 'action.disabledBackground'
+                        : 'primary.main',
+                    color: '#fff',
+                    '&:hover': {
+                      backgroundColor: 'primary.dark',
+                    },
+                    '&.Mui-disabled': {
+                      color: 'action.disabled',
+                    },
                   }}
                 >
-                  {analyzing ? '思考中' : '发送'}
-                </Button>
+                  <ArrowUpwardRounded sx={{ fontSize: 18 }} />
+                </IconButton>
               </Stack>
             </Paper>
           </Box>
         </Box>
       </Paper>
 
-      {/* 系统自动构造的脱敏 Prompt 预览区（默认折叠，同时保留 data-testid="ai-redacted-preview"） */}
-      <Paper
-        variant="outlined"
-        data-testid="ai-redacted-preview"
-        sx={{
-          display: showPromptDrawer ? 'block' : 'none',
-          p: { xs: 2, sm: 2.5 },
-          mb: 2.5,
-          borderRadius: 3,
+      {/* 主题与时间范围轻量弹出面板 */}
+      <Popover
+        open={Boolean(contextAnchorEl)}
+        anchorEl={contextAnchorEl}
+        onClose={() => setContextAnchorEl(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        slotProps={{
+          paper: {
+            sx: { p: 2, borderRadius: '12px', width: 300, maxWidth: 'calc(100vw - 24px)', mt: 0.5 },
+          },
         }}
       >
-        <Stack
-          direction={{ xs: 'column', sm: 'row' }}
-          justifyContent="space-between"
-          alignItems={{ xs: 'flex-start', sm: 'center' }}
-          spacing={1}
-          sx={{ mb: 1.5 }}
+        <Typography variant="caption" sx={{ fontWeight: 700, color: 'var(--lifehub-text-muted)', display: 'block', mb: 1 }}>
+          分析维度
+        </Typography>
+        <Box
+          data-testid="ai-topic-selector"
+          sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}
         >
-          <Box>
-            <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-              发送前强制脱敏摘要与系统构建 Prompt 预览（X-14 隐私保护）
-            </Typography>
-            <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              精确金额已强制替换为分桶区间，真实商户名已替换为匿名代号（商户 A / B），树洞文本已自动抹除手机号、邮箱、证件号与金额数字
-            </Typography>
-          </Box>
-          <Chip size="small" variant="outlined" label={`模板: ${builtPrompt.promptTemplateId}`} />
+          {(Object.keys(AI_TOPIC_META) as AiAnalysisTopic[]).map((topicKey) => {
+            const meta = AI_TOPIC_META[topicKey];
+            const active = selectedTopic === topicKey;
+            return (
+              <Chip
+                key={topicKey}
+                size="small"
+                label={`${meta.icon} ${meta.label}`}
+                color={active ? 'primary' : 'default'}
+                variant={active ? 'filled' : 'outlined'}
+                onClick={() => setSelectedTopic(topicKey)}
+                data-testid={`ai-topic-chip-${topicKey}`}
+                sx={{ borderRadius: '6px', fontSize: 12.5 }}
+              />
+            );
+          })}
+        </Box>
+
+        <Typography variant="caption" sx={{ fontWeight: 700, color: 'var(--lifehub-text-muted)', display: 'block', mb: 1 }}>
+          时间范围
+        </Typography>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75 }}>
+          {AI_TIME_RANGE_OPTIONS.map((opt) => {
+            const active = timeRange === opt.value;
+            return (
+              <Chip
+                key={opt.value}
+                size="small"
+                label={opt.label}
+                color={active ? 'primary' : 'default'}
+                variant={active ? 'filled' : 'outlined'}
+                onClick={() => {
+                  setTimeRange(opt.value);
+                  setContextAnchorEl(null);
+                }}
+                sx={{ borderRadius: '6px', fontSize: 12.5 }}
+              />
+            );
+          })}
+        </Box>
+      </Popover>
+
+      {/* 移动端左侧滑出历史会话抽屉 */}
+      <Drawer
+        anchor="left"
+        open={mobileHistoryOpen}
+        onClose={() => setMobileHistoryOpen(false)}
+        PaperProps={{
+          sx: {
+            width: 260,
+            p: 2,
+            display: 'flex',
+            flexDirection: 'column',
+            backgroundColor: 'var(--lifehub-bg)',
+          },
+        }}
+      >
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+            历史对话 ({sessions.length})
+          </Typography>
+          <IconButton size="small" onClick={() => setMobileHistoryOpen(false)} aria-label="关闭历史抽屉">
+            <CloseRounded sx={{ fontSize: 18 }} />
+          </IconButton>
         </Stack>
 
-        <Box
-          component="pre"
-          data-testid="ai-prompt-preview-box"
-          sx={{
-            p: 1.5,
-            borderRadius: 1.5,
-            backgroundColor: 'var(--lifehub-bg)',
-            border: '1px solid var(--lifehub-border)',
-            fontSize: 12,
-            maxHeight: 240,
-            overflowY: 'auto',
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            m: 0,
+        <Button
+          variant="contained"
+          size="small"
+          startIcon={<AddCommentOutlined sx={{ fontSize: 16 }} />}
+          onClick={() => {
+            handleNewSession();
+            setMobileHistoryOpen(false);
           }}
+          sx={{ mb: 1.5, borderRadius: '8px', textTransform: 'none', boxShadow: 'none' }}
         >
-          {builtPrompt.fullPreviewText}
-        </Box>
-      </Paper>
+          新对话
+        </Button>
 
-      {/* 模型与 DeepSeek / OpenAI API Key 配置抽屉（默认折叠） */}
-      <Box
-        ref={advancedSectionRef}
-        sx={{ display: advancedOpen ? 'block' : 'none' }}
+        {renderSessionListContent(true)}
+      </Drawer>
+
+      {/* 模型设置与隐私审计弹窗（keepMounted 确保不占用主页面布局高度） */}
+      <Dialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        keepMounted
+        fullWidth
+        maxWidth="sm"
         data-testid="ai-advanced-section"
       >
-        <Paper
-          variant="outlined"
-          data-testid="ai-config-card"
-          sx={{ p: { xs: 1.75, sm: 2.5 }, mb: 2.5, borderRadius: 3 }}
-        >
-          <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            justifyContent="space-between"
-            alignItems={{ xs: 'flex-start', sm: 'center' }}
-            spacing={1}
-            sx={{ mb: 2 }}
-          >
-            <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: { xs: '0.95rem', sm: '1rem' } }}>
-              模型端点与 API Key 配置（支持 DeepSeek 官方接口 · 本地 AES-GCM 加密）
-            </Typography>
-            <Chip
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', pb: 1 }}>
+          <Typography variant="subtitle1" component="span" sx={{ fontWeight: 700 }}>
+            模型与 API Key 设置
+          </Typography>
+          <IconButton size="small" onClick={() => setSettingsOpen(false)} aria-label="关闭设置">
+            <CloseRounded sx={{ fontSize: 19 }} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent dividers>
+          <Box data-testid="ai-config-card">
+            <Stack spacing={2}>
+              <FormControl size="small" fullWidth>
+                <InputLabel id="ai-provider-label">接口类型</InputLabel>
+                <Select
+                  labelId="ai-provider-label"
+                  label="接口类型"
+                  value={provider}
+                  onChange={(e) => {
+                    const next = e.target.value as AiProviderType;
+                    setProvider(next);
+                    if (next === 'deepseek') {
+                      setBaseUrl('https://api.deepseek.com');
+                      setModel(DEFAULT_DEEPSEEK_MODEL);
+                    } else if (next === 'ollama') {
+                      setBaseUrl('http://localhost:11434');
+                      setModel('qwen2.5:7b');
+                    } else if (next === 'openai-compatible') {
+                      setBaseUrl('https://api.openai.com/v1');
+                      setModel('gpt-4o-mini');
+                    }
+                  }}
+                  data-testid="ai-provider-select"
+                >
+                  <MenuItem value="deepseek">DeepSeek 官方接口</MenuItem>
+                  <MenuItem value="openai-compatible">OpenAI 兼容接口</MenuItem>
+                  <MenuItem value="ollama">Ollama 本地模型</MenuItem>
+                </Select>
+              </FormControl>
+
+              {provider === 'deepseek' && !isCustomDeepSeekModel ? (
+                <FormControl size="small" fullWidth>
+                  <InputLabel id="ai-deepseek-model-label">模型选择</InputLabel>
+                  <Select
+                    labelId="ai-deepseek-model-label"
+                    label="模型选择"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    inputProps={{ 'data-testid': 'ai-model-input' }}
+                  >
+                    <MenuItem value="deepseek-flash">
+                      deepseek-flash（推荐 · 高速多模态）
+                    </MenuItem>
+                    <MenuItem value="deepseek-v4-pro">
+                      deepseek-v4-pro（旗舰复杂推理）
+                    </MenuItem>
+                  </Select>
+                </FormControl>
+              ) : (
+                <>
+                  <TextField
+                    label="Base URL"
+                    size="small"
+                    fullWidth
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    inputProps={{ 'data-testid': 'ai-baseurl-input' }}
+                  />
+                  <TextField
+                    label="模型名称"
+                    size="small"
+                    fullWidth
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    inputProps={{ 'data-testid': 'ai-model-input' }}
+                  />
+                </>
+              )}
+
+              {provider !== 'ollama' && (
+                <TextField
+                  label={hasEncryptedKey ? '更新 API Key（留空保持不变）' : 'API Key（sk-...）'}
+                  type="password"
+                  size="small"
+                  fullWidth
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  helperText={hasEncryptedKey ? '已保存密钥' : '留空时使用本地总结'}
+                  FormHelperTextProps={{ 'data-testid': 'ai-key-status-chip' } as Record<string, unknown>}
+                  inputProps={{ 'data-testid': 'ai-apikey-input' }}
+                />
+              )}
+            </Stack>
+          </Box>
+
+          {/* 高级折叠项：上下文预览与记录（默认收起） */}
+          <Box sx={{ mt: 2.25 }}>
+            <Button
               size="small"
-              color={hasEncryptedKey ? 'success' : 'default'}
-              label={
-                hasEncryptedKey
-                  ? '🔒 密钥已本地 AES-GCM 加密存储 · 不进入同步包'
-                  : '未配置远程密钥（默认使用零网络本地顾问）'
-              }
-              data-testid="ai-key-status-chip"
-              sx={{
-                maxWidth: '100%',
-                height: 'auto',
-                '& .MuiChip-label': { whiteSpace: 'normal', py: 0.4 },
-              }}
-            />
-          </Stack>
+              variant="text"
+              onClick={() => setDiagnosticsExpanded((prev) => !prev)}
+              endIcon={diagnosticsExpanded ? <ExpandLess /> : <ExpandMore />}
+              sx={{ px: 0.5, fontSize: 12.5, color: 'var(--lifehub-text-muted)', textTransform: 'none' }}
+            >
+              上下文预览与记录 ({auditHistory.length})
+            </Button>
 
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} sx={{ mb: 2 }}>
-            <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 220 } }}>
-              <InputLabel id="ai-provider-label">接口类型</InputLabel>
-              <Select
-                labelId="ai-provider-label"
-                label="接口类型"
-                value={provider}
-                onChange={(e) => {
-                  const next = e.target.value as AiProviderType;
-                  setProvider(next);
-                  if (next === 'deepseek') {
-                    setBaseUrl('https://api.deepseek.com');
-                    setModel('deepseek-chat');
-                  } else if (next === 'ollama') {
-                    setBaseUrl('http://localhost:11434');
-                    setModel('qwen2.5:7b');
-                  } else if (next === 'openai-compatible') {
-                    setBaseUrl('https://api.openai.com/v1');
-                    setModel('gpt-4o-mini');
-                  }
-                }}
-                data-testid="ai-provider-select"
-              >
-                <MenuItem value="deepseek">DeepSeek 官方接口 (deepseek-chat / reasoner)</MenuItem>
-                <MenuItem value="openai-compatible">OpenAI 兼容接口</MenuItem>
-                <MenuItem value="ollama">Ollama 本地模型</MenuItem>
-              </Select>
-            </FormControl>
+            <Collapse in={diagnosticsExpanded}>
+              <Stack spacing={2} sx={{ mt: 1.25 }}>
+                {provider === 'deepseek' && !isCustomDeepSeekModel && (
+                  <TextField
+                    label="自定义代理端点 (Base URL)"
+                    size="small"
+                    fullWidth
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    inputProps={{ 'data-testid': 'ai-baseurl-input' }}
+                  />
+                )}
 
-            <TextField
-              label="Base URL"
-              size="small"
-              fullWidth
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-              inputProps={{ 'data-testid': 'ai-baseurl-input' }}
-            />
+                <Box data-testid="ai-redacted-preview">
+                  <Typography variant="caption" sx={{ fontWeight: 700, display: 'block', mb: 0.75 }}>
+                    当前脱敏 Prompt 预览
+                  </Typography>
+                  <Box
+                    component="pre"
+                    data-testid="ai-prompt-preview-box"
+                    sx={{
+                      p: 1.25,
+                      borderRadius: 1.5,
+                      backgroundColor: 'var(--lifehub-bg)',
+                      border: '1px solid var(--lifehub-border)',
+                      fontSize: 11.5,
+                      maxHeight: 160,
+                      overflowY: 'auto',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      m: 0,
+                    }}
+                  >
+                    {builtPrompt.fullPreviewText}
+                  </Box>
+                </Box>
 
-            <TextField
-              label="模型名称 (Model)"
-              size="small"
-              fullWidth
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              inputProps={{ 'data-testid': 'ai-model-input' }}
-            />
+                <Box data-testid="ai-request-history">
+                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.75 }}>
+                    <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                      调用记录（共 {auditHistory.length} 条）
+                    </Typography>
+                    {auditHistory.length > 0 && (
+                      <Button
+                        size="small"
+                        color="error"
+                        variant="text"
+                        onClick={() => void handleClearAuditHistory()}
+                        data-testid="ai-clear-audits-button"
+                        sx={{ fontSize: 12, py: 0.2, textTransform: 'none' }}
+                      >
+                        清空记录
+                      </Button>
+                    )}
+                  </Stack>
 
-            <TextField
-              label={hasEncryptedKey ? '更新 API Key（留空保持已加密密钥）' : 'API Key（如 sk-...）'}
-              type="password"
-              size="small"
-              fullWidth
-              value={apiKeyInput}
-              onChange={(e) => setApiKeyInput(e.target.value)}
-              inputProps={{ 'data-testid': 'ai-apikey-input' }}
-            />
-          </Stack>
+                  {auditHistory.length > 0 && (
+                    <Box sx={{ overflowX: 'auto', maxHeight: 180 }}>
+                      <Table size="small">
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>时间</TableCell>
+                            <TableCell>模型</TableCell>
+                            <TableCell>耗时</TableCell>
+                            <TableCell>状态</TableCell>
+                            <TableCell align="right">操作</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {auditHistory.map((item) => (
+                            <TableRow key={item.id} data-testid={`ai-audit-row-${item.id}`}>
+                              <TableCell sx={{ fontSize: 12 }}>{item.at.slice(5, 16).replace('T', ' ')}</TableCell>
+                              <TableCell sx={{ fontSize: 12 }}>{item.model}</TableCell>
+                              <TableCell sx={{ fontSize: 12 }}>{item.latencyMs}ms</TableCell>
+                              <TableCell sx={{ fontSize: 12 }}>
+                                {item.status === 'success' ? '成功' : item.errorCode || '失败'}
+                              </TableCell>
+                              <TableCell align="right">
+                                <IconButton
+                                  size="small"
+                                  onClick={() => void handleDeleteAuditRecord(item.id)}
+                                  aria-label="删除审计记录"
+                                  data-testid={`ai-delete-audit-${item.id}`}
+                                >
+                                  <DeleteOutline sx={{ fontSize: 15 }} />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </Box>
+                  )}
+                </Box>
+              </Stack>
+            </Collapse>
+          </Box>
+        </DialogContent>
 
+        <DialogActions sx={{ px: 3, py: 1.5 }}>
+          <Button size="small" color="inherit" onClick={() => setSettingsOpen(false)} sx={{ textTransform: 'none' }}>
+            取消
+          </Button>
           <Button
             variant="contained"
             size="small"
             onClick={() => void handleSaveConfig()}
             data-testid="ai-save-config-button"
+            sx={{ borderRadius: 2, px: 2.5, textTransform: 'none', boxShadow: 'none' }}
           >
-            加密保存配置
+            保存配置
           </Button>
-        </Paper>
-
-        {/* E-04 / X-13：请求审计指标历史表（支持单条删除与一键清空） */}
-        <Paper
-          variant="outlined"
-          data-testid="ai-request-history"
-          sx={{ p: { xs: 2, sm: 2.5 }, borderRadius: 3 }}
-        >
-          <Stack
-            direction="row"
-            justifyContent="space-between"
-            alignItems="center"
-            spacing={1}
-            sx={{ mb: 1.5 }}
-          >
-            <Box>
-              <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 0.25 }}>
-                AI 请求审计指标记录（X-13：仅存 SHA-256 摘要与性能指标）
-              </Typography>
-              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', display: 'block' }}>
-                共 {auditHistory.length} 条请求指标记录
-              </Typography>
-            </Box>
-            {auditHistory.length > 0 && (
-              <Button
-                size="small"
-                color="error"
-                variant="outlined"
-                startIcon={<DeleteOutline sx={{ fontSize: 16 }} />}
-                onClick={() => void handleClearAuditHistory()}
-                data-testid="ai-clear-audits-button"
-                sx={{ borderRadius: 2, textTransform: 'none', flexShrink: 0 }}
-              >
-                清空全部记录
-              </Button>
-            )}
-          </Stack>
-
-          {auditHistory.length > 0 && (
-            <Box sx={{ overflowX: 'auto' }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>时间</TableCell>
-                    <TableCell>提供方 / 模型</TableCell>
-                    <TableCell>Payload SHA-256 摘要</TableCell>
-                    <TableCell>耗时</TableCell>
-                    <TableCell>Token 用量</TableCell>
-                    <TableCell>状态</TableCell>
-                    <TableCell align="right">操作</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {auditHistory.map((item) => (
-                    <TableRow key={item.id} data-testid={`ai-audit-row-${item.id}`}>
-                      <TableCell>{item.at.slice(0, 19).replace('T', ' ')}</TableCell>
-                      <TableCell>
-                        {item.provider} / {item.model}
-                      </TableCell>
-                      <TableCell sx={{ fontFamily: 'monospace', fontSize: 12 }}>
-                        {item.payloadDigest.slice(0, 16)}…
-                      </TableCell>
-                      <TableCell>{item.latencyMs} ms</TableCell>
-                      <TableCell>{item.tokensUsed}</TableCell>
-                      <TableCell>
-                        <Chip
-                          size="small"
-                          color={item.status === 'success' ? 'success' : 'error'}
-                          label={item.status === 'success' ? '成功' : item.errorCode || '失败'}
-                        />
-                      </TableCell>
-                      <TableCell align="right">
-                        <IconButton
-                          size="small"
-                          color="error"
-                          aria-label="删除审计记录"
-                          onClick={() => void handleDeleteAuditRecord(item.id)}
-                          data-testid={`ai-delete-audit-${item.id}`}
-                        >
-                          <DeleteOutline sx={{ fontSize: 16 }} />
-                        </IconButton>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </Box>
-          )}
-        </Paper>
-      </Box>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

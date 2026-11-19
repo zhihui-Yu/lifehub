@@ -14,17 +14,25 @@ import {
   Box,
   Button,
   Chip,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  IconButton,
+  InputAdornment,
   Paper,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from '@mui/material';
-import LockOutlined from '@mui/icons-material/LockOutlined';
+import DeleteOutline from '@mui/icons-material/DeleteOutline';
+import EditOutlined from '@mui/icons-material/EditOutlined';
+import LocalOfferOutlined from '@mui/icons-material/LocalOfferOutlined';
+import PushPin from '@mui/icons-material/PushPin';
 import PushPinOutlined from '@mui/icons-material/PushPinOutlined';
+import SearchOutlined from '@mui/icons-material/SearchOutlined';
 import {
   DIARY_MOOD_OPTIONS,
   DiaryService,
@@ -59,6 +67,7 @@ export function TreeHolePage() {
   const [body, setBody] = useState('');
   const [selectedMood, setSelectedMood] = useState<string | null>('🌿 平静');
   const [tagsText, setTagsText] = useState('');
+  const [metaExpanded, setMetaExpanded] = useState(false);
 
   // 检索与筛选状态
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -106,7 +115,7 @@ export function TreeHolePage() {
       setTitle('');
       setBody('');
       setTagsText('');
-      setBannerMsg('已加密投递至本地树洞（AES-GCM-256 保护）');
+      setMetaExpanded(false);
       await reloadEntries();
       const allDiaries = await service.exportAllDecrypted();
       syncAutoSnapshotToStorageDir(
@@ -170,31 +179,10 @@ export function TreeHolePage() {
 
   return (
     <Box data-testid="treehole-page" sx={{ width: '100%' }}>
-      {/* 顶部标题与隐私声明 */}
-      <Stack
-        direction={{ xs: 'column', sm: 'row' }}
-        justifyContent="space-between"
-        alignItems={{ xs: 'flex-start', sm: 'center' }}
-        spacing={1}
-        sx={{ mb: 2.5 }}
-      >
-        <Box>
-          <Typography variant="h5" sx={{ fontWeight: 700, color: 'var(--lifehub-text)' }}>
-            🌲 私密树洞
-          </Typography>
-          <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-            随时记录心事、灵感与未来规划 · 全字段本地加密，同步与导出自动受保护
-          </Typography>
-        </Box>
-        <Chip
-          icon={<LockOutlined fontSize="small" />}
-          label="AES-GCM 全字段加密 · 零公开分享"
-          color="primary"
-          variant="outlined"
-          size="small"
-          data-testid="treehole-encryption-badge"
-        />
-      </Stack>
+      {/* 极简标题行 */}
+      <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: '-0.01em', mb: 2 }}>
+        树洞
+      </Typography>
 
       {errorMsg && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setErrorMsg(null)}>
@@ -213,33 +201,47 @@ export function TreeHolePage() {
         </Alert>
       )}
 
-      {/* 随手记投递卡片 */}
+      {/* 无内框一体式随手记输入舱 */}
       <Paper
         variant="outlined"
         data-testid="treehole-composer-card"
         sx={{
-          p: { xs: 2, sm: 2.5 },
-          mb: 3,
-          borderRadius: 3,
+          p: { xs: 1.75, sm: 2.25 },
+          mb: 2.5,
+          borderRadius: '12px',
           backgroundColor: 'var(--lifehub-surface)',
           borderColor: 'var(--lifehub-border)',
         }}
       >
-        <Stack spacing={1.5}>
-          <TextField
-            placeholder="写下此刻的想法、心事、人物观察或未来规划…（必填）"
-            multiline
-            minRows={3}
-            fullWidth
-            size="small"
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            inputProps={{ 'data-testid': 'treehole-body-input' }}
-          />
+        <TextField
+          placeholder="记录此刻的想法、灵感或心事…"
+          multiline
+          minRows={3}
+          maxRows={8}
+          fullWidth
+          variant="standard"
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          InputProps={{ disableUnderline: true }}
+          inputProps={{ 'data-testid': 'treehole-body-input' }}
+          sx={{
+            '& .MuiInputBase-input': {
+              fontSize: 14.5,
+              lineHeight: 1.65,
+              p: 0,
+            },
+          }}
+        />
 
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
+        {/* 可选标题与标签（默认折叠，点击展开） */}
+        <Collapse in={metaExpanded}>
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={1.25}
+            sx={{ mt: 1.5, pt: 1.5, borderTop: '1px solid var(--lifehub-border)' }}
+          >
             <TextField
-              label="标题（可选）"
+              placeholder="标题（选填）"
               size="small"
               fullWidth
               value={title}
@@ -247,7 +249,7 @@ export function TreeHolePage() {
               inputProps={{ 'data-testid': 'treehole-title-input' }}
             />
             <TextField
-              label="标签（可选，空格或逗号分隔，如：规划 随想）"
+              placeholder="标签（空格或逗号分隔，如：随想 规划）"
               size="small"
               fullWidth
               value={tagsText}
@@ -255,119 +257,175 @@ export function TreeHolePage() {
               inputProps={{ 'data-testid': 'treehole-tags-input' }}
             />
           </Stack>
+        </Collapse>
 
+        <Stack
+          direction="row"
+          justifyContent="space-between"
+          alignItems="center"
+          flexWrap="wrap"
+          useFlexGap
+          spacing={1}
+          sx={{ mt: 1.5, pt: 1.25, borderTop: '1px solid var(--lifehub-border)' }}
+        >
           <Stack
-            direction={{ xs: 'column', sm: 'row' }}
-            justifyContent="space-between"
-            alignItems={{ xs: 'stretch', sm: 'center' }}
-            spacing={1.5}
+            direction="row"
+            spacing={0.5}
+            flexWrap="wrap"
+            useFlexGap
+            alignItems="center"
+            data-testid="treehole-mood-selector"
           >
-            <Stack
-              direction="row"
-              spacing={0.75}
-              flexWrap="wrap"
-              useFlexGap
-              alignItems="center"
-              data-testid="treehole-mood-selector"
-            >
-              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', mr: 0.5 }}>
-                心情：
-              </Typography>
-              {DIARY_MOOD_OPTIONS.map((mood) => {
-                const active = selectedMood === mood;
-                return (
-                  <Chip
-                    key={mood}
-                    label={mood}
-                    size="small"
-                    color={active ? 'primary' : 'default'}
-                    variant={active ? 'filled' : 'outlined'}
-                    onClick={() => setSelectedMood(active ? null : mood)}
-                    sx={{ cursor: 'pointer' }}
-                  />
-                );
-              })}
-            </Stack>
+            {DIARY_MOOD_OPTIONS.map((mood) => {
+              const active = selectedMood === mood;
+              return (
+                <Chip
+                  key={mood}
+                  label={mood}
+                  size="small"
+                  onClick={() => setSelectedMood(active ? null : mood)}
+                  sx={{
+                    height: 26,
+                    fontSize: 12,
+                    border: 0,
+                    cursor: 'pointer',
+                    fontWeight: active ? 600 : 400,
+                    backgroundColor: active
+                      ? 'var(--lifehub-primary-soft)'
+                      : 'var(--lifehub-surface-hover)',
+                    color: active ? 'primary.main' : 'var(--lifehub-text-muted)',
+                  }}
+                />
+              );
+            })}
 
             <Button
-              variant="contained"
-              onClick={() => void handleCreateEntry()}
-              data-testid="treehole-submit-button"
-              sx={{ alignSelf: { xs: 'stretch', sm: 'auto' }, px: 3 }}
+              size="small"
+              variant="text"
+              startIcon={<LocalOfferOutlined sx={{ fontSize: 14 }} />}
+              onClick={() => setMetaExpanded((prev) => !prev)}
+              sx={{
+                height: 26,
+                px: 1,
+                borderRadius: '6px',
+                fontSize: 12,
+                color: metaExpanded || title || tagsText ? 'primary.main' : 'var(--lifehub-text-muted)',
+              }}
             >
-              投递到树洞
+              {metaExpanded ? '收起标题/标签' : '标题/标签'}
             </Button>
           </Stack>
+
+          <Button
+            size="small"
+            variant="contained"
+            disableElevation
+            disabled={!body.trim()}
+            onClick={() => void handleCreateEntry()}
+            data-testid="treehole-submit-button"
+            sx={{ height: 32, px: 2, borderRadius: '8px', fontWeight: 600, ml: 'auto' }}
+          >
+            投递
+          </Button>
         </Stack>
       </Paper>
 
-      {/* 关键词与心情筛选栏 */}
-      <Paper
-        variant="outlined"
-        sx={{
-          p: { xs: 1.5, sm: 2 },
-          mb: 2.5,
-          borderRadius: 3,
-          backgroundColor: 'var(--lifehub-surface)',
-          borderColor: 'var(--lifehub-border)',
-        }}
+      {/* 轻量无边框检索与心情过滤行 */}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        spacing={1.25}
+        alignItems={{ xs: 'stretch', sm: 'center' }}
+        justifyContent="space-between"
+        sx={{ mb: 2 }}
       >
+        <TextField
+          size="small"
+          placeholder="搜索内容或标签…"
+          value={searchKeyword}
+          onChange={(e) => setSearchKeyword(e.target.value)}
+          InputProps={{
+            startAdornment: (
+              <InputAdornment position="start">
+                <SearchOutlined sx={{ fontSize: 17, color: 'var(--lifehub-text-muted)' }} />
+              </InputAdornment>
+            ),
+          }}
+          sx={{
+            minWidth: { sm: 220 },
+            '& .MuiOutlinedInput-root': {
+              borderRadius: '8px',
+              backgroundColor: 'var(--lifehub-surface)',
+              height: 34,
+              fontSize: 13,
+            },
+          }}
+          inputProps={{ 'data-testid': 'treehole-search-input' }}
+        />
+
         <Stack
-          direction={{ xs: 'column', sm: 'row' }}
-          spacing={1.5}
-          alignItems={{ xs: 'stretch', sm: 'center' }}
-          justifyContent="space-between"
+          direction="row"
+          spacing={0.5}
+          sx={{
+            overflowX: 'auto',
+            pb: { xs: 0.25, sm: 0 },
+            scrollbarWidth: 'none',
+            '&::-webkit-scrollbar': { display: 'none' },
+          }}
         >
-          <TextField
+          <Chip
+            label="全部"
             size="small"
-            placeholder="搜索树洞正文、标题或标签…"
-            value={searchKeyword}
-            onChange={(e) => setSearchKeyword(e.target.value)}
-            sx={{ minWidth: { sm: 260 } }}
-            inputProps={{ 'data-testid': 'treehole-search-input' }}
+            onClick={() => setMoodFilter('')}
+            data-testid="treehole-filter-all"
+            sx={{
+              height: 28,
+              fontSize: 12,
+              flexShrink: 0,
+              fontWeight: moodFilter === '' ? 600 : 400,
+              backgroundColor:
+                moodFilter === '' ? 'var(--lifehub-primary-soft)' : 'transparent',
+              color: moodFilter === '' ? 'primary.main' : 'var(--lifehub-text-muted)',
+            }}
           />
-          <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center">
-            <Chip
-              label="全部"
-              size="small"
-              color={moodFilter === '' ? 'primary' : 'default'}
-              variant={moodFilter === '' ? 'filled' : 'outlined'}
-              onClick={() => setMoodFilter('')}
-              data-testid="treehole-filter-all"
-            />
-            {DIARY_MOOD_OPTIONS.map((mood) => (
+          {DIARY_MOOD_OPTIONS.map((mood) => {
+            const active = moodFilter === mood;
+            return (
               <Chip
                 key={mood}
                 label={mood}
                 size="small"
-                color={moodFilter === mood ? 'primary' : 'default'}
-                variant={moodFilter === mood ? 'filled' : 'outlined'}
-                onClick={() => setMoodFilter(moodFilter === mood ? '' : mood)}
+                onClick={() => setMoodFilter(active ? '' : mood)}
+                sx={{
+                  height: 28,
+                  fontSize: 12,
+                  flexShrink: 0,
+                  fontWeight: active ? 600 : 400,
+                  backgroundColor: active ? 'var(--lifehub-primary-soft)' : 'transparent',
+                  color: active ? 'primary.main' : 'var(--lifehub-text-muted)',
+                }}
               />
-            ))}
-          </Stack>
+            );
+          })}
         </Stack>
-      </Paper>
+      </Stack>
 
       {/* 树洞时间线列表 */}
-      <Stack spacing={1.5} data-testid="treehole-list">
+      <Stack spacing={1.25} data-testid="treehole-list">
         {entries.length === 0 ? (
           <Paper
             variant="outlined"
             data-testid="treehole-empty-state"
             sx={{
-              p: 4,
-              borderRadius: 3,
+              py: 6,
+              px: 3,
+              borderRadius: '12px',
               textAlign: 'center',
               backgroundColor: 'var(--lifehub-surface)',
               borderColor: 'var(--lifehub-border)',
             }}
           >
-            <Typography variant="body1" sx={{ fontWeight: 600, mb: 0.5 }}>
-              树洞里还没有记录
-            </Typography>
             <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              在上方输入框写下第一条随手记，所有内容均在本地加密保存。
+              暂无记录
             </Typography>
           </Paper>
         ) : (
@@ -377,11 +435,11 @@ export function TreeHolePage() {
               variant="outlined"
               data-testid="treehole-entry-card"
               sx={{
-                p: { xs: 2, sm: 2.25 },
-                borderRadius: 3,
+                px: { xs: 2, sm: 2.5 },
+                py: { xs: 1.75, sm: 2 },
+                borderRadius: '12px',
                 backgroundColor: 'var(--lifehub-surface)',
                 borderColor: entry.isPinned ? 'primary.main' : 'var(--lifehub-border)',
-                borderWidth: entry.isPinned ? 1.5 : 1,
               }}
             >
               <Stack
@@ -389,55 +447,90 @@ export function TreeHolePage() {
                 justifyContent="space-between"
                 alignItems="center"
                 spacing={1}
-                sx={{ mb: 1 }}
+                sx={{ mb: 0.75 }}
               >
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                   {entry.isPinned && (
-                    <Chip
-                      icon={<PushPinOutlined sx={{ fontSize: 14 }} />}
-                      label="置顶"
-                      size="small"
-                      color="primary"
+                    <Typography
+                      variant="caption"
                       data-testid="treehole-pinned-chip"
-                    />
+                      sx={{
+                        color: 'primary.main',
+                        fontWeight: 700,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 0.25,
+                      }}
+                    >
+                      <PushPin sx={{ fontSize: 13 }} />
+                      置顶
+                    </Typography>
                   )}
-                  <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', fontWeight: 600 }}>
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: 'var(--lifehub-text-muted)',
+                      fontWeight: 600,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
                     {entry.localDate}
                   </Typography>
-                  {entry.mood && <Chip label={entry.mood} size="small" variant="outlined" />}
+                  {entry.mood && (
+                    <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
+                      {entry.mood}
+                    </Typography>
+                  )}
                 </Stack>
 
-                <Stack direction="row" spacing={0.5} sx={{ flexShrink: 0 }}>
-                  <Button
-                    size="small"
-                    variant="text"
-                    data-testid="treehole-pin-button"
-                    onClick={() => void handleTogglePin(entry.id)}
-                  >
-                    {entry.isPinned ? '取消置顶' : '置顶'}
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    data-testid="treehole-edit-button"
-                    onClick={() => handleOpenEdit(entry)}
-                  >
-                    编辑
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="text"
-                    color="error"
-                    data-testid="treehole-delete-button"
-                    onClick={() => void handleDelete(entry.id)}
-                  >
-                    删除
-                  </Button>
+                {/* 精简图标操作代替 3 个文字按钮 */}
+                <Stack direction="row" spacing={0.25} sx={{ flexShrink: 0, mr: -0.5 }}>
+                  <Tooltip title={entry.isPinned ? '取消置顶' : '置顶'}>
+                    <IconButton
+                      size="small"
+                      data-testid="treehole-pin-button"
+                      aria-label={entry.isPinned ? '取消置顶' : '置顶'}
+                      onClick={() => void handleTogglePin(entry.id)}
+                      sx={{
+                        p: 0.5,
+                        color: entry.isPinned ? 'primary.main' : 'var(--lifehub-text-muted)',
+                      }}
+                    >
+                      {entry.isPinned ? (
+                        <PushPin sx={{ fontSize: 16 }} />
+                      ) : (
+                        <PushPinOutlined sx={{ fontSize: 16 }} />
+                      )}
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="编辑">
+                    <IconButton
+                      size="small"
+                      data-testid="treehole-edit-button"
+                      aria-label="编辑"
+                      onClick={() => handleOpenEdit(entry)}
+                      sx={{ p: 0.5, color: 'var(--lifehub-text-muted)' }}
+                    >
+                      <EditOutlined sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="删除">
+                    <IconButton
+                      size="small"
+                      color="error"
+                      data-testid="treehole-delete-button"
+                      aria-label="删除"
+                      onClick={() => void handleDelete(entry.id)}
+                      sx={{ p: 0.5, opacity: 0.75 }}
+                    >
+                      <DeleteOutline sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </Tooltip>
                 </Stack>
               </Stack>
 
               {entry.title && (
-                <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 0.5 }}>
+                <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 0.5, fontSize: 15 }}>
                   {entry.title}
                 </Typography>
               )}
@@ -448,7 +541,8 @@ export function TreeHolePage() {
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                   color: 'var(--lifehub-text)',
-                  lineHeight: 1.65,
+                  lineHeight: 1.7,
+                  fontSize: 14,
                 }}
               >
                 {entry.body}
@@ -457,7 +551,20 @@ export function TreeHolePage() {
               {entry.tags.length > 0 && (
                 <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.25 }}>
                   {entry.tags.map((tag) => (
-                    <Chip key={tag} label={`#${tag}`} size="small" variant="outlined" />
+                    <Typography
+                      key={tag}
+                      variant="caption"
+                      sx={{
+                        px: 0.85,
+                        py: 0.2,
+                        borderRadius: '6px',
+                        backgroundColor: 'var(--lifehub-surface-hover)',
+                        color: 'var(--lifehub-text-muted)',
+                        fontSize: 11.5,
+                      }}
+                    >
+                      #{tag}
+                    </Typography>
                   ))}
                 </Stack>
               )}
@@ -474,11 +581,11 @@ export function TreeHolePage() {
         maxWidth="sm"
         data-testid="treehole-edit-dialog"
       >
-        <DialogTitle>编辑树洞记录</DialogTitle>
+        <DialogTitle sx={{ fontWeight: 700 }}>编辑记录</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2} sx={{ mt: 0.5 }}>
             <TextField
-              label="标题（可选）"
+              label="标题（选填）"
               size="small"
               fullWidth
               value={editTitle}
@@ -486,7 +593,7 @@ export function TreeHolePage() {
               inputProps={{ 'data-testid': 'treehole-edit-title-input' }}
             />
             <TextField
-              label="正文内容"
+              label="正文"
               multiline
               minRows={4}
               size="small"
@@ -504,9 +611,6 @@ export function TreeHolePage() {
               inputProps={{ 'data-testid': 'treehole-edit-tags-input' }}
             />
             <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap alignItems="center">
-              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-                心情：
-              </Typography>
               {DIARY_MOOD_OPTIONS.map((mood) => (
                 <Chip
                   key={mood}
@@ -520,14 +624,15 @@ export function TreeHolePage() {
             </Stack>
           </Stack>
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ px: 2.5, py: 1.5 }}>
           <Button onClick={() => setEditingEntry(null)}>取消</Button>
           <Button
             variant="contained"
+            disableElevation
             onClick={() => void handleSaveEdit()}
             data-testid="treehole-edit-save-button"
           >
-            保存修改
+            保存
           </Button>
         </DialogActions>
       </Dialog>

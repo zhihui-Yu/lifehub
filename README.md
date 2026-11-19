@@ -4,7 +4,7 @@
 >
 > 记账数据只存在你自己的设备上；即使使用同步服务，**服务端也只见密文**。
 
-**文档版本**：v1.5（应用版本 v0.2.2） ｜ **日期**：2026-11-19 ｜ **当前阶段**：全模块交付（记账 / 统计看板 / 课表 / 习惯打卡 / 树洞日记 / AI 分析 / 5 大云存储端到端压缩加密与多端增量合并同步 / Windows EXE + Android APK 双端打包）
+**文档版本**：v1.6（应用版本 v0.3.0） ｜ **日期**：2026-11-19 ｜ **当前阶段**：全模块交付（记账 / 统计看板 / 课表 / 习惯打卡 / 树洞日记 / AI 一屏工作台 / 5 大云存储端到端压缩加密与多端增量合并同步 / Windows EXE + Android APK 双端打包）
 
 ---
 
@@ -53,7 +53,7 @@ npm run typecheck  # 三个包的类型检查
 
 | 目标平台 | 一键构建命令 / 方式简述 | 产物位置 / 运行方式 |
 | --- | --- | --- |
-| **双端一键发版（EXE + APK）** | 根目录执行 `npm run release`（自动递增版本号并清理旧包） | 根目录生成 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 `LifeHub-Android-v<版本>.apk` |
+| **双端一键打包（EXE + APK）** | 本地日常迭代 `npm run release`（递增末尾位 patch）；正式发版 `npm run release:minor`（递增第二位 minor） | 根目录生成 `LifeHub-Desktop-win-x64-v<版本>.exe` 与 `LifeHub-Android-v<版本>.apk` |
 | **Windows 桌面版 (.exe)** | 根目录执行 `npm run build:desktop`（见 `scripts/build-desktop-windows.mjs`） | 根目录生成单文件免安装 `LifeHub-Desktop-win-x64-v<版本>.exe`（基于 WebView2 + .NET 原生窗体） |
 | **Android 手机端 (.apk)** | 根目录执行 `npm run build:android`（或 `cd apps/web && npx cap sync android && cd android && .\gradlew.bat assembleDebug`） | `apps/web/android/app/build/outputs/apk/debug/app-debug.apk`（`npm run release` 会同步复制到根目录） |
 | **Web 生产包** | 根目录执行 `npm run build` | `apps/web/dist/`（部署至任意 HTTPS 静态服务器） |
@@ -67,7 +67,7 @@ npm run typecheck  # 三个包的类型检查
 1. **零门槛无感本地加密**：打开应用即直接进入工作台（桌面端默认进入「导入账单」，手机端默认直达「账单列表」）。底层自动在本地初始化保险库并派生 DEK，树洞日记、AI 密钥等敏感数据在本地 `IndexedDB` 中 **100% 自动执行 AES-256-GCM 加密**，无需操作人手动干预。
 2. **多格式账单导入**：进入「导入账单」页 → 选择微信 / 支付宝 / 银行导出的 `.csv`、`.xlsx`、加密 `.pdf` 或加密 `.zip` → 自动识别或自定义列头映射 → 一键导入并自动记忆商户分类。
 3. **生活课表与习惯打卡**：支持固定周课表与 `RRULE` 周期日程、日/周视图切换、A4 打印，以及微习惯打卡连续天数与年度热力图统计。
-4. **树洞私密日记与 AI 智能分析**：树洞支持加密文本/语音日记、人物关系图谱与未来规划；AI 分析支持「零网络本地智能总结」与自带 API Key（DeepSeek V3 / R1 深度思考、OpenAI 兼容、Ollama）对话分析，支持单条删除或一键清空 AI 请求审计指标。
+4. **树洞私密日记与 AI 智能分析**：树洞支持极简随手记时间线、心情与标签筛选；AI 分析采用一屏沉浸式对话工作台，支持「零网络本地速览」与自带 API Key（DeepSeek 官方最新 `deepseek-flash` / `deepseek-v4-pro` + 独立深度思考开关、OpenAI 兼容、Ollama）对话复盘。
 5. **5 大云存储端到端压缩加密备份**：在「设置 → 云存储服务」中配置阿里云 OSS / 腾讯云 COS / 七牛云 Kodo / 华为云 OBS / AWS S3，设置必填加密密码（支持勾选「记住加密密码」与密码指纹防误覆盖校验），数据先经双级无损压缩（字典 + LZ77，体积缩减 65%~75%）再经 `PBKDF2 + AES-256-GCM` 加密上传为 `lifehub-backup.json.enc`。
 
 ### 1.4 常见问题
@@ -431,7 +431,7 @@ LifeHub 是一个**本地优先**的个人工具。下面逐条说明我们**不
 | S5 | W9-10 | 自托管同步服务 | 多设备同步（只搬密文）+ 密钥轮换 |
 | S6 | W11-12 | AI 分析层 + 日记加密 | 模块 D / E；小程序轻量版最后做 |
 
-### 7.2 当前交付范围（v0.2.2）
+### 7.2 当前交付范围（v0.3.0）
 
 已全面交付：**核心层 + Web 全模块（记账、统计看板、分类管理、生活课表、习惯打卡、树洞加密日记、AI 智能分析）+ 5 大对象存储双级压缩与端到端加密同步（`lifehub-backup.json.enc`）+ 自托管同步服务 + Windows 单文件 `.exe` 与 Android `.apk` 一键打包**。
 

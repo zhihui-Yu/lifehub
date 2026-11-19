@@ -291,10 +291,10 @@ export function ImportPage() {
               data-testid="auto-import-toggle"
             />
           }
-          label="系统自动识别全部字段后直接完成导入（无需手动确认字段）"
+          label="自动识别字段并直接导入"
         />
       </Box>
-      <LoadingOverlay visible={busy} label="正在解析文件…" />
+      <LoadingOverlay visible={busy} label="解析中…" />
       <RecentImports
         batches={batches}
         currentFileHash={fileHash}
@@ -312,10 +312,10 @@ export function ImportPage() {
         fullWidth
         data-testid="password-prompt-dialog"
       >
-        <DialogTitle>输入文件解密密码</DialogTitle>
+        <DialogTitle>输入文件密码</DialogTitle>
         <DialogContent>
           <Typography variant="body2" sx={{ mb: 2, color: 'var(--lifehub-text-muted)' }}>
-            该 PDF 或 ZIP 压缩包受密码保护，请输入文件解密/解压密码后继续导入。
+            请输入文件密码以继续导入。
           </Typography>
           {passwordDialogError ? (
             <Alert severity="error" sx={{ mb: 2 }} data-testid="password-dialog-error">

@@ -18,6 +18,29 @@ import { createDatabase } from '@/platform/db';
 /** 支持的远程或本地 AI 接口提供方类型。 */
 export type AiProviderType = 'deepseek' | 'openai-compatible' | 'ollama';
 
+/** DeepSeek 官方当前主力模型列表（V4 系列）。 */
+export const DEEPSEEK_OFFICIAL_MODELS = ['deepseek-flash', 'deepseek-v4-pro'] as const;
+
+/** 默认 DeepSeek 模型名称。 */
+export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
+
+/**
+ * 将已退役的旧版 DeepSeek 模型标识（deepseek-chat / deepseek-reasoner）平滑迁移至 V4 模型体系。
+ */
+export function normalizeDeepSeekConfig(
+  rawModel: string,
+  inputThinking?: boolean,
+): { model: string; thinkingEnabled: boolean } {
+  const trimmed = rawModel.trim();
+  if (!trimmed || trimmed === 'gpt-4o-mini' || trimmed === 'qwen2.5:7b' || trimmed === 'deepseek-chat' || trimmed === 'deepseek-v4-flash') {
+    return { model: DEFAULT_DEEPSEEK_MODEL, thinkingEnabled: inputThinking ?? false };
+  }
+  if (trimmed === 'deepseek-reasoner') {
+    return { model: DEFAULT_DEEPSEEK_MODEL, thinkingEnabled: inputThinking ?? true };
+  }
+  return { model: trimmed, thinkingEnabled: inputThinking ?? false };
+}
+
 /** 本地设备专属包装密钥在 localStorage 中的键名（不参与任何同步或备份）。 */
 const LOCAL_WRAPPING_KEY_STORAGE_KEY = 'lifehub:ai:local-wrapping-key:v1';
 
@@ -34,8 +57,10 @@ export interface StoredAiSettingsRecord {
   provider: AiProviderType;
   /** 接口基础 URL（如 'https://api.openai.com/v1' 或 'http://localhost:11434'）。 */
   baseUrl: string;
-  /** 模型名称（如 'gpt-4o-mini' 或 'qwen2.5:7b'）。 */
+  /** 模型名称（如 'deepseek-flash'、'deepseek-v4-pro'、'gpt-4o-mini' 或 'qwen2.5:7b'）。 */
   model: string;
+  /** 是否开启深度思考模式（适用于 DeepSeek V4 thinking 参数）。 */
+  thinkingEnabled?: boolean;
   /** AES-GCM 加密后的 API Key 密文（Base64 编码）。 */
   encryptedApiKeyCiphertext: string;
   /** AES-GCM 加密使用的 12 字节随机 IV（Base64 编码）。 */
@@ -56,6 +81,8 @@ export interface AiConfigInput {
   baseUrl: string;
   /** 模型标识。 */
   model: string;
+  /** 是否开启深度思考模式。 */
+  thinkingEnabled?: boolean;
   /** 明文 API Key（保存时在内存加密后即丢弃明文）。 */
   apiKey?: string;
 }
@@ -369,22 +396,29 @@ export class AiStorageService {
               ? 'https://api.deepseek.com'
               : 'https://api.openai.com/v1');
 
-    const normalizedModel =
-      input.provider === 'deepseek' &&
-      (!rawModel || rawModel === 'gpt-4o-mini' || rawModel === 'qwen2.5:7b')
-        ? 'deepseek-chat'
-        : rawModel ||
-          (input.provider === 'ollama'
-            ? 'qwen2.5:7b'
-            : input.provider === 'deepseek'
-              ? 'deepseek-chat'
-              : 'gpt-4o-mini');
+    const deepseekNormalized =
+      input.provider === 'deepseek'
+        ? normalizeDeepSeekConfig(
+            rawModel,
+            input.thinkingEnabled ?? existing?.thinkingEnabled,
+          )
+        : null;
+
+    const normalizedModel = deepseekNormalized
+      ? deepseekNormalized.model
+      : rawModel ||
+        (input.provider === 'ollama' ? 'qwen2.5:7b' : 'gpt-4o-mini');
+
+    const thinkingEnabled = deepseekNormalized
+      ? deepseekNormalized.thinkingEnabled
+      : Boolean(input.thinkingEnabled ?? existing?.thinkingEnabled ?? false);
 
     const record: StoredAiSettingsRecord = {
       id: 'default',
       provider: input.provider,
       baseUrl: normalizedBaseUrl,
       model: normalizedModel,
+      thinkingEnabled,
       encryptedApiKeyCiphertext,
       encryptedApiKeyIv,
       hasApiKey,
@@ -404,13 +438,22 @@ export class AiStorageService {
   async getConfigRecord(): Promise<StoredAiSettingsRecord> {
     const existing = await this.db.table<StoredAiSettingsRecord>('aiSettings').get('default');
     if (existing) {
+      if (existing.provider === 'deepseek') {
+        const migrated = normalizeDeepSeekConfig(existing.model, existing.thinkingEnabled);
+        return {
+          ...existing,
+          model: migrated.model,
+          thinkingEnabled: migrated.thinkingEnabled,
+        };
+      }
       return existing;
     }
     return {
       id: 'default',
       provider: 'deepseek',
       baseUrl: 'https://api.deepseek.com',
-      model: 'deepseek-chat',
+      model: DEFAULT_DEEPSEEK_MODEL,
+      thinkingEnabled: false,
       encryptedApiKeyCiphertext: '',
       encryptedApiKeyIv: '',
       hasApiKey: false,

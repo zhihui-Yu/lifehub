@@ -16,8 +16,15 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
+  IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   Paper,
   Stack,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import AddOutlined from '@mui/icons-material/AddOutlined';
@@ -27,7 +34,9 @@ import DeleteOutline from '@mui/icons-material/DeleteOutline';
 import DeleteSweepOutlined from '@mui/icons-material/DeleteSweepOutlined';
 import EditOutlined from '@mui/icons-material/EditOutlined';
 import FileDownloadOutlined from '@mui/icons-material/FileDownloadOutlined';
+import FileUploadOutlined from '@mui/icons-material/FileUploadOutlined';
 import KeyboardArrowUpOutlined from '@mui/icons-material/KeyboardArrowUpOutlined';
+import MoreHorizOutlined from '@mui/icons-material/MoreHorizOutlined';
 import SwapHorizOutlined from '@mui/icons-material/SwapHorizOutlined';
 import { BillFilterBar } from '@/components/bills/BillFilterBar';
 import { BillGroupList } from '@/components/bills/BillGroupList';
@@ -207,6 +216,7 @@ export function BillsPage() {
   const [exportMessage, setExportMessage] = useState<string | null>(null);
   const [memoryBanner, setMemoryBanner] = useState<string | null>(null);
   const [selectedGroupDate, setSelectedGroupDate] = useState<string | null>(null);
+  const [moreAnchorEl, setMoreAnchorEl] = useState<HTMLElement | null>(null);
 
   const selectedDailyGroup = useMemo(
     () => (selectedGroupDate ? groups.find((g) => g.localDate === selectedGroupDate) ?? null : null),
@@ -446,34 +456,153 @@ export function BillsPage() {
     />
   );
 
+  const moreActionsMenu = (
+    <Menu
+      anchorEl={moreAnchorEl}
+      open={Boolean(moreAnchorEl)}
+      keepMounted
+      onClose={() => setMoreAnchorEl(null)}
+      PaperProps={{
+        sx: { minWidth: 180, borderRadius: 2.5, mt: 0.5 },
+      }}
+    >
+      {interactive ? (
+        <MenuItem
+          onClick={() => {
+            setMoreAnchorEl(null);
+            setCategoryManagerOpen(true);
+          }}
+          data-testid="open-category-manager-button"
+        >
+          <ListItemIcon>
+            <CategoryOutlined fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="分类管理" />
+        </MenuItem>
+      ) : null}
+      <MenuItem
+        onClick={() => {
+          setMoreAnchorEl(null);
+          if (typeof window !== 'undefined') {
+            window.location.hash = '#/import';
+          }
+        }}
+      >
+        <ListItemIcon>
+          <FileUploadOutlined fontSize="small" />
+        </ListItemIcon>
+        <ListItemText primary="导入账单" />
+      </MenuItem>
+      {bills.length > 0 ? (
+        <MenuItem
+          onClick={() => {
+            setMoreAnchorEl(null);
+            handleExportCsv();
+          }}
+          data-testid="export-bills-button"
+        >
+          <ListItemIcon>
+            <FileDownloadOutlined fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="导出 CSV" />
+        </MenuItem>
+      ) : null}
+      {bills.length > 0 ? (
+        <MenuItem
+          onClick={() => {
+            setMoreAnchorEl(null);
+            handleExportJson();
+          }}
+          data-testid="export-bills-json-button"
+        >
+          <ListItemIcon>
+            <FileDownloadOutlined fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="导出 JSON" />
+        </MenuItem>
+      ) : null}
+      {interactive && allBills.length > 0 ? <Divider /> : null}
+      {interactive && allBills.length > 0 ? (
+        <MenuItem
+          onClick={() => {
+            setMoreAnchorEl(null);
+            setClearAllOpen(true);
+          }}
+          data-testid="clear-all-bills-button"
+          sx={{ color: 'error.main' }}
+        >
+          <ListItemIcon sx={{ color: 'error.main' }}>
+            <DeleteSweepOutlined fontSize="small" />
+          </ListItemIcon>
+          <ListItemText primary="清空全部账单" />
+        </MenuItem>
+      ) : null}
+    </Menu>
+  );
+
+  const pageHeader = (
+    <Stack
+      direction="row"
+      justifyContent="space-between"
+      alignItems="center"
+      spacing={1}
+      sx={{ mb: 2 }}
+    >
+      <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: '-0.01em' }}>
+        账单
+      </Typography>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <Button
+          size="small"
+          variant="outlined"
+          startIcon={<BarChartOutlined sx={{ fontSize: 17 }} />}
+          onClick={() => {
+            if (typeof window !== 'undefined') {
+              window.location.hash = '#/stats';
+            }
+          }}
+          data-testid="go-bill-stats-button"
+          sx={{ height: 32, px: 1.5, borderRadius: '8px', fontWeight: 600 }}
+        >
+          收支统计
+        </Button>
+        {interactive ? (
+          <Button
+            size="small"
+            variant="contained"
+            disableElevation
+            startIcon={<AddOutlined sx={{ fontSize: 17 }} />}
+            onClick={openCreate}
+            sx={{ height: 32, px: 1.75, borderRadius: '8px', fontWeight: 600 }}
+          >
+            记一笔
+          </Button>
+        ) : null}
+        <Tooltip title="更多操作">
+          <IconButton
+            size="small"
+            aria-label="更多账单操作"
+            onClick={(e) => setMoreAnchorEl(e.currentTarget)}
+            sx={{
+              width: 32,
+              height: 32,
+              borderRadius: '8px',
+              border: '1px solid var(--lifehub-border)',
+              backgroundColor: 'var(--lifehub-surface)',
+            }}
+          >
+            <MoreHorizOutlined sx={{ fontSize: 19 }} />
+          </IconButton>
+        </Tooltip>
+      </Stack>
+    </Stack>
+  );
+
   if (interactive && allBills.length === 0 && !loading) {
     return (
       <div data-testid="bills-page">
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 1, mb: 2 }}>
-          <Button
-            variant="outlined"
-            startIcon={<BarChartOutlined />}
-            onClick={() => {
-              if (typeof window !== 'undefined') {
-                window.location.hash = '#/stats';
-              }
-            }}
-            data-testid="go-bill-stats-button"
-          >
-            收支统计
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<CategoryOutlined />}
-            onClick={() => setCategoryManagerOpen(true)}
-            data-testid="open-category-manager-button"
-          >
-            分类管理
-          </Button>
-          <Button variant="contained" startIcon={<AddOutlined />} onClick={openCreate}>
-            记一笔
-          </Button>
-        </Box>
+        {pageHeader}
+        {moreActionsMenu}
         <EmptyState
           title="还没有账单"
           description="你可以直接「记一笔」手动记账，或导入一个 CSV 账单文件，这里会按日期分组展示。"
@@ -486,83 +615,8 @@ export function BillsPage() {
 
   return (
     <div data-testid="bills-page">
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1.5, mb: 2 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700 }}>
-          账单
-        </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1, width: { xs: '100%', sm: 'auto' } }}>
-          {bills.length > 0 ? (
-            <>
-              <Button
-                variant="outlined"
-                startIcon={<FileDownloadOutlined />}
-                onClick={handleExportCsv}
-                data-testid="export-bills-button"
-                sx={{ display: { xs: 'none', sm: 'inline-flex' }, flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
-              >
-                导出 CSV
-              </Button>
-              <Button
-                variant="outlined"
-                startIcon={<FileDownloadOutlined />}
-                onClick={handleExportJson}
-                data-testid="export-bills-json-button"
-                sx={{ display: { xs: 'none', sm: 'inline-flex' }, flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
-              >
-                导出 JSON
-              </Button>
-            </>
-          ) : null}
-          <Button
-            variant="outlined"
-            startIcon={<BarChartOutlined />}
-            onClick={() => {
-              if (typeof window !== 'undefined') {
-                window.location.hash = '#/stats';
-              }
-            }}
-            data-testid="go-bill-stats-button"
-            sx={{ flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
-          >
-            收支统计
-          </Button>
-          {interactive ? (
-            <Button
-              variant="outlined"
-              startIcon={<CategoryOutlined />}
-              onClick={() => setCategoryManagerOpen(true)}
-              data-testid="open-category-manager-button"
-              sx={{ flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
-            >
-              分类管理
-            </Button>
-          ) : null}
-          {interactive ? (
-            <>
-              {allBills.length > 0 ? (
-                <Button
-                  variant="outlined"
-                  color="error"
-                  startIcon={<DeleteSweepOutlined />}
-                  onClick={() => setClearAllOpen(true)}
-                  data-testid="clear-all-bills-button"
-                  sx={{ display: { xs: 'none', sm: 'inline-flex' }, flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
-                >
-                  清空全部账单
-                </Button>
-              ) : null}
-              <Button
-                variant="contained"
-                startIcon={<AddOutlined />}
-                onClick={openCreate}
-                sx={{ flex: { xs: '1 1 auto', sm: '0 0 auto' } }}
-              >
-                记一笔
-              </Button>
-            </>
-          ) : null}
-        </Box>
-      </Box>
+      {pageHeader}
+      {moreActionsMenu}
       {exportMessage ? (
         <Alert
           severity="success"
@@ -631,7 +685,7 @@ export function BillsPage() {
           { id: '__uncategorized__', name: '未分类' },
         ]}
       />
-      <LoadingOverlay visible={loading} label="正在解密账单…" />
+      <LoadingOverlay visible={loading} label="加载中…" />
       {groups.length === 0 && !loading ? (
         <EmptyState title="没有符合筛选条件的账单" description="试试调整搜索关键词或清空筛选条件。" />
       ) : (
@@ -782,7 +836,7 @@ export function BillsPage() {
       </Dialog>
       <Box sx={{ mt: 2 }}>
         <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-          共 {bills.length} 条账单，按本地日历日分组显示。
+          共 {bills.length} 条账单
         </Typography>
       </Box>
       {bills.length > 0 ? (
@@ -799,9 +853,9 @@ export function BillsPage() {
             right: { xs: 16, md: 24 },
             bottom: { xs: 'calc(84px + env(safe-area-inset-bottom, 0px))', md: 28 },
             zIndex: 1100,
-            borderRadius: '999px',
-            px: 2,
-            py: 0.85,
+            borderRadius: '8px',
+            px: 1.75,
+            py: 0.75,
             fontWeight: 600,
             boxShadow: '0 6px 20px rgba(37, 99, 235, 0.28)',
           }}

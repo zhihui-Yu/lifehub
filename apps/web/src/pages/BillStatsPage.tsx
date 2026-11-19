@@ -76,35 +76,30 @@ export function BillStatsPage() {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          flexWrap: 'wrap',
           gap: 1.5,
           mb: 2,
         }}
       >
-        <Box>
-          <Typography variant="h6" sx={{ fontWeight: 700 }}>
-            收支统计与可视化分析
-          </Typography>
-          <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-            按分类占比、收支趋势与月度预算全面洞察账单流向
-          </Typography>
-        </Box>
+        <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: '-0.01em' }}>
+          收支统计
+        </Typography>
         <Button
           variant="outlined"
           size="small"
-          startIcon={<ArrowBackOutlined />}
+          startIcon={<ArrowBackOutlined sx={{ fontSize: 17 }} />}
           onClick={() => {
             if (typeof window !== 'undefined') {
               window.location.hash = '#/bills';
             }
           }}
           data-testid="back-to-bills-button"
+          sx={{ height: 32, px: 1.5, borderRadius: '8px', fontWeight: 600 }}
         >
-          返回账单列表
+          返回账单
         </Button>
       </Box>
 
-      <LoadingOverlay visible={loading} label="正在加载统计数据…" />
+      <LoadingOverlay visible={loading} label="加载中…" />
 
       {allBills.length === 0 && !loading ? (
         <EmptyState

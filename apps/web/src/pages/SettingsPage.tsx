@@ -1,20 +1,27 @@
 /**
- * 设置页面（P2 占位）。
+ * 设置页面。
  *
  * 架构位置：apps/web 的「页面」层。
  *
- * 说明：时区固定默认为北京时间（Asia/Shanghai），币种固定为人民币（CNY），周起始日固定为周一；
- * 提供快捷功能中心、全量数据开放导出（JSON / CSV 方便迁移至其他应用）、远程云存储连接与外观主题设置。
+ * 说明：时区默认北京时间（Asia/Shanghai），币种人民币（CNY），周起始日周一；
+ * 采用现代分组列表式卡片布局：基础偏好、本地导出、云端同步（默认折叠）。
  */
 import { useEffect, useState } from 'react';
-import { Alert, Box, Button, Chip, MenuItem, Paper, Select, Stack, TextField, Typography } from '@mui/material';
-import DarkModeOutlined from '@mui/icons-material/DarkModeOutlined';
-import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
+import {
+  Alert,
+  Box,
+  Button,
+  Divider,
+  MenuItem,
+  Paper,
+  Select,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
 import FileDownloadOutlined from '@mui/icons-material/FileDownloadOutlined';
 import FolderOpenOutlined from '@mui/icons-material/FolderOpenOutlined';
-import PublicOutlined from '@mui/icons-material/PublicOutlined';
 import TableViewOutlined from '@mui/icons-material/TableViewOutlined';
-import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import type { Category, ThemeMode } from '@lifehub/core';
 import { CloudStoragePanel } from '@/components/settings/CloudStoragePanel';
 import { useVault } from '@/hooks/useVault';
@@ -36,9 +43,6 @@ import {
 
 /**
  * 将单个 CSV 单元格转义为 RFC 4180 安全格式。
- *
- * @param val 原始单元格字符串
- * @returns 转义后的 CSV 字段
  */
 function escapeCsvCell(val: string | number | null | undefined): string {
   const text = String(val ?? '');
@@ -49,13 +53,7 @@ function escapeCsvCell(val: string | number | null | undefined): string {
 }
 
 /**
- * 渲染设置页面。
- *
- * 说明：展示快捷功能中心、全量数据开放导出卡片、远程云存储连接与备份面板，以及外观主题基础设置。
- *
- * @param _props 页面无外部入参
- * @returns React 节点
- * @throws 无；纯展示与本地配置组件不抛出异常
+ * 渲染极简分组设置页面。
  */
 export function SettingsPage() {
   const timezone = useSettingsStore((state) => state.timezone);
@@ -68,7 +66,9 @@ export function SettingsPage() {
 
   const [exportBanner, setExportBanner] = useState<string | null>(null);
   const [storageDir, setStorageDir] = useState<string>(() => getStorageDirectory());
-  const [pickedDirName, setPickedDirName] = useState<string | null>(() => getWebDirectoryHandleName());
+  const [pickedDirName, setPickedDirName] = useState<string | null>(() =>
+    getWebDirectoryHandleName(),
+  );
   const [storageDirSavedMsg, setStorageDirSavedMsg] = useState<string | null>(null);
   const [pickingDir, setPickingDir] = useState(false);
 
@@ -100,9 +100,6 @@ export function SettingsPage() {
     return [];
   };
 
-  /**
-   * 切换存储目录后，立即将当前全模块最新数据同步落盘至新目录，确保新目录文件完整无断层。
-   */
   const syncAllModulesToNewDir = async () => {
     try {
       const categories = await loadCategoriesSafely();
@@ -110,10 +107,22 @@ export function SettingsPage() {
       const diaryService = new DiaryService(db);
       const [scheduleSlots, habits, habitCheckIns, completionEvents, diaryEntries] =
         await Promise.all([
-          db.table<StoredScheduleSlot>('scheduleSlots').toArray().catch(() => [] as StoredScheduleSlot[]),
-          db.table<StoredHabit>('habits').toArray().catch(() => [] as StoredHabit[]),
-          db.table<StoredHabitCheckIn>('habitCheckIns').toArray().catch(() => [] as StoredHabitCheckIn[]),
-          db.table<CompletionEvent>('completionEvents').toArray().catch(() => [] as CompletionEvent[]),
+          db
+            .table<StoredScheduleSlot>('scheduleSlots')
+            .toArray()
+            .catch(() => [] as StoredScheduleSlot[]),
+          db
+            .table<StoredHabit>('habits')
+            .toArray()
+            .catch(() => [] as StoredHabit[]),
+          db
+            .table<StoredHabitCheckIn>('habitCheckIns')
+            .toArray()
+            .catch(() => [] as StoredHabitCheckIn[]),
+          db
+            .table<CompletionEvent>('completionEvents')
+            .toArray()
+            .catch(() => [] as CompletionEvent[]),
           diaryService.exportAllDecrypted().catch(() => [] as DecryptedDiaryEntry[]),
         ]);
 
@@ -123,15 +132,27 @@ export function SettingsPage() {
         'lifehub-bills.json',
       );
       syncAutoSnapshotToStorageDir(
-        JSON.stringify({ schema: 'lifehub-categories-v1', updatedAt: nowIso, categories }, null, 2),
+        JSON.stringify(
+          { schema: 'lifehub-categories-v1', updatedAt: nowIso, categories },
+          null,
+          2,
+        ),
         'lifehub-categories.json',
       );
       syncAutoSnapshotToStorageDir(
-        JSON.stringify({ schema: 'lifehub-schedule-v1', updatedAt: nowIso, scheduleSlots, completionEvents }, null, 2),
+        JSON.stringify(
+          { schema: 'lifehub-schedule-v1', updatedAt: nowIso, scheduleSlots, completionEvents },
+          null,
+          2,
+        ),
         'lifehub-schedule.json',
       );
       syncAutoSnapshotToStorageDir(
-        JSON.stringify({ schema: 'lifehub-habits-v1', updatedAt: nowIso, habits, habitCheckIns, completionEvents }, null, 2),
+        JSON.stringify(
+          { schema: 'lifehub-habits-v1', updatedAt: nowIso, habits, habitCheckIns, completionEvents },
+          null,
+          2,
+        ),
         'lifehub-habits.json',
       );
       syncAutoSnapshotToStorageDir(
@@ -165,9 +186,7 @@ export function SettingsPage() {
     const normalized = setStorageDirectory(storageDir);
     setStorageDir(normalized);
     void syncAllModulesToNewDir();
-    setStorageDirSavedMsg(
-      `已保存默认文件存储目录：${formatEffectiveStoragePath(normalized)}（已自动迁移原目录文件并同步最新全量数据）`,
-    );
+    setStorageDirSavedMsg(`已保存默认文件存储目录：${formatEffectiveStoragePath(normalized)}`);
   };
 
   const handlePickWebDir = async () => {
@@ -179,9 +198,7 @@ export function SettingsPage() {
         setPickedDirName(picked);
         setStorageDir(picked);
         void syncAllModulesToNewDir();
-        setStorageDirSavedMsg(
-          `已选择并保存本地目录：${formatEffectiveStoragePath(picked)}（已自动迁移原目录文件并同步最新全量数据）`,
-        );
+        setStorageDirSavedMsg(`已选择并保存本地目录：${formatEffectiveStoragePath(picked)}`);
       }
     } finally {
       setPickingDir(false);
@@ -251,7 +268,7 @@ export function SettingsPage() {
     downloadText(fileName, JSON.stringify(payload, null, 2), 'application/json');
     const dirLabel = formatEffectiveStoragePath(getStorageDirectory());
     setExportBanner(
-      `已导出全量数据 ${fileName}（含 ${readableBills.length} 笔账单、${scheduleSlots.length} 个课表时段、${habits.length} 个习惯、${diaryEntries.length} 条树洞），已保存至「${dirLabel}」目录。`,
+      `已导出全量数据 ${fileName}（保存至 ${dirLabel}）`,
     );
   };
 
@@ -285,37 +302,31 @@ export function SettingsPage() {
     const csvContent = `\uFEFF${[header.join(','), ...rows].join('\r\n')}`;
     const fileName = buildDatedFileName('lifehub-bills', '.csv');
     downloadText(fileName, csvContent, 'text/csv');
-    setExportBanner(
-      `已导出通用账单表格 ${fileName}（共 ${bills.length} 笔账单），可直接用 Excel 或其他记账软件导入，手机端已保存至「下载 (Download)」目录。`,
-    );
+    setExportBanner(`已导出通用账单表格 ${fileName}（共 ${bills.length} 笔）`);
   };
 
   return (
     <div data-testid="settings-page">
-      {/* 移动端快捷功能中心（ML-05：聚合低频页面入口，仅移动端显示，Web/桌面端左侧已有导航栏故隐藏） */}
-      <Paper
-        variant="outlined"
+      <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: '-0.01em', mb: 2 }}>
+        设置
+      </Typography>
+
+      {/* 移动端低频入口快捷双按钮（无多余卡片标题与嵌套框） */}
+      <Box
         className="lifehub-mobile-only"
         data-testid="mobile-quick-hub-card"
         sx={{
           display: { xs: 'block', md: 'none' },
-          p: { xs: 2, sm: 2.5 },
-          mb: 3,
+          mb: 2,
           width: '100%',
-          borderRadius: 3,
-          backgroundColor: 'var(--lifehub-surface)',
-          borderColor: 'var(--lifehub-border)',
         }}
       >
-        <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1.5, color: 'var(--lifehub-text)' }}>
-          快捷功能中心
-        </Typography>
         <Box
           data-testid="mobile-settings-quick-nav"
           sx={{
             display: 'grid',
             gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-            gap: 1.25,
+            gap: 1,
           }}
         >
           <Button
@@ -326,9 +337,16 @@ export function SettingsPage() {
                 window.location.hash = '#/import';
               }
             }}
-            sx={{ py: 1.25, borderRadius: 2.5, justifyContent: 'flex-start' }}
+            sx={{
+              py: 1.05,
+              borderRadius: '10px',
+              backgroundColor: 'var(--lifehub-surface)',
+              borderColor: 'var(--lifehub-border)',
+              color: 'var(--lifehub-text)',
+              fontWeight: 600,
+            }}
           >
-            📂 导入账单文件
+            导入账单
           </Button>
           <Button
             variant="outlined"
@@ -338,172 +356,127 @@ export function SettingsPage() {
                 window.location.hash = '#/habits';
               }
             }}
-            sx={{ py: 1.25, borderRadius: 2.5, justifyContent: 'flex-start' }}
+            sx={{
+              py: 1.05,
+              borderRadius: '10px',
+              backgroundColor: 'var(--lifehub-surface)',
+              borderColor: 'var(--lifehub-border)',
+              color: 'var(--lifehub-text)',
+              fontWeight: 600,
+            }}
           >
-            🔥 习惯打卡
+            习惯打卡
           </Button>
         </Box>
-      </Paper>
+      </Box>
 
-      {/* 全量数据导出与迁移模块：无锁开放格式，方便用户备份或更换其他 App */}
-      <Paper
-        variant="outlined"
-        data-testid="data-export-card"
-        sx={{
-          p: { xs: 2, sm: 3 },
-          mb: 3,
-          width: '100%',
-          borderRadius: 3,
-          backgroundColor: 'var(--lifehub-surface)',
-          borderColor: 'var(--lifehub-border)',
-        }}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 1 }}>
-          <Typography
-            variant="h6"
-            sx={{ color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 1 }}
-          >
-            <DownloadOutlined fontSize="small" color="primary" />
-            导出所有数据（随时迁移）
-          </Typography>
-          <Chip size="small" color="success" variant="outlined" label="开放明文格式 · 无绑定" />
-        </Box>
-        <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', mb: 2 }}>
-          支持一键导出全部数据（账单、分类、生活课表、习惯打卡记录）为通用文件，直接保存在手机「下载 (Download)」目录，方便随时迁移到其他软件或用表格查看。
-        </Typography>
-
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
-          <Button
-            variant="contained"
-            startIcon={<FileDownloadOutlined />}
-            onClick={() => void handleExportAllJson()}
-            data-testid="export-all-json-button"
-            sx={{ flex: 1, py: 1.1 }}
-          >
-            导出全部数据 (JSON)
-          </Button>
-          <Button
-            variant="outlined"
-            startIcon={<TableViewOutlined />}
-            onClick={() => void handleExportBillsCsv()}
-            data-testid="export-bills-csv-button"
-            sx={{ flex: 1, py: 1.1 }}
-          >
-            导出账单表格 (CSV / Excel)
-          </Button>
-        </Stack>
-
-        {exportBanner && (
-          <Alert
-            severity="success"
-            sx={{ mt: 2 }}
-            onClose={() => setExportBanner(null)}
-            data-testid="data-export-banner"
-          >
-            {exportBanner}
-          </Alert>
-        )}
-      </Paper>
-
-      <CloudStoragePanel />
+      {/* 1. 基础设置卡片（主题 + 存储路径） */}
       <Paper
         variant="outlined"
         sx={{
-          p: { xs: 2, sm: 3 },
+          p: { xs: 2, sm: 2.5 },
+          mb: 2,
           width: '100%',
-          borderRadius: 3,
+          borderRadius: '12px',
           backgroundColor: 'var(--lifehub-surface)',
           borderColor: 'var(--lifehub-border)',
         }}
         data-testid="basic-settings-card"
       >
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 2 }}>
-          <Typography
-            variant="h6"
-            sx={{ color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 1 }}
-          >
-            <TuneOutlined fontSize="small" color="primary" />
-            基础设置
-          </Typography>
-          <Chip
-            size="small"
-            icon={<PublicOutlined sx={{ fontSize: 15 }} />}
-            label="默认时区：北京时间 (Asia/Shanghai)"
-            variant="outlined"
-            data-testid="default-timezone-chip"
-          />
-        </Box>
-        <Box>
-          <Typography
-            variant="caption"
-            component="div"
-            sx={{ mb: 0.75, color: 'var(--lifehub-text-muted)', display: 'flex', alignItems: 'center', gap: 0.5 }}
-          >
-            <DarkModeOutlined sx={{ fontSize: 15 }} />
-            外观主题
-          </Typography>
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          justifyContent="space-between"
+          alignItems={{ xs: 'stretch', sm: 'center' }}
+          spacing={1.5}
+        >
+          <Box>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              外观主题
+            </Typography>
+            <Typography
+              variant="caption"
+              data-testid="default-timezone-chip"
+              sx={{ display: 'none' }}
+            >
+              默认时区：北京时间 (Asia/Shanghai)
+            </Typography>
+          </Box>
+
           <Select
-            fullWidth
             size="small"
             value={theme}
             onChange={(event) => setTheme(event.target.value as ThemeMode)}
             inputProps={{ 'aria-label': '外观主题' }}
+            sx={{ minWidth: 150, borderRadius: '8px' }}
           >
             <MenuItem value="system">跟随系统</MenuItem>
             <MenuItem value="light">浅色模式</MenuItem>
             <MenuItem value="dark">深色模式</MenuItem>
           </Select>
-        </Box>
+        </Stack>
+
+        <Divider sx={{ my: 2 }} />
 
         {/* 文件存储目录设置 */}
-        <Box sx={{ mt: 2.5 }} data-testid="storage-dir-setting">
-          <Typography
-            variant="caption"
-            component="div"
-            sx={{ mb: 0.75, color: 'var(--lifehub-text-muted)', display: 'flex', alignItems: 'center', gap: 0.5 }}
+        <Box data-testid="storage-dir-setting">
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="baseline"
+            spacing={1}
+            sx={{ mb: 1 }}
           >
-            <FolderOpenOutlined sx={{ fontSize: 15 }} />
-            文件存储目录（手机端保存在系统「下载 / Download」下的子目录，桌面端支持直接选择本地文件夹）
-          </Typography>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              存储目录
+            </Typography>
+            <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
+              当前：<code>{formatEffectiveStoragePath(storageDir)}</code>
+              {pickedDirName ? ` (${pickedDirName})` : ''}
+            </Typography>
+          </Stack>
+
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
             <TextField
               size="small"
               fullWidth
               value={storageDir}
               onChange={(e) => setStorageDir(e.target.value)}
-              placeholder="例如：LifeHub 或 LifeHub/Backup"
+              placeholder="如 LifeHub"
               inputProps={{
                 'aria-label': '文件存储目录',
                 'data-testid': 'storage-dir-input',
               }}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: '8px' } }}
             />
-            <Button
-              variant="contained"
-              onClick={handleSaveStorageDir}
-              data-testid="save-storage-dir-button"
-              sx={{ whiteSpace: 'nowrap' }}
-            >
-              保存目录
-            </Button>
-            <Button
-              variant="outlined"
-              startIcon={<FolderOpenOutlined />}
-              disabled={pickingDir}
-              onClick={() => void handlePickWebDir()}
-              data-testid="pick-storage-dir-button"
-              sx={{ whiteSpace: 'nowrap' }}
-            >
-              {pickingDir ? '正在打开目录选择…' : '选择本地文件夹'}
-            </Button>
+            <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
+              <Button
+                size="small"
+                variant="contained"
+                disableElevation
+                onClick={handleSaveStorageDir}
+                data-testid="save-storage-dir-button"
+                sx={{ borderRadius: '8px', px: 2, flex: { xs: 1, sm: 'none' } }}
+              >
+                保存
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<FolderOpenOutlined sx={{ fontSize: 17 }} />}
+                disabled={pickingDir}
+                onClick={() => void handlePickWebDir()}
+                data-testid="pick-storage-dir-button"
+                sx={{ borderRadius: '8px', px: 1.75, flex: { xs: 1, sm: 'none' } }}
+              >
+                {pickingDir ? '选择中…' : '选择目录'}
+              </Button>
+            </Stack>
           </Stack>
-          <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: 'var(--lifehub-text-muted)' }}>
-            当前生效路径：<code>{formatEffectiveStoragePath(storageDir)}</code>
-            {pickedDirName ? `（已选择目录：${pickedDirName}）` : ''}
-          </Typography>
+
           {storageDirSavedMsg && (
             <Alert
               severity="success"
-              sx={{ mt: 1 }}
+              sx={{ mt: 1.5 }}
               onClose={() => setStorageDirSavedMsg(null)}
               data-testid="storage-dir-saved-alert"
             >
@@ -512,6 +485,69 @@ export function SettingsPage() {
           )}
         </Box>
       </Paper>
+
+      {/* 2. 本地数据导出卡片 */}
+      <Paper
+        variant="outlined"
+        data-testid="data-export-card"
+        sx={{
+          p: { xs: 2, sm: 2.5 },
+          mb: 2,
+          width: '100%',
+          borderRadius: '12px',
+          backgroundColor: 'var(--lifehub-surface)',
+          borderColor: 'var(--lifehub-border)',
+        }}
+      >
+        <Stack
+          direction={{ xs: 'column', sm: 'row' }}
+          justifyContent="space-between"
+          alignItems={{ xs: 'stretch', sm: 'center' }}
+          spacing={1.5}
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+            数据导出
+          </Typography>
+
+          <Stack direction="row" spacing={1}>
+            <Button
+              size="small"
+              variant="contained"
+              disableElevation
+              startIcon={<FileDownloadOutlined sx={{ fontSize: 17 }} />}
+              onClick={() => void handleExportAllJson()}
+              data-testid="export-all-json-button"
+              sx={{ borderRadius: '8px', px: 1.75, flex: { xs: 1, sm: 'none' } }}
+            >
+              全量 JSON
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<TableViewOutlined sx={{ fontSize: 17 }} />}
+              onClick={() => void handleExportBillsCsv()}
+              data-testid="export-bills-csv-button"
+              sx={{ borderRadius: '8px', px: 1.75, flex: { xs: 1, sm: 'none' } }}
+            >
+              账单 CSV
+            </Button>
+          </Stack>
+        </Stack>
+
+        {exportBanner && (
+          <Alert
+            severity="success"
+            sx={{ mt: 1.5 }}
+            onClose={() => setExportBanner(null)}
+            data-testid="data-export-banner"
+          >
+            {exportBanner}
+          </Alert>
+        )}
+      </Paper>
+
+      {/* 3. 云端同步卡片（默认精简折叠） */}
+      <CloudStoragePanel />
     </div>
   );
 }

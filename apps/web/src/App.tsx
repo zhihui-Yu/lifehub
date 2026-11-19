@@ -115,11 +115,11 @@ export function App() {
           fontFamily:
             '"Inter", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',
         },
-        shape: { borderRadius: 12 },
+        shape: { borderRadius: 8 },
         components: {
           MuiPaper: {
             styleOverrides: {
-              root: { backgroundImage: 'none', borderRadius: 14 },
+              root: { backgroundImage: 'none', borderRadius: 12 },
               outlined: {
                 borderColor: 'var(--lifehub-border)',
                 boxShadow: 'var(--lifehub-shadow-sm)',
@@ -131,7 +131,7 @@ export function App() {
               root: {
                 textTransform: 'none',
                 fontWeight: 600,
-                borderRadius: 10,
+                borderRadius: 8,
                 boxShadow: 'none',
                 '&:hover': { boxShadow: 'none' },
               },
@@ -141,12 +141,12 @@ export function App() {
           },
           MuiChip: {
             styleOverrides: {
-              root: { fontWeight: 500, borderRadius: 8 },
+              root: { fontWeight: 500, borderRadius: 6 },
             },
           },
           MuiDialog: {
             styleOverrides: {
-              paper: { borderRadius: 16, margin: 12, width: 'calc(100% - 24px)' },
+              paper: { borderRadius: 14, margin: 12, width: 'calc(100% - 24px)' },
             },
           },
         },

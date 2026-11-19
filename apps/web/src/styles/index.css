@@ -169,6 +169,43 @@ body {
   box-sizing: border-box;
 }
 
+/* AI 对话等一屏应用页：彻底锁死 html / body / shell / main 外层滚动条与弹性拖拽，仅允许内部会话区滚动 */
+html.lifehub-ai-locked,
+body.lifehub-ai-locked,
+html.lifehub-ai-locked #root,
+.lifehub-shell.lifehub-shell--locked {
+  height: 100vh;
+  height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+.lifehub-content.lifehub-content--locked {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0%;
+  min-height: 0 !important;
+  height: 100%;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+.lifehub-content.lifehub-content--locked > .lifehub-topbar {
+  flex-shrink: 0;
+}
+
+.lifehub-content.lifehub-content--locked > [data-testid='ai-page'] {
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 /* 桌面/Web端（>900px，左侧导航栏可见时）：原生应用式固定外框（仅内容区独立纵向滚动，禁止整页弹性拖拽露底） */
 @media (min-width: 901px) {
   .lifehub-mobile-only {
@@ -197,6 +234,14 @@ body {
     overflow-y: auto;
     overflow-x: hidden;
     overscroll-behavior: none;
+  }
+
+  .lifehub-content.lifehub-content--locked {
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
+    padding: clamp(12px, 1.5vw, 24px);
+    overflow: hidden !important;
   }
 }
 
@@ -292,6 +337,11 @@ body {
     order: 1;
   }
 
+  .lifehub-content.lifehub-content--locked {
+    padding: 0 10px calc(74px + env(safe-area-inset-bottom, 0px)) 10px;
+    overflow: hidden !important;
+  }
+
   /* 手机端唤起软键盘（输入法）时自动隐藏底部导航栏，防止导航栏被顶到输入法上方遮挡输入区 */
   body.lifehub-keyboard-open .lifehub-sidenav,
   .lifehub-sidenav.lifehub-sidenav--keyboard-open {
@@ -301,6 +351,10 @@ body {
   body.lifehub-keyboard-open .lifehub-content,
   body.lifehub-keyboard-open .lifehub-main {
     padding-bottom: 16px !important;
+  }
+
+  body.lifehub-keyboard-open .lifehub-content.lifehub-content--locked {
+    padding-bottom: 10px !important;
   }
 }
 

@@ -217,7 +217,7 @@ describe('DeepSeek API Key 配置与远程调用支持', () => {
     sharedFakeDb = createFakeDatabase() as LifeHubDatabase;
   });
 
-  it('选择 deepseek 时默认填充 https://api.deepseek.com 与 deepseek-chat，并携带加密保存的 Bearer Key 调用 /chat/completions', async () => {
+  it('选择 deepseek 时默认填充 https://api.deepseek.com 与 deepseek-flash，支持 V4 thinking 开关并自动迁移旧版模型名', async () => {
     const db = createFakeDatabase() as LifeHubDatabase;
     const storage = new AiStorageService(db);
 
@@ -230,16 +230,19 @@ describe('DeepSeek API Key 配置与远程调用支持', () => {
 
     expect(saved.provider).toBe('deepseek');
     expect(saved.baseUrl).toBe('https://api.deepseek.com');
-    expect(saved.model).toBe('deepseek-chat');
+    expect(saved.model).toBe('deepseek-flash');
+    expect(saved.thinkingEnabled).toBe(false);
     expect(saved.hasApiKey).toBe(true);
     expect(saved.encryptedApiKeyCiphertext).not.toContain('sk-deepseek-test-123456');
 
     let capturedUrl = '';
     let capturedAuth = '';
+    let capturedBody: Record<string, unknown> = {};
     const fakeFetch: typeof fetch = async (input, init) => {
       capturedUrl = String(input);
       const headers = init?.headers as Record<string, string>;
       capturedAuth = headers['Authorization'] ?? '';
+      capturedBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
       return new Response(
         JSON.stringify({
           choices: [{ message: { content: 'DeepSeek 复盘建议结果' } }],
@@ -260,10 +263,33 @@ describe('DeepSeek API Key 配置与远程调用支持', () => {
 
     expect(capturedUrl).toBe('https://api.deepseek.com/chat/completions');
     expect(capturedAuth).toBe('Bearer sk-deepseek-test-123456');
+    expect(capturedBody['model']).toBe('deepseek-flash');
+    expect(capturedBody['thinking']).toEqual({ type: 'disabled' });
     expect(result.replyText).toBe('DeepSeek 复盘建议结果');
     expect(result.auditRecord.provider).toBe('deepseek');
-    expect(result.auditRecord.model).toBe('deepseek-chat');
+    expect(result.auditRecord.model).toBe('deepseek-flash');
     expect(result.auditRecord.tokensUsed).toBe(150);
+
+    // 验证 deepseek-v4-pro 开启深度思考时携带 thinking.type = 'enabled' 且省略 temperature
+    await storage.saveConfig({
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-pro',
+      thinkingEnabled: true,
+    });
+    await executeRemoteAiAnalysis(prompt, { storage, fetchFn: fakeFetch });
+    expect(capturedBody['model']).toBe('deepseek-v4-pro');
+    expect(capturedBody['thinking']).toEqual({ type: 'enabled' });
+    expect(capturedBody['temperature']).toBeUndefined();
+
+    // 验证旧版已退役的 deepseek-reasoner 自动平滑迁移为 deepseek-flash + thinkingEnabled: true
+    const migrated = await storage.saveConfig({
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-reasoner',
+    });
+    expect(migrated.model).toBe('deepseek-flash');
+    expect(migrated.thinkingEnabled).toBe(true);
   });
 
   it('buildSignedCloudHttpRequest 使用 WebCrypto HMAC-SHA1 生成合法的阿里云 OSS 与腾讯云 COS 预签名 URL', async () => {

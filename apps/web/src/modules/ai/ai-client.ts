@@ -12,6 +12,7 @@ import { LifeHubError } from '@lifehub/core';
 import {
   AiStorageService,
   computePayloadSha256Hex,
+  DEFAULT_DEEPSEEK_MODEL,
   type AIAnalysisRequestRecord,
   type AiTokenUsage,
 } from './ai-storage';
@@ -78,6 +79,7 @@ function buildProviderRequestPayload(
   model: string,
   prompt: BuiltAiPrompt,
   chatHistory?: readonly AiChatMessage[],
+  thinkingEnabled?: boolean,
 ): { endpoint: string; bodyJson: string } {
   const normalizedBase = baseUrl.trim().replace(/\/+$/, '');
   const messages: Array<{ role: string; content: string }> = [
@@ -114,12 +116,17 @@ function buildProviderRequestPayload(
   const endpoint = normalizedBase.endsWith('/chat/completions')
     ? normalizedBase
     : `${normalizedBase}/chat/completions`;
+  const isDeepSeek = provider === 'deepseek' || model.toLowerCase().startsWith('deepseek-');
+  const useThinking = Boolean(thinkingEnabled) || model.toLowerCase().includes('reasoner');
   const payloadObj: Record<string, unknown> = {
     model,
     messages,
     stream: false,
   };
-  if (!model.toLowerCase().includes('reasoner')) {
+  if (isDeepSeek) {
+    payloadObj['thinking'] = { type: useThinking ? 'enabled' : 'disabled' };
+  }
+  if (!useThinking) {
     payloadObj['temperature'] = 0.3;
   }
   const bodyJson = JSON.stringify(payloadObj);
@@ -287,6 +294,7 @@ export async function executeRemoteAiAnalysis(
     config.model,
     prompt,
     options.chatHistory,
+    config.thinkingEnabled,
   );
   let payloadDigest = await computePayloadSha256Hex(bodyJson);
   const startedAtMs = Date.now();
@@ -316,9 +324,10 @@ export async function executeRemoteAiAnalysis(
         const dsPayload = buildProviderRequestPayload(
           'deepseek',
           'https://api.deepseek.com',
-          'deepseek-chat',
+          DEFAULT_DEEPSEEK_MODEL,
           prompt,
           options.chatHistory,
+          false,
         );
         response = await sendHttpWithDesktopFallback(
           fetchImpl,
@@ -330,7 +339,8 @@ export async function executeRemoteAiAnalysis(
           config = await storage.saveConfig({
             provider: 'deepseek',
             baseUrl: 'https://api.deepseek.com',
-            model: 'deepseek-chat',
+            model: DEFAULT_DEEPSEEK_MODEL,
+            thinkingEnabled: false,
           });
           endpoint = dsPayload.endpoint;
           bodyJson = dsPayload.bodyJson;
@@ -345,9 +355,10 @@ export async function executeRemoteAiAnalysis(
       const dsPayload = buildProviderRequestPayload(
         'deepseek',
         'https://api.deepseek.com',
-        'deepseek-chat',
+        DEFAULT_DEEPSEEK_MODEL,
         prompt,
         options.chatHistory,
+        false,
       );
       const dsResp = await sendHttpWithDesktopFallback(
         fetchImpl,
@@ -360,7 +371,8 @@ export async function executeRemoteAiAnalysis(
         config = await storage.saveConfig({
           provider: 'deepseek',
           baseUrl: 'https://api.deepseek.com',
-          model: 'deepseek-chat',
+          model: DEFAULT_DEEPSEEK_MODEL,
+          thinkingEnabled: false,
         });
         endpoint = dsPayload.endpoint;
         bodyJson = dsPayload.bodyJson;

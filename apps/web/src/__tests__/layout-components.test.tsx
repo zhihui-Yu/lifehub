@@ -105,8 +105,8 @@ describe('SideNav', () => {
 });
 
 describe('AppShell', () => {
-  it('渲染侧导航与内容区', () => {
-    render(
+  it('渲染侧导航与内容区，且在 /ai 路由下自动锁定外层视口滚动', () => {
+    const { container, unmount } = render(
       <MemoryRouter initialEntries={['/import']}>
         <AppShell>
           <div data-testid="shell-content">页面内容</div>
@@ -117,6 +117,21 @@ describe('AppShell', () => {
     expect(screen.getByTestId('shell-content')).toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument();
     expect(screen.getByText('导入账单')).toBeInTheDocument();
+    expect(container.querySelector('.lifehub-shell')).not.toHaveClass('lifehub-shell--locked');
+    expect(container.querySelector('.lifehub-content')).not.toHaveClass('lifehub-content--locked');
+    unmount();
+
+    const aiRender = render(
+      <MemoryRouter initialEntries={['/ai']}>
+        <AppShell>
+          <div data-testid="ai-shell-content">AI 页面</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    expect(aiRender.container.querySelector('.lifehub-shell')).toHaveClass('lifehub-shell--locked');
+    expect(aiRender.container.querySelector('.lifehub-content')).toHaveClass(
+      'lifehub-content--locked',
+    );
   });
 });
 
