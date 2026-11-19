@@ -52,7 +52,8 @@ describe('SideNav', () => {
 
     expect(screen.getByText('导入账单')).toBeInTheDocument();
     expect(screen.getByText('账单列表')).toBeInTheDocument();
-    expect(screen.getByText('分类管理')).toBeInTheDocument();
+    // 分类管理已收敛至账单列表内部配置，不再单独占侧边栏 Tab
+    expect(screen.queryByText('分类管理')).not.toBeInTheDocument();
     expect(screen.getByText('生活课表')).toBeInTheDocument();
     expect(screen.getByText('习惯打卡')).toBeInTheDocument();
     expect(screen.getByText('AI 分析')).toBeInTheDocument();

@@ -9,7 +9,6 @@ import { useEffect, useState } from 'react';
 import { Box, List, ListItemButton, ListItemIcon, ListItemText, Typography } from '@mui/material';
 import AddCircleOutline from '@mui/icons-material/AddCircleOutline';
 import ReceiptLong from '@mui/icons-material/ReceiptLong';
-import CategoryOutlined from '@mui/icons-material/CategoryOutlined';
 import EventNoteOutlined from '@mui/icons-material/EventNoteOutlined';
 import TaskAltOutlined from '@mui/icons-material/TaskAltOutlined';
 import ParkOutlined from '@mui/icons-material/ParkOutlined';
@@ -48,11 +47,10 @@ function isSoftKeyboardTarget(el: Element | null): boolean {
   return false;
 }
 
-/** 侧导航项定义。 */
+/** 侧导航项定义（分类管理已收敛至账单列表内配置，不再单独占一级导航 Tab）。 */
 const NAV_ITEMS = [
   { path: '/import', label: '导入账单', icon: <AddCircleOutline fontSize="small" />, desktopOnly: true },
   { path: '/bills', label: '账单列表', icon: <ReceiptLong fontSize="small" />, desktopOnly: false },
-  { path: '/categories', label: '分类管理', icon: <CategoryOutlined fontSize="small" />, desktopOnly: true },
   { path: '/schedule', label: '生活课表', icon: <EventNoteOutlined fontSize="small" />, desktopOnly: false },
   { path: '/habits', label: '习惯打卡', icon: <TaskAltOutlined fontSize="small" />, desktopOnly: true },
   { path: '/treehole', label: '树洞', icon: <ParkOutlined fontSize="small" />, desktopOnly: false },

@@ -7,6 +7,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Category } from '@lifehub/core';
 import { CategoriesPage } from '@/pages/CategoriesPage';
+import { CategoryManagerDialog } from '@/components/categories/CategoryManagerDialog';
 
 /**
  * 用 hoisted 维护一个**引用稳定**的内存分类表与假运行时，
@@ -195,5 +196,30 @@ describe('CategoriesPage', () => {
       expect(screen.getByText('运动健身')).toBeInTheDocument();
     });
     expect(screen.queryByText('健身')).not.toBeInTheDocument();
+  });
+
+  it('CategoryManagerDialog 支持作为账单页内嵌弹窗打开、新增分类并回调通知新建结果', async () => {
+    const onClose = vi.fn();
+    const onCreated = vi.fn();
+    render(<CategoryManagerDialog open onClose={onClose} onCategoryCreated={onCreated} />);
+
+    expect(screen.getByTestId('category-manager-dialog')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText('餐饮')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: '新增分类' }));
+    const nameInput = await screen.findByLabelText('分类名称');
+    fireEvent.change(nameInput, { target: { value: '数码配件' } });
+    fireEvent.click(screen.getByRole('button', { name: '新增' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('数码配件')).toBeInTheDocument();
+    });
+    expect(onCreated).toHaveBeenCalledTimes(1);
+    expect(onCreated.mock.calls[0]?.[0]?.name).toBe('数码配件');
+
+    fireEvent.click(screen.getByLabelText('关闭分类管理'));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

@@ -160,7 +160,7 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('cloud-download-source-button')).toBeInTheDocument();
   });
 
-  it('展示移动端快捷功能中心（导入账单 / 分类管理 / 习惯打卡）并支持一键跳转，不再暴露多余的安全与加密入口', () => {
+  it('展示移动端快捷功能中心（导入账单 / 习惯打卡）并支持一键跳转，分类管理已收敛至账单页且不再暴露多余的安全与加密入口', () => {
     render(<SettingsPage />);
 
     expect(screen.getByTestId('mobile-quick-hub-card')).toBeInTheDocument();
@@ -169,12 +169,10 @@ describe('SettingsPage', () => {
     fireEvent.click(screen.getByTestId('quick-nav-import'));
     expect(window.location.hash).toBe('#/import');
 
-    fireEvent.click(screen.getByTestId('quick-nav-categories'));
-    expect(window.location.hash).toBe('#/categories');
-
     fireEvent.click(screen.getByTestId('quick-nav-habits'));
     expect(window.location.hash).toBe('#/habits');
 
+    expect(screen.queryByTestId('quick-nav-categories')).not.toBeInTheDocument();
     expect(screen.queryByTestId('quick-nav-security')).not.toBeInTheDocument();
   });
 

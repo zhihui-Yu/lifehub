@@ -9,6 +9,7 @@
  */
 import { useEffect, useState } from 'react';
 import {
+  Box,
   Button,
   Checkbox,
   Dialog,
@@ -42,6 +43,10 @@ export interface BillEditDialogProps {
   onClose: () => void;
   /** 提交回调；返回 true 表示成功（对话框关闭），false / 抛错表示失败（保持打开并提示）。 */
   onSubmit: (input: ManualBillInput, options?: { rememberCategory?: boolean }) => Promise<boolean>;
+  /** 可选：唤起分类管理弹窗的快捷入口回调。 */
+  onOpenCategoryManager?: () => void;
+  /** 可选：在分类管理弹窗中刚新增的分类 ID，用于在记账弹窗内自动选中。 */
+  autoSelectCategoryId?: string | null;
 }
 
 /** 方向选项。 */
@@ -57,7 +62,15 @@ const DIRECTION_OPTIONS: { value: Direction; label: string }[] = [
  * @param props 组件属性
  * @returns React 节点
  */
-export function BillEditDialog({ open, initial, categories, onClose, onSubmit }: BillEditDialogProps) {
+export function BillEditDialog({
+  open,
+  initial,
+  categories,
+  onClose,
+  onSubmit,
+  onOpenCategoryManager,
+  autoSelectCategoryId,
+}: BillEditDialogProps) {
   const timezone = useSettingsStore((state) => state.timezone);
   const allBills = useBillStore((state) => state.bills);
   const [date, setDate] = useState('');
@@ -153,6 +166,17 @@ export function BillEditDialog({ open, initial, categories, onClose, onSubmit }:
     }
   }, [open, counterparty, note, userModifiedCategory, initial, allBills, categories]);
 
+  // 在记账弹窗内顺手新建分类后，自动选中刚新建的分类。
+  useEffect(() => {
+    if (!open || !autoSelectCategoryId) {
+      return;
+    }
+    if (categories.some((c) => c.id === autoSelectCategoryId)) {
+      setUserModifiedCategory(true);
+      setCategoryId(autoSelectCategoryId);
+    }
+  }, [open, autoSelectCategoryId, categories]);
+
   const handleSubmit = async (): Promise<void> => {
     setBusy(true);
     setLocalError(null);
@@ -233,6 +257,19 @@ export function BillEditDialog({ open, initial, categories, onClose, onSubmit }:
               </Select>
             </FormControl>
           </Stack>
+          {onOpenCategoryManager ? (
+            <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: '4px !important' }}>
+              <Button
+                size="small"
+                variant="text"
+                onClick={onOpenCategoryManager}
+                data-testid="bill-dialog-manage-categories-button"
+                sx={{ py: 0, px: 0.75, minHeight: 24, fontSize: '0.76rem' }}
+              >
+                管理 / + 新建分类
+              </Button>
+            </Box>
+          ) : null}
 
           {/* 第三行：日期 + 时间并排，默认自动填入当前日期与当前时间 */}
           <Stack direction="row" spacing={1.5}>
