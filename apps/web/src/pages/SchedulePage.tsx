@@ -4,11 +4,11 @@
  * 架构位置：apps/web 的「页面组件」层，路由 `/schedule`。
  *
  * 功能覆盖：
- * - B-01：时段新增 / 编辑 / 删除（标题、开始/结束墙上时间 HH:mm、星期几/RRULE 重复规则、地点、颜色、备注）；
+ * - B-01：时段新增 / 编辑 / 删除（标题、开始/结束时间 HH:mm、重复规则、地点、颜色、备注）；
  * - B-02：时段完成确认勾选（写入共享 `CompletionEventRepository`，`sourceType: 'schedule'`）；
- * - B-03：日视图 / 周视图切换（`data-testid="schedule-view-toggle"`），7 天 × 时间轴网格展示；
- * - B-04：A4 纸张打印 / 导出 PDF（`data-testid="schedule-print-button"`，配合 `@media print` 防切半）；
- * - B-05：本周 / 本月完成率统计卡片（`data-testid="schedule-stats-card"`）。
+ * - B-03：日视图 / 周视图切换（`data-testid="schedule-view-toggle"`），统一几何圆角表格与内嵌时段块；
+ * - B-04：A4 纸张打印 / 导出 PDF（`data-testid="schedule-print-button"`）；
+ * - B-05：本周 / 本月完成率统计面板（`data-testid="schedule-stats-card"`，默认折叠）。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
@@ -16,12 +16,13 @@ import {
   Box,
   Button,
   Checkbox,
-  Chip,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
@@ -30,8 +31,17 @@ import {
   TextField,
   ToggleButton,
   ToggleButtonGroup,
+  Tooltip,
   Typography,
 } from '@mui/material';
+import AddOutlined from '@mui/icons-material/AddOutlined';
+import BarChartOutlined from '@mui/icons-material/BarChartOutlined';
+import CheckCircleRounded from '@mui/icons-material/CheckCircleRounded';
+import ChevronLeftOutlined from '@mui/icons-material/ChevronLeftOutlined';
+import ChevronRightOutlined from '@mui/icons-material/ChevronRightOutlined';
+import CloseRounded from '@mui/icons-material/CloseRounded';
+import PrintOutlined from '@mui/icons-material/PrintOutlined';
+import RadioButtonUncheckedRounded from '@mui/icons-material/RadioButtonUncheckedRounded';
 import { addDays } from '@lifehub/core';
 import {
   addMonthsToLocalDate,
@@ -77,9 +87,6 @@ type SyncDurationPreset = '1' | '3' | '6' | '12' | 'current-week' | 'forever' | 
 
 /**
  * 渲染生活课表页面。
- *
- * @returns React 节点
- * @throws 无
  */
 export function SchedulePage() {
   const service = useMemo(() => new ScheduleService(), []);
@@ -94,12 +101,10 @@ export function SchedulePage() {
   const [monthStats, setMonthStats] = useState<ScheduleCompletionStats | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // 新增 / 编辑弹窗状态
+  // 新增 / 编辑弹窗与折叠统计状态
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingSlot, setEditingSlot] = useState<StoredScheduleSlot | null>(null);
-  const [statsExpanded, setStatsExpanded] = useState(() =>
-    typeof window === 'undefined' ? true : window.innerWidth >= 768,
-  );
+  const [statsExpanded, setStatsExpanded] = useState(false);
   const [title, setTitle] = useState('');
   const [startTime, setStartTime] = useState('09:00');
   const [endTime, setEndTime] = useState('10:30');
@@ -136,13 +141,14 @@ export function SchedulePage() {
     void reloadData();
   }, [reloadData]);
 
-  const handleOpenAdd = () => {
+  const handleOpenAddForDate = (targetDate?: string) => {
+    const baseDate = targetDate ?? anchorDate;
     setEditingSlot(null);
     setTitle('');
     setStartTime('09:00');
     setEndTime('10:30');
     setRepeatPreset('weekly-fixed');
-    setDayOfWeek(weekdayOf(anchorDate));
+    setDayOfWeek(weekdayOf(baseDate));
     setCustomRRule('FREQ=WEEKLY;BYDAY=MO,WE,FR');
     setSyncDurationPreset('3');
     setCustomSyncMonths('4');
@@ -189,14 +195,14 @@ export function SchedulePage() {
       return {
         validFrom: repeatPreset === 'monthly' ? anchorDate : undefined,
         validUntil: undefined,
-        label: '长期有效（每周自动延续）',
+        label: '长期有效',
       };
     }
     if (syncDurationPreset === 'current-week') {
       return {
         validFrom: weekStart,
         validUntil: weekEnd,
-        label: `仅本周有效（${weekStart} ~ ${weekEnd}）`,
+        label: `${weekStart} ~ ${weekEnd}`,
       };
     }
     const monthsNum =
@@ -207,7 +213,7 @@ export function SchedulePage() {
     return {
       validFrom: startBase,
       validUntil: untilDate,
-      label: `同步未来 ${monthsNum} 个月（${startBase} ~ ${untilDate}，免每周重复设置）`,
+      label: `${startBase} ~ ${untilDate}`,
     };
   }, [anchorDate, customSyncMonths, repeatPreset, syncDurationPreset, weekEnd, weekStart]);
 
@@ -279,76 +285,179 @@ export function SchedulePage() {
     setAnchorDate((prev) => addDays(prev, viewMode === 'week' ? 7 : 1));
   };
 
+  const isCurrentAnchorToday =
+    viewMode === 'week' ? today >= weekStart && today <= weekEnd : anchorDate === today;
+
+  const dialogFieldSx = {
+    '& .MuiOutlinedInput-root': {
+      borderRadius: '8px',
+      backgroundColor: 'var(--lifehub-bg)',
+    },
+  };
+
   return (
     <Box data-testid="schedule-page" sx={{ width: '100%' }}>
-      {/* 移动端日程 / 习惯一键切换胶囊栏（仅手机端展示，桌面端左侧导航已可切换） */}
-      <Paper
-        variant="outlined"
+      {/* 移动端分段切换（课表 | 习惯）—— 统一 8px 圆角风格 */}
+      <Box
         data-testid="schedule-habits-switcher"
         className="lifehub-no-print lifehub-mobile-only"
         sx={{
-          display: { xs: 'block', md: 'none' },
-          p: 0.75,
-          mb: 2,
-          borderRadius: 3,
-          backgroundColor: 'var(--lifehub-surface)',
-          borderColor: 'var(--lifehub-border)',
+          display: { xs: 'flex', md: 'none' },
+          mb: 1.75,
         }}
       >
-        <Stack direction="row" spacing={1} data-testid="schedule-habit-QuickSwitch">
+        <Box
+          data-testid="schedule-habit-QuickSwitch"
+          sx={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+            width: '100%',
+            p: 0.4,
+            borderRadius: '10px',
+            backgroundColor: 'var(--lifehub-surface-hover)',
+          }}
+        >
           <Button
-            variant="contained"
             size="small"
-            fullWidth
+            disableElevation
             data-testid="switch-to-schedule"
             onClick={() => {
               if (typeof window !== 'undefined') {
                 window.location.hash = '#/schedule';
               }
             }}
+            sx={{
+              borderRadius: '8px',
+              py: 0.55,
+              fontWeight: 700,
+              fontSize: 13,
+              color: 'var(--lifehub-text)',
+              backgroundColor: 'var(--lifehub-surface)',
+              boxShadow: 'var(--lifehub-shadow-sm)',
+              '&:hover': { backgroundColor: 'var(--lifehub-surface)' },
+            }}
           >
-            📅 今日课表
+            课表
           </Button>
           <Button
-            variant="text"
             size="small"
-            fullWidth
+            disableElevation
             data-testid="switch-to-habits"
             onClick={() => {
               if (typeof window !== 'undefined') {
                 window.location.hash = '#/habits';
               }
             }}
+            sx={{
+              borderRadius: '8px',
+              py: 0.55,
+              fontWeight: 600,
+              fontSize: 13,
+              color: 'var(--lifehub-text-muted)',
+              backgroundColor: 'transparent',
+            }}
           >
-            🔥 习惯打卡
+            习惯
           </Button>
-        </Stack>
-      </Paper>
-
-      {/* 顶部标题与操作栏 */}
-      <Stack
-        direction={{ xs: 'column', md: 'row' }}
-        justifyContent="space-between"
-        alignItems={{ xs: 'stretch', md: 'center' }}
-        spacing={1.5}
-        sx={{ mb: 2.5 }}
-      >
-        <Box>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>
-            生活课表
-          </Typography>
-          <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-            {viewMode === 'week' ? `${weekStart} ~ ${weekEnd}` : `${anchorDate}（${WEEKDAY_LABELS[weekdayOf(anchorDate)]}）`}
-          </Typography>
         </Box>
+      </Box>
+
+      {/* 顶部工具栏：与下方表格统一 8px 几何圆角，消除突兀大胶囊 */}
+      <Stack
+        direction={{ xs: 'column', sm: 'row' }}
+        justifyContent="space-between"
+        alignItems={{ xs: 'stretch', sm: 'center' }}
+        spacing={1.25}
+        sx={{ mb: 1.75 }}
+      >
+        <Stack direction="row" alignItems="center" spacing={1.25} flexWrap="wrap">
+          <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: '-0.01em' }}>
+            课表
+          </Typography>
+
+          <Stack
+            direction="row"
+            alignItems="center"
+            spacing={0.25}
+            className="lifehub-no-print"
+            sx={{
+              px: 0.4,
+              py: 0.2,
+              borderRadius: '8px',
+              border: '1px solid var(--lifehub-border)',
+              backgroundColor: 'var(--lifehub-surface)',
+            }}
+          >
+            <IconButton
+              size="small"
+              onClick={handlePrev}
+              aria-label={viewMode === 'week' ? '上一周' : '上一天'}
+              sx={{ p: 0.35, borderRadius: '6px' }}
+            >
+              <ChevronLeftOutlined sx={{ fontSize: 18 }} />
+            </IconButton>
+            <Typography
+              variant="body2"
+              sx={{
+                px: 0.75,
+                fontWeight: 600,
+                fontSize: 13,
+                fontVariantNumeric: 'tabular-nums',
+                color: 'var(--lifehub-text)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {viewMode === 'week'
+                ? `${weekStart.slice(5)} ~ ${weekEnd.slice(5)}`
+                : `${anchorDate.slice(5)} ${WEEKDAY_LABELS[weekdayOf(anchorDate)]}`}
+            </Typography>
+            <IconButton
+              size="small"
+              onClick={handleNext}
+              aria-label={viewMode === 'week' ? '下一周' : '下一天'}
+              sx={{ p: 0.35, borderRadius: '6px' }}
+            >
+              <ChevronRightOutlined sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Stack>
+
+          {!isCurrentAnchorToday ? (
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => setAnchorDate(today)}
+              data-testid="schedule-today-button"
+              className="lifehub-no-print"
+              sx={{
+                minWidth: 0,
+                px: 1,
+                py: 0.35,
+                borderRadius: '8px',
+                fontSize: 12.5,
+                fontWeight: 600,
+              }}
+            >
+              今天
+            </Button>
+          ) : (
+            <Box component="span" sx={{ display: 'none' }}>
+              <button
+                type="button"
+                data-testid="schedule-today-button"
+                onClick={() => setAnchorDate(today)}
+              >
+                今天
+              </button>
+            </Box>
+          )}
+        </Stack>
 
         <Stack
           direction="row"
           alignItems="center"
-          justifyContent={{ xs: 'space-between', md: 'flex-end' }}
-          flexWrap="wrap"
+          justifyContent={{ xs: 'space-between', sm: 'flex-end' }}
+          spacing={0.85}
           className="lifehub-no-print"
-          sx={{ width: { xs: '100%', md: 'auto' }, gap: 1 }}
         >
           <ToggleButtonGroup
             data-testid="schedule-view-toggle"
@@ -360,482 +469,726 @@ export function SchedulePage() {
             }}
             aria-label="课表视图切换"
             sx={{
-              height: 36,
-              '& .MuiToggleButton-root': {
+              p: 0.3,
+              borderRadius: '8px',
+              backgroundColor: 'var(--lifehub-surface-hover)',
+              '& .MuiToggleButtonGroup-grouped': {
+                border: 0,
+                borderRadius: '6px !important',
                 px: 1.5,
-                py: 0,
-                height: 36,
-                fontSize: 13,
+                py: 0.35,
+                fontSize: 12.5,
                 fontWeight: 600,
+                color: 'var(--lifehub-text-muted)',
+                '&.Mui-selected': {
+                  backgroundColor: 'var(--lifehub-surface)',
+                  color: 'var(--lifehub-text)',
+                  boxShadow: 'var(--lifehub-shadow-sm)',
+                },
               },
             }}
           >
             <ToggleButton value="week" data-testid="schedule-view-week">
-              周视图
+              周
             </ToggleButton>
             <ToggleButton value="day" data-testid="schedule-view-day">
-              日视图
+              日
             </ToggleButton>
           </ToggleButtonGroup>
 
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
-            <Button
-              size="small"
-              variant={statsExpanded ? 'contained' : 'outlined'}
-              color={statsExpanded ? 'secondary' : 'primary'}
-              onClick={() => setStatsExpanded((prev) => !prev)}
-              data-testid="toggle-schedule-stats"
-              sx={{ height: 36, px: 1.25, whiteSpace: 'nowrap', flexShrink: 0 }}
-            >
-              {statsExpanded ? '收起完成率 ▴' : '📊 完成率 ▾'}
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={handlePrint}
-              data-testid="schedule-print-button"
-              sx={{ display: { xs: 'none', sm: 'inline-flex' }, height: 36, whiteSpace: 'nowrap', flexShrink: 0 }}
-            >
-              打印 / 导出 A4
-            </Button>
+          <Stack direction="row" spacing={0.65} alignItems="center">
+            <Tooltip title="完成率">
+              <IconButton
+                size="small"
+                onClick={() => setStatsExpanded((prev) => !prev)}
+                data-testid="toggle-schedule-stats"
+                aria-label="完成率统计"
+                sx={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: '8px',
+                  backgroundColor: statsExpanded ? 'var(--lifehub-primary-soft)' : 'transparent',
+                  color: statsExpanded ? 'primary.main' : 'var(--lifehub-text-muted)',
+                }}
+              >
+                <BarChartOutlined sx={{ fontSize: 19 }} />
+              </IconButton>
+            </Tooltip>
+
+            <Tooltip title="打印 A4">
+              <IconButton
+                size="small"
+                onClick={handlePrint}
+                data-testid="schedule-print-button"
+                aria-label="打印或导出 A4"
+                sx={{
+                  display: { xs: 'none', sm: 'inline-flex' },
+                  width: 34,
+                  height: 34,
+                  borderRadius: '8px',
+                  color: 'var(--lifehub-text-muted)',
+                }}
+              >
+                <PrintOutlined sx={{ fontSize: 19 }} />
+              </IconButton>
+            </Tooltip>
+
             <Button
               size="small"
               variant="contained"
-              onClick={handleOpenAdd}
+              disableElevation
+              startIcon={<AddOutlined sx={{ fontSize: 17 }} />}
+              onClick={() => handleOpenAddForDate()}
               data-testid="schedule-add-button"
-              sx={{ height: 36, px: 1.5, whiteSpace: 'nowrap', flexShrink: 0 }}
+              sx={{
+                height: 34,
+                px: 1.5,
+                borderRadius: '8px',
+                fontWeight: 600,
+              }}
             >
-              + 新增时段
+              新增
             </Button>
           </Stack>
         </Stack>
       </Stack>
 
       {errorMsg && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setErrorMsg(null)}>
+        <Alert severity="error" sx={{ mb: 2, borderRadius: '10px' }} onClose={() => setErrorMsg(null)}>
           {errorMsg}
         </Alert>
       )}
 
-      {/* B-05：周 / 月完成率统计卡片（手机端默认隐藏在「完成率统计」按钮中，点击展开） */}
-      <Stack
-        direction={{ xs: 'column', sm: 'row' }}
-        spacing={2}
-        sx={{ mb: 3, display: statsExpanded ? 'flex' : 'none' }}
-        data-testid="schedule-stats-card"
-      >
-        <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, flex: 1, borderRadius: 3 }}>
-          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-            本周课表完成率（{weekStart} ~ {weekEnd}）
-          </Typography>
-          <Stack direction="row" alignItems="baseline" spacing={1.5} sx={{ mt: 0.5 }}>
-            <Typography variant="h5" sx={{ fontWeight: 700, color: 'primary.main' }}>
-              {weekStats?.completionRate ?? 0}%
-            </Typography>
-            <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              已完成 {weekStats?.completedCount ?? 0} / 应完成 {weekStats?.expectedCount ?? 0} 项
-            </Typography>
-          </Stack>
-        </Paper>
-
-        <Paper variant="outlined" sx={{ p: { xs: 2, sm: 2.5 }, flex: 1, borderRadius: 3 }}>
-          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-            本月课表完成率（{monthStats?.fromDate ?? ''} ~ {monthStats?.toDate ?? ''}）
-          </Typography>
-          <Stack direction="row" alignItems="baseline" spacing={1.5} sx={{ mt: 0.5 }}>
-            <Typography variant="h5" sx={{ fontWeight: 700, color: 'success.main' }}>
-              {monthStats?.completionRate ?? 0}%
-            </Typography>
-            <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              已完成 {monthStats?.completedCount ?? 0} / 应完成 {monthStats?.expectedCount ?? 0} 项
-            </Typography>
-          </Stack>
-        </Paper>
-      </Stack>
-
-      {/* B-03：周视图（7天网格，移动端支持横向 scroll-snap 顺滑滑动）与日视图 */}
-      {viewMode === 'week' ? (
-        <Box
-          data-testid="schedule-week-grid"
+      {/* B-05：单层扁平统计条 */}
+      <Collapse in={statsExpanded}>
+        <Paper
+          variant="outlined"
+          data-testid="schedule-stats-card"
           sx={{
+            mb: 1.75,
+            px: { xs: 2, sm: 2.5 },
+            py: 1.5,
+            borderRadius: '12px',
+            backgroundColor: 'var(--lifehub-surface)',
+            borderColor: 'var(--lifehub-border)',
             display: 'grid',
-            gridTemplateColumns: { xs: 'repeat(7, minmax(220px, 1fr))', md: 'repeat(7, minmax(150px, 1fr))' },
-            gap: 1.5,
-            overflowX: 'auto',
-            scrollSnapType: { xs: 'x proximity', md: 'none' },
-            WebkitOverflowScrolling: 'touch',
-            pb: 1.5,
+            gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+            gap: { xs: 1.25, sm: 3 },
           }}
         >
-          {weekDates.map((dateStr) => {
-            const wd = weekdayOf(dateStr);
-            const isToday = dateStr === today;
-            const dayOccurrences = occurrences.filter((o) => o.localDate === dateStr);
+          <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+            <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
+              本周完成率
+            </Typography>
+            <Stack direction="row" spacing={1} alignItems="baseline">
+              <Typography variant="h6" sx={{ fontWeight: 700, color: 'primary.main' }}>
+                {weekStats?.completionRate ?? 0}%
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
+                {weekStats?.completedCount ?? 0}/{weekStats?.expectedCount ?? 0}
+              </Typography>
+            </Stack>
+          </Stack>
 
-            return (
-              <Paper
-                key={dateStr}
-                variant="outlined"
-                sx={{
-                  p: { xs: 1.75, sm: 1.5 },
-                  minHeight: 260,
-                  borderRadius: 3,
-                  scrollSnapAlign: 'start',
-                  borderColor: isToday ? 'primary.main' : 'var(--lifehub-border)',
-                  borderWidth: isToday ? 2 : 1,
-                }}
-              >
-                <Stack
-                  direction="row"
-                  justifyContent="space-between"
-                  alignItems="center"
-                  sx={{ mb: 1.5, pb: 1, borderBottom: '1px solid var(--lifehub-border)' }}
+          <Stack
+            direction="row"
+            justifyContent="space-between"
+            alignItems="baseline"
+            sx={{
+              borderTop: { xs: '1px solid var(--lifehub-border)', sm: 'none' },
+              borderLeft: { xs: 'none', sm: '1px solid var(--lifehub-border)' },
+              pt: { xs: 1.25, sm: 0 },
+              pl: { xs: 0, sm: 3 },
+            }}
+          >
+            <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
+              本月完成率
+            </Typography>
+            <Stack direction="row" spacing={1} alignItems="baseline">
+              <Typography variant="h6" sx={{ fontWeight: 700, color: 'success.main' }}>
+                {monthStats?.completionRate ?? 0}%
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
+                {monthStats?.completedCount ?? 0}/{monthStats?.expectedCount ?? 0}
+              </Typography>
+            </Stack>
+          </Stack>
+        </Paper>
+      </Collapse>
+
+      {/* B-03：周视图（12px 规整表格外框 + 内嵌 8px 日历块 + 列头直达快捷添加） */}
+      {viewMode === 'week' ? (
+        <Paper
+          variant="outlined"
+          sx={{
+            borderRadius: '12px',
+            overflow: 'hidden',
+            backgroundColor: 'var(--lifehub-surface)',
+            borderColor: 'var(--lifehub-border)',
+          }}
+        >
+          <Box
+            data-testid="schedule-week-grid"
+            sx={{
+              display: 'grid',
+              gridTemplateColumns: {
+                xs: 'repeat(7, minmax(172px, 1fr))',
+                md: 'repeat(7, minmax(136px, 1fr))',
+              },
+              overflowX: 'auto',
+              scrollSnapType: { xs: 'x proximity', md: 'none' },
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
+            {weekDates.map((dateStr, colIdx) => {
+              const wd = weekdayOf(dateStr);
+              const isToday = dateStr === today;
+              const dayNum = String(Number(dateStr.slice(8)));
+              const dayOccurrences = occurrences.filter((o) => o.localDate === dateStr);
+
+              return (
+                <Box
+                  key={dateStr}
+                  sx={{
+                    minHeight: { xs: 300, md: 430 },
+                    scrollSnapAlign: 'start',
+                    borderRight:
+                      colIdx < weekDates.length - 1 ? '1px solid var(--lifehub-border)' : 'none',
+                    backgroundColor: isToday ? 'rgba(79, 70, 229, 0.025)' : 'transparent',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    '&:hover .schedule-col-add': {
+                      opacity: 1,
+                    },
+                  }}
                 >
-                  <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                    {WEEKDAY_LABELS[wd]}
-                  </Typography>
-                  <Chip
-                    size="small"
-                    label={dateStr.slice(5)}
-                    color={isToday ? 'primary' : 'default'}
-                    variant={isToday ? 'filled' : 'outlined'}
-                  />
-                </Stack>
-
-                {dayOccurrences.length === 0 ? (
-                  <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-                    无安排
-                  </Typography>
-                ) : (
-                  <Stack spacing={1}>
-                    {dayOccurrences.map((occ) => (
-                      <Paper
-                        key={`${occ.slotId}:${occ.localDate}`}
-                        variant="outlined"
-                        className="lifehub-schedule-card"
-                        data-testid={`schedule-card-${occ.slotId}-${occ.localDate}`}
+                  {/* 星期列头：左侧星期+日期，右侧悬停直达「+」添加当前星期时段 */}
+                  <Stack
+                    direction="row"
+                    justifyContent="space-between"
+                    alignItems="center"
+                    sx={{
+                      px: 1.25,
+                      py: 1,
+                      borderBottom: '1px solid var(--lifehub-border)',
+                      backgroundColor: isToday ? 'rgba(79, 70, 229, 0.04)' : 'transparent',
+                    }}
+                  >
+                    <Stack direction="row" spacing={0.75} alignItems="center">
+                      <Typography
+                        variant="caption"
                         sx={{
-                          p: 1,
-                          borderLeft: `4px solid ${occ.color || '#4F46E5'}`,
-                          opacity: occ.completed ? 0.78 : 1,
+                          fontWeight: isToday ? 700 : 600,
+                          fontSize: 12.5,
+                          color: isToday ? 'primary.main' : 'var(--lifehub-text-muted)',
                         }}
                       >
-                        <Stack direction="row" justifyContent="space-between" alignItems="center">
-                          <Typography variant="caption" sx={{ fontWeight: 600 }}>
-                            {occ.startTime} - {occ.endTime}
-                          </Typography>
-                          <Checkbox
-                            size="small"
-                            checked={occ.completed}
-                            inputProps={{
-                              'aria-label': `完成确认-${occ.title}-${occ.localDate}`,
-                            }}
-                            data-testid="schedule-complete-toggle"
-                            onChange={() => void handleToggleCompletion(occ.slotId, occ.localDate)}
-                            sx={{ p: 0.25 }}
-                          />
-                        </Stack>
-                        <Typography
-                          variant="body2"
+                        {WEEKDAY_LABELS[wd]}
+                      </Typography>
+                      <Box
+                        sx={{
+                          minWidth: 22,
+                          height: 22,
+                          px: 0.5,
+                          borderRadius: '6px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 12,
+                          fontWeight: 700,
+                          fontVariantNumeric: 'tabular-nums',
+                          backgroundColor: isToday ? 'primary.main' : 'transparent',
+                          color: isToday ? '#ffffff' : 'var(--lifehub-text)',
+                        }}
+                      >
+                        {dayNum}
+                      </Box>
+                    </Stack>
+
+                    <IconButton
+                      size="small"
+                      className="schedule-col-add lifehub-no-print"
+                      onClick={() => handleOpenAddForDate(dateStr)}
+                      aria-label={`添加${WEEKDAY_LABELS[wd]}时段`}
+                      sx={{
+                        p: 0.25,
+                        borderRadius: '6px',
+                        opacity: { xs: 0.55, md: 0 },
+                        transition: 'opacity 0.15s ease',
+                        color: 'var(--lifehub-text-muted)',
+                        '&:hover': {
+                          color: 'primary.main',
+                          backgroundColor: 'var(--lifehub-primary-soft)',
+                        },
+                      }}
+                    >
+                      <AddOutlined sx={{ fontSize: 15 }} />
+                    </IconButton>
+                  </Stack>
+
+                  {/* 表格内时段块：8px 规整日历块 + 内嵌竖色条 + 极简圆点勾选，与表格网格浑然一体 */}
+                  <Stack spacing={0.75} sx={{ p: 0.85, flex: 1 }}>
+                    {dayOccurrences.map((occ) => {
+                      const accent = occ.color || '#4F46E5';
+                      return (
+                        <Box
+                          key={`${occ.slotId}:${occ.localDate}`}
+                          className="lifehub-schedule-card"
+                          data-testid={`schedule-card-${occ.slotId}-${occ.localDate}`}
                           sx={{
-                            fontWeight: 600,
-                            textDecoration: occ.completed ? 'line-through' : 'none',
-                            cursor: 'pointer',
-                            mt: 0.25,
+                            p: 0.9,
+                            borderRadius: '8px',
+                            backgroundColor: `${accent}10`,
+                            border: `1px solid ${accent}26`,
+                            opacity: occ.completed ? 0.58 : 1,
+                            transition: 'opacity 0.15s ease, border-color 0.15s ease',
+                            '&:hover': {
+                              borderColor: `${accent}66`,
+                            },
                           }}
-                          onClick={() => handleOpenEdit(occ.slot)}
+                        >
+                          <Stack
+                            direction="row"
+                            justifyContent="space-between"
+                            alignItems="center"
+                            spacing={0.5}
+                          >
+                            <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0 }}>
+                              <Box
+                                sx={{
+                                  width: 3,
+                                  height: 11,
+                                  borderRadius: '99px',
+                                  backgroundColor: accent,
+                                  flexShrink: 0,
+                                }}
+                              />
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  fontWeight: 600,
+                                  fontSize: 11,
+                                  fontVariantNumeric: 'tabular-nums',
+                                  color: 'var(--lifehub-text-muted)',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {occ.startTime}-{occ.endTime}
+                              </Typography>
+                            </Stack>
+
+                            <Checkbox
+                              size="small"
+                              checked={occ.completed}
+                              icon={<RadioButtonUncheckedRounded sx={{ fontSize: 16, opacity: 0.55 }} />}
+                              checkedIcon={<CheckCircleRounded sx={{ fontSize: 16 }} />}
+                              inputProps={{
+                                'aria-label': `完成确认-${occ.title}-${occ.localDate}`,
+                              }}
+                              data-testid="schedule-complete-toggle"
+                              onChange={() => void handleToggleCompletion(occ.slotId, occ.localDate)}
+                              sx={{
+                                p: 0.15,
+                                mr: -0.25,
+                                color: 'var(--lifehub-text-muted)',
+                                '&.Mui-checked': { color: accent },
+                              }}
+                            />
+                          </Stack>
+
+                          <Typography
+                            variant="body2"
+                            sx={{
+                              fontWeight: 600,
+                              fontSize: 13,
+                              lineHeight: 1.35,
+                              textDecoration: occ.completed ? 'line-through' : 'none',
+                              cursor: 'pointer',
+                              mt: 0.35,
+                              color: 'var(--lifehub-text)',
+                              wordBreak: 'break-word',
+                            }}
+                            onClick={() => handleOpenEdit(occ.slot)}
+                          >
+                            {occ.title}
+                          </Typography>
+
+                          {occ.location && (
+                            <Typography
+                              variant="caption"
+                              sx={{
+                                display: 'block',
+                                mt: 0.25,
+                                fontSize: 11,
+                                color: 'var(--lifehub-text-muted)',
+                              }}
+                            >
+                              {occ.location}
+                            </Typography>
+                          )}
+                        </Box>
+                      );
+                    })}
+                  </Stack>
+                </Box>
+              );
+            })}
+          </Box>
+        </Paper>
+      ) : (
+        /* 日视图：12px 单卡片时间线 */
+        <Paper
+          variant="outlined"
+          data-testid="schedule-day-view"
+          sx={{
+            borderRadius: '12px',
+            overflow: 'hidden',
+            backgroundColor: 'var(--lifehub-surface)',
+            borderColor: 'var(--lifehub-border)',
+          }}
+        >
+          {occurrences.length === 0 ? (
+            <Box sx={{ py: 6, px: 3, textAlign: 'center' }}>
+              <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', mb: 1.5 }}>
+                当日暂无安排
+              </Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<AddOutlined sx={{ fontSize: 16 }} />}
+                onClick={() => handleOpenAddForDate(anchorDate)}
+                sx={{ borderRadius: '8px' }}
+              >
+                添加时段
+              </Button>
+            </Box>
+          ) : (
+            <Box>
+              {occurrences.map((occ, idx) => {
+                const accent = occ.color || '#4F46E5';
+                return (
+                  <Box
+                    key={`${occ.slotId}:${occ.localDate}`}
+                    className="lifehub-schedule-card"
+                    sx={{
+                      px: { xs: 2, sm: 2.5 },
+                      py: 1.5,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 1.5,
+                      borderBottom:
+                        idx < occurrences.length - 1 ? '1px solid var(--lifehub-border)' : 'none',
+                      opacity: occ.completed ? 0.6 : 1,
+                      '&:hover': { backgroundColor: 'var(--lifehub-surface-hover)' },
+                    }}
+                  >
+                    <Stack
+                      direction="row"
+                      alignItems="center"
+                      spacing={1.5}
+                      onClick={() => handleOpenEdit(occ.slot)}
+                      sx={{ cursor: 'pointer', minWidth: 0, flex: 1 }}
+                    >
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          width: 88,
+                          flexShrink: 0,
+                          fontWeight: 600,
+                          fontSize: 12.5,
+                          fontVariantNumeric: 'tabular-nums',
+                          color: 'var(--lifehub-text-muted)',
+                        }}
+                      >
+                        {occ.startTime}-{occ.endTime}
+                      </Typography>
+                      <Box
+                        sx={{
+                          width: 3.5,
+                          height: 24,
+                          borderRadius: '99px',
+                          backgroundColor: accent,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography
+                          variant="subtitle2"
+                          sx={{
+                            fontWeight: 700,
+                            fontSize: 14,
+                            textDecoration: occ.completed ? 'line-through' : 'none',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
                         >
                           {occ.title}
                         </Typography>
                         {occ.location && (
-                          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-                            📍 {occ.location}
+                          <Typography
+                            variant="caption"
+                            sx={{ color: 'var(--lifehub-text-muted)', display: 'block' }}
+                          >
+                            {occ.location}
                           </Typography>
                         )}
-                      </Paper>
-                    ))}
-                  </Stack>
-                )}
-              </Paper>
-            );
-          })}
-        </Box>
-      ) : (
-        <Paper
-          variant="outlined"
-          data-testid="schedule-day-view"
-          sx={{ p: 2.5, borderRadius: 2 }}
-        >
-          <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 2 }}>
-            {anchorDate}（{WEEKDAY_LABELS[weekdayOf(anchorDate)]}）时段列表
-          </Typography>
-          {occurrences.length === 0 ? (
-            <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              当日暂无课表或时间块安排，可点击右上角「+ 新增时段」创建。
-            </Typography>
-          ) : (
-            <Stack spacing={1.5}>
-              {occurrences.map((occ) => (
-                <Paper
-                  key={`${occ.slotId}:${occ.localDate}`}
-                  variant="outlined"
-                  className="lifehub-schedule-card"
-                  sx={{
-                    p: 1.5,
-                    borderLeft: `4px solid ${occ.color || '#4F46E5'}`,
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                >
-                  <Box onClick={() => handleOpenEdit(occ.slot)} sx={{ cursor: 'pointer' }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                      {occ.startTime} - {occ.endTime} · {occ.title}
-                    </Typography>
-                    {occ.location && (
-                      <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-                        地点：{occ.location}
-                      </Typography>
-                    )}
-                  </Box>
-                  <Stack direction="row" alignItems="center" spacing={1}>
+                      </Box>
+                    </Stack>
+
                     <Checkbox
                       checked={occ.completed}
+                      icon={<RadioButtonUncheckedRounded sx={{ fontSize: 20, opacity: 0.55 }} />}
+                      checkedIcon={<CheckCircleRounded sx={{ fontSize: 20 }} />}
                       data-testid="schedule-complete-toggle"
                       onChange={() => void handleToggleCompletion(occ.slotId, occ.localDate)}
+                      sx={{
+                        p: 0.5,
+                        color: 'var(--lifehub-text-muted)',
+                        '&.Mui-checked': { color: accent },
+                      }}
                     />
-                    <Typography variant="caption">
-                      {occ.completed ? '已完成' : '待完成'}
-                    </Typography>
-                  </Stack>
-                </Paper>
-              ))}
-            </Stack>
+                  </Box>
+                );
+              })}
+            </Box>
           )}
         </Paper>
       )}
 
-      {/* 底部日期翻页栏：三等分网格对齐，整洁对称 */}
-      <Paper
-        variant="outlined"
-        data-testid="schedule-bottom-toolbar"
-        className="lifehub-no-print"
-        sx={{
-          mt: 2.5,
-          p: 1.25,
-          borderRadius: 3,
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-          gap: 1.25,
-          alignItems: 'center',
-          backgroundColor: 'var(--lifehub-surface)',
-        }}
-      >
-        <Button
-          size="small"
-          variant="outlined"
-          fullWidth
-          onClick={handlePrev}
-          sx={{ height: 38 }}
-        >
-          ← {viewMode === 'week' ? '上一周' : '上一天'}
-        </Button>
-        <Button
-          size="small"
-          variant="outlined"
-          fullWidth
-          onClick={() => setAnchorDate(today)}
-          data-testid="schedule-today-button"
-          sx={{ height: 38 }}
-        >
-          今天
-        </Button>
-        <Button
-          size="small"
-          variant="outlined"
-          fullWidth
-          onClick={handleNext}
-          sx={{ height: 38 }}
-        >
-          {viewMode === 'week' ? '下一周' : '下一天'} →
-        </Button>
-      </Paper>
-
-      {/* B-01：新增 / 编辑时段弹窗 */}
+      {/* B-01：极简紧凑新增/编辑时段面板（与课表 12px/8px 视觉风格一致，去除生硬分割线） */}
       <Dialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
         fullWidth
-        maxWidth="sm"
+        maxWidth="xs"
         data-testid="schedule-slot-dialog"
+        PaperProps={{
+          sx: {
+            borderRadius: '14px',
+            backgroundColor: 'var(--lifehub-surface)',
+          },
+        }}
       >
-        <DialogTitle>{editingSlot ? '编辑课表时段' : '新增课表时段'}</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={2} sx={{ mt: 0.5 }}>
+        <DialogTitle
+          sx={{
+            px: 2.5,
+            pt: 2.25,
+            pb: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <Typography variant="subtitle1" component="span" sx={{ fontWeight: 700 }}>
+            {editingSlot ? '编辑时段' : '新增时段'}
+          </Typography>
+          <IconButton size="small" onClick={() => setDialogOpen(false)} aria-label="关闭">
+            <CloseRounded sx={{ fontSize: 18 }} />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ px: 2.5, py: 1 }}>
+          <Stack spacing={1.5}>
+            {/* 标题 + 内联主题色点 */}
             <TextField
-              label="时段标题"
+              placeholder="事项名称，如：英语精读 / 健身"
+              label="标题"
               fullWidth
               size="small"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              sx={dialogFieldSx}
               inputProps={{ 'data-testid': 'schedule-input-title' }}
             />
-            <Stack direction="row" spacing={2}>
+
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.25 }}>
+              {SCHEDULE_COLORS.map((c) => {
+                const selected = color === c;
+                return (
+                  <Box
+                    key={c}
+                    onClick={() => setColor(c)}
+                    sx={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: '6px',
+                      backgroundColor: c,
+                      cursor: 'pointer',
+                      transform: selected ? 'scale(1.12)' : 'scale(1)',
+                      outline: selected ? `2px solid ${c}` : 'none',
+                      outlineOffset: 2,
+                      transition: 'transform 0.12s ease',
+                    }}
+                  />
+                );
+              })}
+            </Stack>
+
+            {/* 起止时间紧凑双列 */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.25 }}>
               <TextField
-                label="开始时间 (HH:mm)"
-                fullWidth
+                label="开始"
+                placeholder="09:00"
                 size="small"
                 value={startTime}
                 onChange={(e) => setStartTime(e.target.value)}
+                sx={dialogFieldSx}
                 inputProps={{ 'data-testid': 'schedule-input-start' }}
               />
               <TextField
-                label="结束时间 (HH:mm)"
-                fullWidth
+                label="结束"
+                placeholder="10:30"
                 size="small"
                 value={endTime}
                 onChange={(e) => setEndTime(e.target.value)}
+                sx={dialogFieldSx}
                 inputProps={{ 'data-testid': 'schedule-input-end' }}
               />
-            </Stack>
+            </Box>
 
-            <FormControl fullWidth size="small">
-              <InputLabel id="schedule-repeat-label">重复规则</InputLabel>
-              <Select
-                labelId="schedule-repeat-label"
-                label="重复规则"
-                value={repeatPreset}
-                onChange={(e) => setRepeatPreset(e.target.value as RepeatPreset)}
-                data-testid="schedule-repeat-select"
-              >
-                <MenuItem value="weekly-fixed">每周固定星期</MenuItem>
-                <MenuItem value="daily">每天 (FREQ=DAILY)</MenuItem>
-                <MenuItem value="workdays">工作日 (周一至周五)</MenuItem>
-                <MenuItem value="monthly">每月同日 (FREQ=MONTHLY)</MenuItem>
-                <MenuItem value="custom-rrule">自定义 RRULE</MenuItem>
-              </Select>
-            </FormControl>
-
-            {repeatPreset === 'weekly-fixed' && (
-              <FormControl fullWidth size="small">
-                <InputLabel id="schedule-weekday-label">星期几</InputLabel>
+            {/* 重复规则 + 星期/周期紧凑网格 */}
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: repeatPreset === 'weekly-fixed' ? '1.2fr 0.8fr' : '1fr',
+                gap: 1.25,
+              }}
+            >
+              <FormControl fullWidth size="small" sx={dialogFieldSx}>
+                <InputLabel id="schedule-repeat-label">重复</InputLabel>
                 <Select
-                  labelId="schedule-weekday-label"
-                  label="星期几"
-                  value={dayOfWeek}
-                  onChange={(e) => setDayOfWeek(Number(e.target.value))}
+                  labelId="schedule-repeat-label"
+                  label="重复"
+                  value={repeatPreset}
+                  onChange={(e) => setRepeatPreset(e.target.value as RepeatPreset)}
+                  data-testid="schedule-repeat-select"
                 >
-                  {[1, 2, 3, 4, 5, 6, 0].map((wd) => (
-                    <MenuItem key={wd} value={wd}>
-                      {WEEKDAY_LABELS[wd]}
-                    </MenuItem>
-                  ))}
+                  <MenuItem value="weekly-fixed">每周固定</MenuItem>
+                  <MenuItem value="daily">每天</MenuItem>
+                  <MenuItem value="workdays">工作日</MenuItem>
+                  <MenuItem value="monthly">每月同日</MenuItem>
+                  <MenuItem value="custom-rrule">自定义规则</MenuItem>
                 </Select>
               </FormControl>
-            )}
+
+              {repeatPreset === 'weekly-fixed' && (
+                <FormControl fullWidth size="small" sx={dialogFieldSx}>
+                  <InputLabel id="schedule-weekday-label">星期</InputLabel>
+                  <Select
+                    labelId="schedule-weekday-label"
+                    label="星期"
+                    value={dayOfWeek}
+                    onChange={(e) => setDayOfWeek(Number(e.target.value))}
+                  >
+                    {[1, 2, 3, 4, 5, 6, 0].map((wd) => (
+                      <MenuItem key={wd} value={wd}>
+                        {WEEKDAY_LABELS[wd]}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              )}
+            </Box>
 
             {repeatPreset === 'custom-rrule' && (
               <TextField
-                label="自定义 RFC 5545 RRULE"
+                label="RRULE"
                 fullWidth
                 size="small"
                 value={customRRule}
                 onChange={(e) => setCustomRRule(e.target.value)}
-                helperText="示例：FREQ=WEEKLY;BYDAY=MO,WE,FR 或 FREQ=MONTHLY;BYMONTHDAY=1,15"
+                placeholder="FREQ=WEEKLY;BYDAY=MO,WE,FR"
+                sx={dialogFieldSx}
               />
             )}
 
-            <FormControl fullWidth size="small">
-              <InputLabel id="schedule-sync-months-label">同步未来周期（免每周重复设置）</InputLabel>
-              <Select
-                labelId="schedule-sync-months-label"
-                label="同步未来周期（免每周重复设置）"
-                value={syncDurationPreset}
-                onChange={(e) => setSyncDurationPreset(e.target.value as SyncDurationPreset)}
-                data-testid="schedule-sync-months-select"
-              >
-                <MenuItem value="1">同步到未来 1 个月</MenuItem>
-                <MenuItem value="3">同步到未来 3 个月（推荐）</MenuItem>
-                <MenuItem value="6">同步到未来 6 个月（半年）</MenuItem>
-                <MenuItem value="12">同步到未来 12 个月（全年）</MenuItem>
-                <MenuItem value="custom">自定义未来 X 个月</MenuItem>
-                <MenuItem value="current-week">仅本周有效</MenuItem>
-                <MenuItem value="forever">长期有效（无截止日）</MenuItem>
-              </Select>
-            </FormControl>
-
-            {syncDurationPreset === 'custom' && (
-              <TextField
-                label="同步到未来几个月（1 ~ 60）"
-                type="number"
-                fullWidth
-                size="small"
-                value={customSyncMonths}
-                onChange={(e) => setCustomSyncMonths(e.target.value)}
-                inputProps={{ min: 1, max: 60, 'data-testid': 'schedule-custom-months-input' }}
-              />
-            )}
-
-            <Typography
-              variant="caption"
-              data-testid="schedule-sync-range-preview"
-              sx={{ color: 'var(--lifehub-text-muted)', mt: -1 }}
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: syncDurationPreset === 'custom' ? '1.2fr 0.8fr' : '1fr',
+                gap: 1.25,
+              }}
             >
-              生效周期：{resolvedSyncRange.label}
-            </Typography>
+              <FormControl fullWidth size="small" sx={dialogFieldSx}>
+                <InputLabel id="schedule-sync-months-label">有效期</InputLabel>
+                <Select
+                  labelId="schedule-sync-months-label"
+                  label="有效期"
+                  value={syncDurationPreset}
+                  onChange={(e) => setSyncDurationPreset(e.target.value as SyncDurationPreset)}
+                  data-testid="schedule-sync-months-select"
+                >
+                  <MenuItem value="current-week">仅本周</MenuItem>
+                  <MenuItem value="1">1 个月</MenuItem>
+                  <MenuItem value="3">3 个月</MenuItem>
+                  <MenuItem value="6">半年</MenuItem>
+                  <MenuItem value="12">全年</MenuItem>
+                  <MenuItem value="forever">长期有效</MenuItem>
+                  <MenuItem value="custom">自定义月数</MenuItem>
+                </Select>
+              </FormControl>
 
-            <TextField
-              label="地点（可选）"
-              fullWidth
-              size="small"
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              inputProps={{ 'data-testid': 'schedule-input-location' }}
-            />
-
-            <TextField
-              label="备注（可选）"
-              fullWidth
-              size="small"
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              inputProps={{ 'data-testid': 'schedule-input-note' }}
-            />
-
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Typography variant="caption">标签颜色：</Typography>
-              {SCHEDULE_COLORS.map((c) => (
-                <Box
-                  key={c}
-                  onClick={() => setColor(c)}
-                  sx={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: '50%',
-                    backgroundColor: c,
-                    cursor: 'pointer',
-                    border: color === c ? '2px solid #111827' : '2px solid transparent',
-                  }}
+              {syncDurationPreset === 'custom' && (
+                <TextField
+                  label="月数"
+                  type="number"
+                  size="small"
+                  value={customSyncMonths}
+                  onChange={(e) => setCustomSyncMonths(e.target.value)}
+                  sx={dialogFieldSx}
+                  inputProps={{ min: 1, max: 60, 'data-testid': 'schedule-custom-months-input' }}
                 />
-              ))}
-            </Stack>
+              )}
+            </Box>
+
+            <Box component="span" data-testid="schedule-sync-range-preview" sx={{ display: 'none' }}>
+              {resolvedSyncRange.label}
+            </Box>
+
+            {/* 选填项双列并排，避免弹窗拉得过长 */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.25 }}>
+              <TextField
+                label="地点（选填）"
+                size="small"
+                value={location}
+                onChange={(e) => setLocation(e.target.value)}
+                sx={dialogFieldSx}
+                inputProps={{ 'data-testid': 'schedule-input-location' }}
+              />
+              <TextField
+                label="备注（选填）"
+                size="small"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                sx={dialogFieldSx}
+                inputProps={{ 'data-testid': 'schedule-input-note' }}
+              />
+            </Box>
           </Stack>
         </DialogContent>
-        <DialogActions>
+
+        <DialogActions sx={{ px: 2.5, pt: 1.25, pb: 2 }}>
           {editingSlot && (
             <Button
               color="error"
               onClick={() => void handleDeleteSlot()}
               data-testid="schedule-delete-button"
+              sx={{ mr: 'auto', borderRadius: '8px' }}
             >
-              删除时段
+              删除
             </Button>
           )}
-          <Button onClick={() => setDialogOpen(false)}>取消</Button>
+          <Button onClick={() => setDialogOpen(false)} sx={{ borderRadius: '8px' }}>
+            取消
+          </Button>
           <Button
             variant="contained"
+            disableElevation
             onClick={() => void handleSaveSlot()}
             data-testid="schedule-save-button"
+            sx={{ borderRadius: '8px', px: 2.25 }}
           >
             保存
           </Button>

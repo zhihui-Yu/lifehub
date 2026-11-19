@@ -38,7 +38,7 @@ export function BillGroupList({ groups, renderBills, onSelectGroup }: BillGroupL
           variant="outlined"
           sx={{
             overflow: 'hidden',
-            borderRadius: { xs: 3, sm: 2.5 },
+            borderRadius: '12px',
             backgroundColor: 'var(--lifehub-surface)',
             borderColor: 'var(--lifehub-border)',
             boxShadow: 'var(--lifehub-shadow-sm)',

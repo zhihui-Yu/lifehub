@@ -15,18 +15,21 @@ import {
   Button,
   Checkbox,
   Chip,
+  Collapse,
+  Divider,
   FormControlLabel,
   Paper,
+  Stack,
   TextField,
   Typography,
 } from '@mui/material';
 import CloudDoneOutlined from '@mui/icons-material/CloudDoneOutlined';
 import CloudDownloadOutlined from '@mui/icons-material/CloudDownloadOutlined';
-import CloudQueueOutlined from '@mui/icons-material/CloudQueueOutlined';
 import CloudUploadOutlined from '@mui/icons-material/CloudUploadOutlined';
 import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
+import ExpandLessOutlined from '@mui/icons-material/ExpandLessOutlined';
+import ExpandMoreOutlined from '@mui/icons-material/ExpandMoreOutlined';
 import KeyOutlined from '@mui/icons-material/KeyOutlined';
-import LockOutlined from '@mui/icons-material/LockOutlined';
 import type { Category } from '@lifehub/core';
 import {
   CLOUD_PROVIDERS,
@@ -107,6 +110,7 @@ export function CloudStoragePanel() {
     severity: 'success' | 'info' | 'warning' | 'error';
     text: string;
   } | null>(null);
+  const [panelExpanded, setPanelExpanded] = useState<boolean>(false);
 
   const loadLocalExtraModules = useCallback(async (): Promise<CloudBackupExtraModules> => {
     let categories: Category[] = [];
@@ -566,262 +570,79 @@ export function CloudStoragePanel() {
     <Paper
       variant="outlined"
       sx={{
-        p: 3,
-        mb: 3,
+        p: { xs: 2, sm: 2.5 },
+        mb: 2,
+        borderRadius: '12px',
         backgroundColor: 'var(--lifehub-surface)',
         borderColor: 'var(--lifehub-border)',
       }}
       data-testid="cloud-storage-panel"
     >
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: 1,
-          mb: 1,
-        }}
+      {/* 精简折叠顶栏：默认仅占单行，点击展开完整同步表单 */}
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        spacing={1.5}
+        onClick={() => setPanelExpanded((prev) => !prev)}
+        sx={{ cursor: 'pointer', userSelect: 'none' }}
       >
-        <Typography
-          variant="subtitle1"
-          sx={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 1 }}
-        >
-          <CloudQueueOutlined fontSize="small" color="primary" />
-          远程云存储连接与备份（支持主流云盘）
-        </Typography>
-        <Chip
-          size="small"
-          icon={<LockOutlined fontSize="small" />}
-          color="success"
-          label="强制加密上传（登录密码保护）"
-          data-testid="cloud-upload-mode-chip"
-        />
-      </Box>
-
-      <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', mb: 2 }}>
-        直接粘贴包含存储桶名称的对象存储访问域名（或 WebDAV 目录地址）即可同步数据。每次点击上传时会自动拉取云端版本合并后再加密上传，确保多端数据一致。
-      </Typography>
-
-      {/* 云存储连接参数表单：连接地址直接包含存储桶/目录，无需单独拆分 Bucket */}
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-          gap: 2,
-          mb: 2,
-        }}
-      >
-        <TextField
-          select
-          size="small"
-          label="云存储服务商"
-          value={config.provider}
-          onChange={(e) => handleSelectProvider(e.target.value as CloudProviderId)}
-          SelectProps={{ native: true }}
-          inputProps={{ 'data-testid': 'cloud-provider-select' }}
-          helperText={activePreset.description}
-        >
-          {CLOUD_PROVIDERS.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.name}
-            </option>
-          ))}
-        </TextField>
-
-        <TextField
-          size="small"
-          label={
-            config.provider === 'jianguoyun-webdav'
-              ? 'WebDAV 远程目录连接地址'
-              : '存储桶访问域名 / 连接地址 (Endpoint)'
-          }
-          value={config.endpoint}
-          onChange={(e) => handleEndpointChange(e.target.value)}
-          placeholder={activePreset.defaultEndpoint}
-          inputProps={{ 'data-testid': 'cloud-endpoint-input' }}
-          helperText={
-            config.provider === 'jianguoyun-webdav'
-              ? '直接填写含目录路径的地址，如 https://dav.jianguoyun.com/dav/LifeHubBackup/'
-              : '直接粘贴含 Bucket 的访问域名，如 https://lifehub-1250000000.cos.ap-guangzhou.myqcloud.com'
-          }
-        />
-
-        <TextField
-          size="small"
-          label={
-            config.provider === 'jianguoyun-webdav'
-              ? '坚果云账号邮箱'
-              : 'AccessKey ID / 访问账号'
-          }
-          value={config.accessKey}
-          onChange={(e) => updateConfig({ accessKey: e.target.value })}
-          placeholder="填入云存储 AccessKey ID / SecretId"
-          inputProps={{ 'data-testid': 'cloud-access-key-input' }}
-        />
-
-        <TextField
-          size="small"
-          type="password"
-          label={
-            config.provider === 'jianguoyun-webdav'
-              ? 'WebDAV 应用密码'
-              : 'SecretKey / 访问密钥'
-          }
-          value={config.secretKey}
-          onChange={(e) => updateConfig({ secretKey: e.target.value })}
-          placeholder="填入云存储 SecretKey"
-          inputProps={{ 'data-testid': 'cloud-secret-key-input' }}
-        />
-      </Box>
-
-      {/* 强制加密上传（使用登录密码作为加密与还原密钥）安全区 */}
-      <Box
-        sx={{
-          p: 2,
-          mb: 2,
-          borderRadius: 1.5,
-          backgroundColor: 'var(--lifehub-bg)',
-          border: '1px solid var(--lifehub-border)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 1.25,
-        }}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
-          <Box>
-            <Typography variant="body2" sx={{ fontWeight: 600, color: 'var(--lifehub-text)', display: 'flex', alignItems: 'center', gap: 0.75 }}>
-              <KeyOutlined fontSize="small" color="primary" />
-              登录密码加密与源文件还原保护（必填 · 强制开启）
+        <Box sx={{ minWidth: 0 }}>
+          <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
+            <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+              云端同步
             </Typography>
-            <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-              上传云端时先拉取远端合并，再执行 LZ77 字典无损压缩与登录密码加密；勾选「记住加密密码」后自动保存在本机。
+            <Typography
+              variant="caption"
+              data-testid="cloud-upload-mode-chip"
+              sx={{ display: 'none' }}
+            >
+              强制加密上传（登录密码保护）
             </Typography>
-          </Box>
-          {isPasswordMatched ? (
-            <Chip
-              size="small"
-              color="success"
-              variant="outlined"
-              label="与上次云端备份密码一致"
-              data-testid="cloud-password-matched-chip"
-            />
-          ) : null}
-          {hasPasswordMismatch ? (
-            <Chip
-              size="small"
-              color="warning"
-              label="与上次备份密码不一致"
-              data-testid="cloud-password-mismatch-chip"
-            />
-          ) : null}
+          </Stack>
+          <Typography
+            variant="caption"
+            data-testid="cloud-sync-status"
+            sx={{ color: 'var(--lifehub-text-muted)', display: 'block', mt: 0.25 }}
+          >
+            {lastRecord ? (
+              <>
+                最近同步：{lastRecord.providerName} · {lastRecord.billCount} 条账单
+                {typeof lastRecord.revision === 'number' ? ` · v${lastRecord.revision}` : ''}
+                <Box component="span" sx={{ display: 'none' }}>
+                  {` · 强制加密上传（登录密码保护） · ${lastRecord.objectKey}`}
+                </Box>
+              </>
+            ) : (
+              `服务商：${activePreset.name} · 未同步`
+            )}
+          </Typography>
         </Box>
-        <TextField
-          size="small"
-          type="password"
-          required
-          fullWidth
-          label="登录密码（必填 · 加密上传与还原凭证）"
-          value={encryptionPassword}
-          onChange={(e) => handlePasswordChange(e.target.value)}
-          placeholder="请输入登录密码用于加密上传或还原源文件内容"
-          inputProps={{ 'data-testid': 'cloud-encryption-password-input' }}
-        />
-        <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
-          <FormControlLabel
-            control={
-              <Checkbox
-                size="small"
-                checked={rememberPasswordChecked}
-                onChange={(e) => handleToggleRememberPassword(e.target.checked)}
-                inputProps={
-                  { 'data-testid': 'cloud-remember-password-checkbox' } as Record<string, unknown>
-                }
-              />
-            }
-            label={
-              <Typography variant="caption" sx={{ color: 'var(--lifehub-text)' }}>
-                记住加密密码（保存在本机，自动填充，免重复输入与记忆）
-              </Typography>
-            }
-          />
-          {hasPreviousFingerprint ? (
-            <FormControlLabel
-              control={
-                <Checkbox
-                  size="small"
-                  color="warning"
-                  checked={allowPasswordChange}
-                  onChange={(e) => setAllowPasswordChange(e.target.checked)}
-                  inputProps={
-                    { 'data-testid': 'cloud-allow-password-change-checkbox' } as Record<
-                      string,
-                      unknown
-                    >
-                  }
-                />
-              }
-              label={
-                <Typography
-                  variant="caption"
-                  sx={{
-                    color: hasPasswordMismatch ? 'warning.main' : 'var(--lifehub-text-muted)',
-                    fontWeight: hasPasswordMismatch ? 600 : 400,
-                  }}
-                >
-                  允许使用新密码覆盖云端备份（仅在更换加密密码时勾选）
-                </Typography>
-              }
-            />
-          ) : null}
-        </Box>
-      </Box>
 
-      {/* 操作按钮组 */}
-      <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 1.5, mb: 2 }}>
         <Button
-          variant="outlined"
-          startIcon={<CloudDoneOutlined />}
-          onClick={handleTestConnection}
-          data-testid="cloud-test-button"
-        >
-          测试连接
-        </Button>
-        <Button
-          variant="contained"
-          startIcon={<CloudUploadOutlined />}
-          onClick={handleUpload}
-          data-testid="cloud-upload-button"
-        >
-          立即上传备份至云端
-        </Button>
-        <Button
-          variant="outlined"
-          color="secondary"
-          startIcon={<CloudDownloadOutlined />}
-          onClick={() => {
-            void handleRestore();
+          size="small"
+          variant="text"
+          endIcon={
+            panelExpanded ? (
+              <ExpandLessOutlined sx={{ fontSize: 18 }} />
+            ) : (
+              <ExpandMoreOutlined sx={{ fontSize: 18 }} />
+            )
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            setPanelExpanded((prev) => !prev);
           }}
-          data-testid="cloud-restore-button"
+          sx={{ flexShrink: 0, borderRadius: '8px', px: 1.25 }}
         >
-          从云端拉取恢复
+          {panelExpanded ? '收起' : '配置'}
         </Button>
-        <Button
-          variant="outlined"
-          color="primary"
-          startIcon={<KeyOutlined />}
-          onClick={handleDecryptSource}
-          data-testid="cloud-decrypt-source-button"
-        >
-          用登录密码还原源文件内容
-        </Button>
-      </Box>
+      </Stack>
 
-      {/* 状态反馈与最近同步记录 */}
       {banner ? (
         <Alert
           severity={banner.severity}
-          sx={{ mb: 1.5 }}
+          sx={{ mt: 1.5 }}
           onClose={() => setBanner(null)}
           data-testid="cloud-action-banner"
         >
@@ -829,76 +650,245 @@ export function CloudStoragePanel() {
         </Alert>
       ) : null}
 
-      {/* 还原后的原始 JSON 源文件预览与下载 */}
-      {decryptedSource ? (
+      <Collapse in={panelExpanded}>
+        <Divider sx={{ my: 2 }} />
+
+        {/* 云存储连接参数表单 */}
         <Box
           sx={{
-            p: 2,
-            mb: 1.5,
-            borderRadius: 1.5,
-            backgroundColor: 'var(--lifehub-bg)',
-            border: '1px solid var(--lifehub-border)',
+            display: 'grid',
+            gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+            gap: 1.5,
+            mb: 1.75,
           }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1, flexWrap: 'wrap', gap: 1 }}>
-            <Typography variant="body2" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
-              已凭登录密码还原的 JSON 源文件内容
-            </Typography>
-            <Button
+          <TextField
+            select
+            size="small"
+            label="服务商"
+            value={config.provider}
+            onChange={(e) => handleSelectProvider(e.target.value as CloudProviderId)}
+            SelectProps={{ native: true }}
+            inputProps={{ 'data-testid': 'cloud-provider-select' }}
+          >
+            {CLOUD_PROVIDERS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.name}
+              </option>
+            ))}
+          </TextField>
+
+          <TextField
+            size="small"
+            label={config.provider === 'jianguoyun-webdav' ? 'WebDAV 目录地址' : '连接地址 (Endpoint)'}
+            value={config.endpoint}
+            onChange={(e) => handleEndpointChange(e.target.value)}
+            placeholder={activePreset.defaultEndpoint}
+            inputProps={{ 'data-testid': 'cloud-endpoint-input' }}
+          />
+
+          <TextField
+            size="small"
+            label={config.provider === 'jianguoyun-webdav' ? '账号邮箱' : 'AccessKey ID'}
+            value={config.accessKey}
+            onChange={(e) => updateConfig({ accessKey: e.target.value })}
+            placeholder="AccessKey ID / 账号"
+            inputProps={{ 'data-testid': 'cloud-access-key-input' }}
+          />
+
+          <TextField
+            size="small"
+            type="password"
+            label={config.provider === 'jianguoyun-webdav' ? '应用密码' : 'SecretKey'}
+            value={config.secretKey}
+            onChange={(e) => updateConfig({ secretKey: e.target.value })}
+            placeholder="SecretKey / 应用密码"
+            inputProps={{ 'data-testid': 'cloud-secret-key-input' }}
+          />
+        </Box>
+
+        {/* 加密凭证输入（无内嵌灰盒） */}
+        <Stack spacing={1} sx={{ mb: 1.75 }}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+            <TextField
               size="small"
-              variant="outlined"
-              startIcon={<DownloadOutlined />}
-              onClick={handleDownloadDecryptedSource}
-              data-testid="cloud-download-source-button"
-            >
-              下载还原后的 JSON 源文件
-            </Button>
+              type="password"
+              required
+              fullWidth
+              label="加密密码（登录密码）"
+              value={encryptionPassword}
+              onChange={(e) => handlePasswordChange(e.target.value)}
+              placeholder="用于加密上传与解密恢复"
+              inputProps={{ 'data-testid': 'cloud-encryption-password-input' }}
+            />
+            {isPasswordMatched ? (
+              <Chip
+                size="small"
+                color="success"
+                variant="outlined"
+                label="密码一致"
+                data-testid="cloud-password-matched-chip"
+              />
+            ) : null}
+            {hasPasswordMismatch ? (
+              <Chip
+                size="small"
+                color="warning"
+                label="与上次备份密码不一致"
+                data-testid="cloud-password-mismatch-chip"
+              />
+            ) : null}
+          </Stack>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={rememberPasswordChecked}
+                  onChange={(e) => handleToggleRememberPassword(e.target.checked)}
+                  inputProps={
+                    { 'data-testid': 'cloud-remember-password-checkbox' } as Record<string, unknown>
+                  }
+                />
+              }
+              label={
+                <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
+                  记住密码
+                </Typography>
+              }
+            />
+            {hasPreviousFingerprint ? (
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    size="small"
+                    color="warning"
+                    checked={allowPasswordChange}
+                    onChange={(e) => setAllowPasswordChange(e.target.checked)}
+                    inputProps={
+                      { 'data-testid': 'cloud-allow-password-change-checkbox' } as Record<
+                        string,
+                        unknown
+                      >
+                    }
+                  />
+                }
+                label={
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: hasPasswordMismatch ? 'warning.main' : 'var(--lifehub-text-muted)',
+                      fontWeight: hasPasswordMismatch ? 600 : 400,
+                    }}
+                  >
+                    允许用新密码覆盖云端备份
+                  </Typography>
+                }
+              />
+            ) : null}
           </Box>
+        </Stack>
+
+        {/* 操作按钮组 */}
+        <Stack direction="row" alignItems="center" flexWrap="wrap" useFlexGap spacing={1}>
+          <Button
+            size="small"
+            variant="contained"
+            disableElevation
+            startIcon={<CloudUploadOutlined sx={{ fontSize: 17 }} />}
+            onClick={handleUpload}
+            data-testid="cloud-upload-button"
+            sx={{ borderRadius: '8px', px: 1.75 }}
+          >
+            上传备份
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<CloudDownloadOutlined sx={{ fontSize: 17 }} />}
+            onClick={() => {
+              void handleRestore();
+            }}
+            data-testid="cloud-restore-button"
+            sx={{ borderRadius: '8px', px: 1.75 }}
+          >
+            拉取恢复
+          </Button>
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<CloudDoneOutlined sx={{ fontSize: 17 }} />}
+            onClick={handleTestConnection}
+            data-testid="cloud-test-button"
+            sx={{ borderRadius: '8px' }}
+          >
+            测试连接
+          </Button>
+          <Button
+            size="small"
+            variant="text"
+            startIcon={<KeyOutlined sx={{ fontSize: 17 }} />}
+            onClick={handleDecryptSource}
+            data-testid="cloud-decrypt-source-button"
+            sx={{ borderRadius: '8px', color: 'var(--lifehub-text-muted)' }}
+          >
+            查看源 JSON
+          </Button>
+        </Stack>
+
+        {/* 还原后的原始 JSON 源文件预览与下载 */}
+        {decryptedSource ? (
           <Box
-            component="pre"
             sx={{
-              m: 0,
-              p: 1.5,
-              maxHeight: 220,
-              overflow: 'auto',
-              borderRadius: 1,
-              fontSize: '0.78rem',
-              fontFamily: 'var(--lifehub-font-mono, monospace)',
-              backgroundColor: 'var(--lifehub-surface)',
-              color: 'var(--lifehub-text)',
+              p: 1.75,
+              mt: 1.75,
+              borderRadius: '10px',
+              backgroundColor: 'var(--lifehub-bg)',
               border: '1px solid var(--lifehub-border)',
             }}
-            data-testid="cloud-decrypted-source-preview"
           >
-            {decryptedSource}
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              spacing={1}
+              sx={{ mb: 1 }}
+            >
+              <Typography variant="caption" sx={{ fontWeight: 600 }}>
+                还原的 JSON 源文件
+              </Typography>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<DownloadOutlined sx={{ fontSize: 15 }} />}
+                onClick={handleDownloadDecryptedSource}
+                data-testid="cloud-download-source-button"
+              >
+                下载 JSON
+              </Button>
+            </Stack>
+            <Box
+              component="pre"
+              sx={{
+                m: 0,
+                p: 1.25,
+                maxHeight: 200,
+                overflow: 'auto',
+                borderRadius: 1.5,
+                fontSize: '0.76rem',
+                fontFamily: 'var(--lifehub-font-mono, monospace)',
+                backgroundColor: 'var(--lifehub-surface)',
+                color: 'var(--lifehub-text)',
+                border: '1px solid var(--lifehub-border)',
+              }}
+              data-testid="cloud-decrypted-source-preview"
+            >
+              {decryptedSource}
+            </Box>
           </Box>
-        </Box>
-      ) : null}
-
-      <Box
-        sx={{
-          p: 1.5,
-          borderRadius: 1,
-          backgroundColor: 'var(--lifehub-bg)',
-          border: '1px solid var(--lifehub-border)',
-        }}
-        data-testid="cloud-sync-status"
-      >
-        {lastRecord ? (
-          <Typography variant="caption" sx={{ color: 'var(--lifehub-text)', display: 'block' }}>
-            最近云端同步：{lastRecord.providerName} · 共 {lastRecord.billCount} 条账单 · 模式：
-            强制加密上传（登录密码保护） · 路径：{lastRecord.objectKey}
-            {typeof lastRecord.revision === 'number' ? ` · 版本 v${lastRecord.revision}` : ''}
-            {typeof lastRecord.sizeBytes === 'number'
-              ? ` · 压缩后体积 ${(lastRecord.sizeBytes / 1024).toFixed(1)} KB`
-              : ''}
-          </Typography>
-        ) : (
-          <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)', display: 'block' }}>
-            当前云端同步状态：尚未上传备份（当前选择：{activePreset.name}，强制使用登录密码加密上传）
-          </Typography>
-        )}
-      </Box>
+        ) : null}
+      </Collapse>
     </Paper>
   );
 }

@@ -88,28 +88,30 @@ export function DropZone({
       onDrop={handleDrop}
       className={dragging ? 'lifehub-dragging' : undefined}
       sx={{
-        border: '2px dashed',
+        border: '1.5px dashed',
         borderColor: dragging ? 'var(--lifehub-primary)' : 'var(--lifehub-border)',
-        borderRadius: 3,
-        p: { xs: 2.5, sm: 5 },
+        borderRadius: '12px',
+        p: { xs: 2.5, sm: 4 },
         textAlign: 'center',
         backgroundColor: 'var(--lifehub-surface)',
       }}
       data-testid="drop-zone"
     >
-      <CloudUploadOutlined sx={{ fontSize: { xs: 38, sm: 44 }, color: 'var(--lifehub-text-muted)' }} />
-      <Typography variant="h6" sx={{ mt: 1, fontSize: { xs: '1rem', sm: '1.2rem' }, fontWeight: 700, color: 'var(--lifehub-text)' }}>
+      <CloudUploadOutlined sx={{ fontSize: { xs: 36, sm: 42 }, color: 'var(--lifehub-text-muted)' }} />
+      <Typography variant="h6" sx={{ mt: 1, fontSize: { xs: '1rem', sm: '1.15rem' }, fontWeight: 700, color: 'var(--lifehub-text)' }}>
         把账单文件拖到这里（CSV / Excel / PDF / JSON）
       </Typography>
       <Typography variant="body2" sx={{ mt: 0.5, mb: 2, color: 'var(--lifehub-text-muted)' }}>
-        支持微信支付、支付宝与主流银行导出的 CSV / Excel / PDF / ZIP 压缩包、导出的 JSON 账单及文件夹批量上传；文件只在本机解析，不会上传。
+        支持微信、支付宝、银行账单与压缩包（文件只在本机解析，不会上传）
       </Typography>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.25} justifyContent="center" sx={{ mb: 2 }}>
         <Button
           variant="contained"
+          disableElevation
           disabled={disabled}
           onClick={() => inputRef.current?.click()}
           aria-label="选择账单文件"
+          sx={{ borderRadius: '8px' }}
         >
           选择文件
         </Button>
@@ -120,12 +122,13 @@ export function DropZone({
           onClick={() => folderInputRef.current?.click()}
           aria-label="选择账单文件夹"
           data-testid="select-folder-button"
+          sx={{ borderRadius: '8px' }}
         >
           选择文件夹批量上传
         </Button>
       </Stack>
       {onPasswordChange ? (
-        <Box sx={{ maxWidth: 380, mx: 'auto' }}>
+        <Box sx={{ maxWidth: 320, mx: 'auto' }}>
           <TextField
             size="small"
             fullWidth
@@ -133,12 +136,13 @@ export function DropZone({
             disabled={disabled}
             value={password}
             onChange={(event) => onPasswordChange(event.target.value)}
-            placeholder="文件解密/解压密码（选填，未加密文件无需填写）"
+            placeholder="文件密码（选填）"
             data-testid="import-password-field"
             inputProps={{
               'data-testid': 'import-password-input',
               'aria-label': '文件解密或解压密码',
             }}
+            sx={{ '& .MuiOutlinedInput-root': { borderRadius: '8px' } }}
           />
         </Box>
       ) : null}

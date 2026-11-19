@@ -6,11 +6,7 @@
 import { Box, Step, StepLabel, Stepper, Typography } from '@mui/material';
 
 /** 导入步骤定义。 */
-const STEPS = [
-  { title: '选择文件', description: '拖拽或选择 CSV 文件' },
-  { title: '列头映射', description: '确认各列对应的语义字段' },
-  { title: '导入完成', description: '写入本地加密库' },
-];
+const STEPS = [{ title: '选择文件' }, { title: '列头映射' }, { title: '导入完成' }];
 
 /** 步骤指示器组件的属性。 */
 export interface StepIndicatorProps {
@@ -26,7 +22,7 @@ export interface StepIndicatorProps {
  */
 export function StepIndicator({ activeStep }: StepIndicatorProps) {
   return (
-    <Box sx={{ mb: 3 }}>
+    <Box sx={{ mb: 2.5 }}>
       <Stepper activeStep={activeStep} alternativeLabel>
         {STEPS.map((step) => (
           <Step key={step.title}>
@@ -47,9 +43,6 @@ export function StepIndicator({ activeStep }: StepIndicatorProps) {
             >
               <Typography variant="body2" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
                 {step.title}
-              </Typography>
-              <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
-                {step.description}
               </Typography>
             </StepLabel>
           </Step>

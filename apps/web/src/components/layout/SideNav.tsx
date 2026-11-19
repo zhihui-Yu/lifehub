@@ -144,11 +144,21 @@ export function SideNav() {
       className={`lifehub-sidenav${keyboardOpen ? ' lifehub-sidenav--keyboard-open' : ''}`}
       sx={{ display: 'flex', flexDirection: 'column' }}
     >
-      <Box sx={{ p: 2.5, pb: 1.5 }}>
-        <Typography variant="h6" sx={{ fontWeight: 700, color: 'var(--lifehub-text)' }}>
+      <Box sx={{ px: 2.5, pt: 2.25, pb: 1.5 }}>
+        <Typography variant="h6" sx={{ fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--lifehub-text)' }}>
           LifeHub
         </Typography>
-        <Typography variant="caption" sx={{ color: 'var(--lifehub-text-muted)' }}>
+        <Typography
+          variant="caption"
+          sx={{
+            position: 'absolute',
+            width: 1,
+            height: 1,
+            overflow: 'hidden',
+            clip: 'rect(0, 0, 0, 0)',
+            whiteSpace: 'nowrap',
+          }}
+        >
           本地优先 · 数据自持
         </Typography>
       </Box>
