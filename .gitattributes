@@ -1,2 +1,5 @@
 # 测试夹具文件必须保留原始字节（含 BOM、GBK 编码、CRLF/LF 混排），禁止 Git 自动转换换行符
 packages/core/tests/**/fixtures/** -text
+
+# Shell 脚本始终保持 LF 换行，避免 Windows 下 Git Bash / WSL 执行报错
+*.sh text eol=lf
