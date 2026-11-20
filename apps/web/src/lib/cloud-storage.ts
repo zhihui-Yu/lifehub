@@ -11,7 +11,11 @@
  */
 import { LifeHubError, type Bill, type Category } from '@lifehub/core';
 import type { StoredScheduleSlot } from '@/modules/schedule/rrule';
-import type { StoredHabit, StoredHabitCheckIn } from '@/modules/habits/habit-service';
+import {
+  mergeHabitCheckInPair,
+  type StoredHabit,
+  type StoredHabitCheckIn,
+} from '@/modules/habits/habit-service';
 import type { DecryptedDiaryEntry } from '@/modules/diary/diary-service';
 import type { CompletionEvent } from '@/modules/shared/completion-event';
 import {
@@ -1463,8 +1467,18 @@ export function mergeCloudDatasets(
     'habitCheckIn',
     local.habitCheckIns,
     remote.habitCheckIns,
-    (ci) => ci.completedAt || '',
+    (ci) => ci.updatedAt || ci.completedAt || '',
   );
+  // 同一习惯同一天在多端分别累加定量记录时，按明细 entry.id 无损合并当日总量
+  if (local.habitCheckIns.length > 0 && remote.habitCheckIns.length > 0) {
+    const localCiMap = new Map(local.habitCheckIns.map((ci) => [ci.id, ci] as const));
+    const remoteCiMap = new Map(remote.habitCheckIns.map((ci) => [ci.id, ci] as const));
+    mergedCheckIns.items = mergedCheckIns.items.map((item) => {
+      const l = localCiMap.get(item.id);
+      const r = remoteCiMap.get(item.id);
+      return l && r ? mergeHabitCheckInPair(l, r) : item;
+    });
+  }
   const mergedDiaries = mergeCollection<DecryptedDiaryEntry>(
     'diaryEntry',
     local.diaryEntries,

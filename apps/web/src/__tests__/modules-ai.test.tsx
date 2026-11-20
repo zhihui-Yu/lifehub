@@ -115,6 +115,29 @@ describe('Module E —— X-14 脱敏管线与 Prompt 构造器安全断言', ()
         combinedCompletedCount: 23,
         maxCurrentStreak: 5,
         maxLongestStreak: 12,
+        habitDetails: [
+          {
+            name: '喝水',
+            unit: 'ml',
+            trackingMode: 'quantity',
+            dailyTarget: 2000,
+            completedDays: 10,
+            totalQuantity: 18500,
+            averagePerCompletedDay: 1850,
+            currentStreak: 5,
+            longestStreak: 12,
+          },
+          {
+            name: '跑步',
+            unit: 'km',
+            trackingMode: 'quantity',
+            completedDays: 5,
+            totalQuantity: 16.5,
+            averagePerCompletedDay: 3.3,
+            currentStreak: 2,
+            longestStreak: 5,
+          },
+        ],
       },
     });
 
@@ -152,6 +175,8 @@ describe('Module E —— X-14 脱敏管线与 Prompt 构造器安全断言', ()
     expect(fullPrompt).toContain('50–100 元');
     expect(fullPrompt).toContain('100–500 元');
     expect(fullPrompt).toContain('2026-10');
+    expect(fullPrompt).toContain('喝水（定量·ml）：打卡 10 天 | 周期累计总量 18500 ml | 打卡日均 1850 ml/天');
+    expect(fullPrompt).toContain('跑步（定量·km）：打卡 5 天 | 周期累计总量 16.5 km | 打卡日均 3.3 km/天');
   });
 });
 

@@ -61,7 +61,16 @@ import { useBillStore } from '@/store';
 import { useVault } from '@/hooks/useVault';
 import { getTodayLocalDate } from '@/modules/shared/date-utils';
 import { ScheduleService } from '@/modules/schedule/schedule-service';
-import { HabitService } from '@/modules/habits/habit-service';
+import {
+  computeHabitRangeSummaries,
+  HabitService,
+  type HabitWithStats,
+  type StoredHabitCheckIn,
+} from '@/modules/habits/habit-service';
+import {
+  CompletionEventRepository,
+  type CompletionEvent,
+} from '@/modules/shared/completion-event';
 import { DiaryService, type DecryptedDiaryEntry } from '@/modules/diary/diary-service';
 import { redactBillsForAi, redactDiaryEntriesForAi } from '@/modules/ai/redaction';
 import {
@@ -216,6 +225,7 @@ export function AiAnalysisPage() {
   const aiStorage = useMemo(() => new AiStorageService(), []);
   const scheduleService = useMemo(() => new ScheduleService(), []);
   const habitService = useMemo(() => new HabitService(), []);
+  const completionRepo = useMemo(() => new CompletionEventRepository(), []);
   const diaryService = useMemo(() => new DiaryService(), []);
   const today = useMemo(() => getTodayLocalDate(), []);
 
@@ -224,7 +234,9 @@ export function AiAnalysisPage() {
   const [scheduleSummary, setScheduleSummary] = useState<AiScheduleSummaryInput | undefined>(
     undefined,
   );
-  const [habitSummary, setHabitSummary] = useState<AiHabitSummaryInput | undefined>(undefined);
+  const [loadedHabitsWithStats, setLoadedHabitsWithStats] = useState<HabitWithStats[]>([]);
+  const [loadedHabitCheckIns, setLoadedHabitCheckIns] = useState<StoredHabitCheckIn[]>([]);
+  const [loadedCompletionEvents, setLoadedCompletionEvents] = useState<CompletionEvent[]>([]);
   const [diaryEntries, setDiaryEntries] = useState<DecryptedDiaryEntry[]>([]);
 
   // 配置状态（默认指向 DeepSeek V4 主力模型 deepseek-flash）
@@ -357,15 +369,24 @@ export function AiAnalysisPage() {
 
   const loadInitialData = useCallback(async () => {
     try {
-      const [configRec, audits, schedStats, habitsWithStats, periodStats, loadedDiaries] =
-        await Promise.all([
-          aiStorage.getConfigRecord(),
-          aiStorage.listRequestAudits(),
-          scheduleService.getWeekAndMonthStats(today),
-          habitService.listHabitsWithStats(today),
-          habitService.getPeriodStats(today, 'month'),
-          diaryService.listEntries().catch(() => [] as DecryptedDiaryEntry[]),
-        ]);
+      const earliestWindowDate = addDays(today, -180);
+      const [
+        configRec,
+        audits,
+        schedStats,
+        habitsWithStats,
+        allCheckIns,
+        rangedCompletionEvents,
+        loadedDiaries,
+      ] = await Promise.all([
+        aiStorage.getConfigRecord(),
+        aiStorage.listRequestAudits(),
+        scheduleService.getWeekAndMonthStats(today),
+        habitService.listHabitsWithStats(today),
+        habitService.listAllCheckIns(),
+        completionRepo.listByDateRange(earliestWindowDate, today),
+        diaryService.listEntries().catch(() => [] as DecryptedDiaryEntry[]),
+      ]);
 
       setProvider(configRec.provider);
       setBaseUrl(configRec.baseUrl);
@@ -384,23 +405,9 @@ export function AiAnalysisPage() {
         monthRate: schedStats.month.completionRate,
       });
 
-      const maxCurrentStreak = habitsWithStats.reduce(
-        (m, h) => Math.max(m, h.streak.currentStreak),
-        0,
-      );
-      const maxLongestStreak = habitsWithStats.reduce(
-        (m, h) => Math.max(m, h.streak.longestStreak),
-        0,
-      );
-
-      setHabitSummary({
-        activeHabitCount: habitsWithStats.length,
-        habitCompletedCount: periodStats.habitCompletedCount,
-        scheduleCompletedCount: periodStats.scheduleCompletedCount,
-        combinedCompletedCount: periodStats.combinedCompletedCount,
-        maxCurrentStreak,
-        maxLongestStreak,
-      });
+      setLoadedHabitsWithStats(habitsWithStats);
+      setLoadedHabitCheckIns(allCheckIns);
+      setLoadedCompletionEvents(rangedCompletionEvents);
 
       if (runtime && status === 'unlocked') {
         const [repoBills, repoCategories] = await Promise.all([
@@ -417,7 +424,85 @@ export function AiAnalysisPage() {
     } catch {
       // 忽略初始化非致命异常
     }
-  }, [aiStorage, diaryService, habitService, runtime, scheduleService, status, today]);
+  }, [
+    aiStorage,
+    completionRepo,
+    diaryService,
+    habitService,
+    runtime,
+    scheduleService,
+    status,
+    today,
+  ]);
+
+  const habitSummary = useMemo<AiHabitSummaryInput | undefined>(() => {
+    const windowEvents = loadedCompletionEvents.filter(
+      (ev) => ev.localDate >= dateWindow.fromDate && ev.localDate <= dateWindow.toDate,
+    );
+    if (loadedHabitsWithStats.length === 0 && windowEvents.length === 0) {
+      return undefined;
+    }
+
+    let habitCompletedCount = 0;
+    let scheduleCompletedCount = 0;
+    for (const ev of windowEvents) {
+      if (ev.sourceType === 'habit') {
+        habitCompletedCount += 1;
+      } else if (ev.sourceType === 'schedule') {
+        scheduleCompletedCount += 1;
+      }
+    }
+
+    const maxCurrentStreak = loadedHabitsWithStats.reduce(
+      (m, h) => Math.max(m, h.streak.currentStreak),
+      0,
+    );
+    const maxLongestStreak = loadedHabitsWithStats.reduce(
+      (m, h) => Math.max(m, h.streak.longestStreak),
+      0,
+    );
+
+    const rangeItems = computeHabitRangeSummaries(
+      loadedHabitsWithStats.map((h) => h.habit),
+      windowEvents,
+      loadedHabitCheckIns,
+      dateWindow.fromDate,
+      dateWindow.toDate,
+    );
+    const streakMap = new Map(
+      loadedHabitsWithStats.map((h) => [h.habit.id, h.streak] as const),
+    );
+    const habitDetails = rangeItems.map((item) => {
+      const st = streakMap.get(item.habitId);
+      return {
+        name: item.name,
+        unit: item.unit,
+        trackingMode: item.trackingMode,
+        ...(item.dailyTarget ? { dailyTarget: item.dailyTarget } : {}),
+        completedDays: item.completedDays,
+        totalQuantity: item.totalQuantity,
+        averagePerCompletedDay: item.averagePerCompletedDay,
+        currentStreak: st?.currentStreak ?? 0,
+        longestStreak: st?.longestStreak ?? 0,
+      };
+    });
+
+    return {
+      activeHabitCount: loadedHabitsWithStats.length,
+      habitCompletedCount,
+      scheduleCompletedCount,
+      combinedCompletedCount: habitCompletedCount + scheduleCompletedCount,
+      maxCurrentStreak,
+      maxLongestStreak,
+      habitDetails,
+    };
+  }, [
+    dateWindow.fromDate,
+    dateWindow.toDate,
+    loadedCompletionEvents,
+    loadedHabitCheckIns,
+    loadedHabitsWithStats,
+  ]);
 
   useEffect(() => {
     void loadInitialData();
