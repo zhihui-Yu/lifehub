@@ -4,7 +4,7 @@
  * 架构位置：apps/web 的「AI 分析模块」Prompt 构造与本地推理层。
  *
  * 职责：
- * 1. 将脱敏后的账单摘要（模块 A）、课表完成率（模块 B）、微习惯打卡与连续天数（模块 C）聚合为结构化上下文；
+ * 1. 将脱敏后的账单摘要（模块 A）、课表完成率（模块 B）、微习惯打卡频次与各习惯定量累计总量（模块 C）聚合为结构化上下文；
  * 2. 生成版本化（`lifehub-life-review-v1`）的 System Prompt 与 User Prompt，供用户发送前完整预览；
  * 3. 提供无需任何网络或外部 API Key 的本地智能总结引擎 `generateLocalSmartSummary`。
  */
@@ -87,10 +87,10 @@ export const AI_TOPIC_META: Record<
   habits: {
     label: '习惯追踪',
     icon: '🔥',
-    desc: '聚焦微习惯连续打卡与防断签策略',
+    desc: '聚焦微习惯连续打卡、定量累计总量与防断签策略',
     starterQuestions: [
-      '怎样提高微习惯连续打卡天数，避免中途断签？',
-      '如何把微习惯和课表固定时段绑定起来？',
+      '结合我各项习惯的打卡天数和累计总量（如饮水/运动量），有哪些优化建议？',
+      '怎样提高微习惯连续打卡天数，并把习惯和课表固定时段绑定起来？',
     ],
   },
   persona: {
@@ -123,12 +123,36 @@ export interface AiScheduleSummaryInput {
 }
 
 /**
+ * 单个习惯在分析周期内的打卡天数与定量累计总量明细（供 AI 深度分析）。
+ */
+export interface AiHabitItemDetail {
+  /** 习惯名称（如「喝水」「跑步」）。 */
+  name: string;
+  /** 计量单位（如 'ml'、'km'、'次'）。 */
+  unit: string;
+  /** 记录模式：按次打勾或定量累加。 */
+  trackingMode: 'check' | 'quantity';
+  /** 每日参考目标（若配置，如 2000 ml）。 */
+  dailyTarget?: number;
+  /** 所选周期内完成打卡天数（每天完成算 1 次）。 */
+  completedDays: number;
+  /** 所选周期内累计总量（每日总量相加，如 42.5 km、35000 ml）。 */
+  totalQuantity: number;
+  /** 打卡日日均量（totalQuantity / completedDays）。 */
+  averagePerCompletedDay: number;
+  /** 当前连续打卡天数。 */
+  currentStreak: number;
+  /** 历史最长连续打卡天数。 */
+  longestStreak: number;
+}
+
+/**
  * 习惯模块与跨模块完成事件聚合摘要。
  */
 export interface AiHabitSummaryInput {
   /** 当前活跃习惯数。 */
   activeHabitCount: number;
-  /** 周期内习惯打卡次数。 */
+  /** 周期内习惯打卡总次数（每天每个习惯完成计 1 次）。 */
   habitCompletedCount: number;
   /** 周期内课表完成次数。 */
   scheduleCompletedCount: number;
@@ -138,6 +162,8 @@ export interface AiHabitSummaryInput {
   maxCurrentStreak: number;
   /** 历史最长连续打卡天数。 */
   maxLongestStreak: number;
+  /** 可选：各习惯在所选周期内的打卡天数与定量累计总量明细。 */
+  habitDetails?: readonly AiHabitItemDetail[];
 }
 
 /**
@@ -177,11 +203,35 @@ export interface BuiltAiPrompt {
 }
 
 /**
+ * 格式化单个习惯的周期聚合描述行（供 Prompt 与本地智能报告共用）。
+ *
+ * @param detail 单个习惯统计明细
+ * @returns 单行可读摘要
+ */
+function formatHabitDetailLine(detail: AiHabitItemDetail): string {
+  if (detail.trackingMode === 'quantity' || detail.unit !== '次') {
+    const targetText =
+      detail.dailyTarget && detail.dailyTarget > 0
+        ? `，每日目标 ${detail.dailyTarget} ${detail.unit}`
+        : '';
+    const avgText =
+      detail.completedDays > 0
+        ? ` | 打卡日均 ${detail.averagePerCompletedDay} ${detail.unit}/天${targetText}`
+        : targetText
+          ? ` | 尚未打卡${targetText}`
+          : '';
+    return `${detail.name}（定量·${detail.unit}）：打卡 ${detail.completedDays} 天 | 周期累计总量 ${detail.totalQuantity} ${detail.unit}${avgText} | 当前连续 ${detail.currentStreak} 天（最长 ${detail.longestStreak} 天）`;
+  }
+  return `${detail.name}（按次）：打卡 ${detail.completedDays} 天（累计 ${detail.totalQuantity} ${detail.unit}）| 当前连续 ${detail.currentStreak} 天（最长 ${detail.longestStreak} 天）`;
+}
+
+/**
  * 组装版本化的生活复盘 AI Prompt（纯函数，E-02 / X-14）。
  *
  * 说明：
  * - 严格只读取 `RedactedBillSummary` 中的月份粗化、金额区间分桶与匿名商户代号；
- * - 样本明细最多取前 20 条脱敏记录，避免超长上下文，且保证绝无原始商户名或精确金额。
+ * - 样本明细最多取前 20 条脱敏记录，避免超长上下文，且保证绝无原始商户名或精确金额；
+ * - 习惯模块同时携带打卡天数（每天完成算 1 次）与定量累计总量（如总饮水量 ml、总跑量 km、打卡日均量）。
  *
  * @param context 脱敏聚合上下文
  * @returns 构造好的 `BuiltAiPrompt`
@@ -192,13 +242,13 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 
   const topicRoleMap: Record<AiAnalysisTopic, string> = {
     comprehensive:
-      '请基于脱敏后的消费分桶结构、生活课表完成率、微习惯连续打卡数据与用户主动勾选的树洞心情记录，输出简明、结构化的中文复盘建议，并回答用户的追问。',
+      '请基于脱敏后的消费分桶结构、生活课表完成率、微习惯连续打卡与各习惯定量累计数据（如饮水量、运动里程等），以及用户脱敏后的树洞心情记录，输出简明、结构化的中文复盘建议，并回答用户的追问。',
     finance:
       '你当前处于【财务分析专项】模式：请深度聚焦用户的脱敏收支分桶分布、消费分类结构、高频匿名商户特征与大额支出风险，提供可落地的预算控制与财务优化方案。',
     life:
       '你当前处于【生活课表与时间分析专项】模式：请深度聚焦用户的周/月课表时间块完成率、作息密度与精力分配，给出具体的时间块重排与执行力提升建议。',
     habits:
-      '你当前处于【微习惯养成专项】模式：请深度聚焦用户的活跃微习惯数量、连续打卡天数（Streak）、历史最高纪录与课表协同情况，给出防断签与习惯锚定方案。',
+      '你当前处于【微习惯养成专项】模式：请深度聚焦用户的活跃微习惯、各习惯完成天数（每天完成计 1 次）、定量习惯的周期累计总量与打卡日均表现（如喝水 ml、跑步 km 是否达标或稳定）、连续打卡天数（Streak）与课表协同情况，给出科学的定量进阶与防断签方案。',
     persona:
       '你当前处于【人物观察与树洞心理分析专项】模式：请深度聚焦用户主动勾选的树洞随笔、情绪标签、人际关系记录与未来规划，温和且深刻地剖析用户的情绪轨迹、关注的人物互动特征与内在需求。',
   };
@@ -244,14 +294,23 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
       ].join('\n')
     : '【生活课表执行情况（模块 B）】\n- 暂无课表统计数据';
 
+  const habitDetailLines =
+    habitStats?.habitDetails && habitStats.habitDetails.length > 0
+      ? [
+          '- 各习惯周期累计与定量表现（每天完成计 1 次打卡，同日多次记录汇总为当日总量）：',
+          ...habitStats.habitDetails.map((d) => `  * ${formatHabitDetailLine(d)}`),
+        ]
+      : [];
+
   const habitSection = habitStats
     ? [
         '【微习惯打卡与跨模块完成统计（模块 C）】',
         `- 活跃习惯数：${habitStats.activeHabitCount} 个`,
-        `- 习惯打卡次数：${habitStats.habitCompletedCount} 次`,
+        `- 习惯打卡完成总次数（按完成日计）：${habitStats.habitCompletedCount} 次`,
         `- 课表完成次数：${habitStats.scheduleCompletedCount} 次`,
         `- 课表 + 习惯合并完成事件总数：${habitStats.combinedCompletedCount} 次`,
         `- 当前最高连续打卡：${habitStats.maxCurrentStreak} 天 | 历史最长连续打卡：${habitStats.maxLongestStreak} 天`,
+        ...habitDetailLines,
       ].join('\n')
     : '【微习惯打卡与跨模块完成统计（模块 C）】\n- 暂无习惯打卡数据';
 
@@ -315,7 +374,7 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 /**
  * 零网络本地智能总结引擎（纯函数，E-02）。
  *
- * 说明：无需外部 API Key 或网络连接，直接在本地根据脱敏账单、课表完成率与习惯打卡数据生成结构化复盘报告。
+ * 说明：无需外部 API Key 或网络连接，直接在本地根据脱敏账单、课表完成率与习惯打卡及定量累计数据生成结构化复盘报告。
  *
  * @param context 脱敏聚合上下文
  * @returns 中文结构化复盘分析文本
@@ -376,13 +435,25 @@ export function generateLocalSmartSummary(context: AiPromptContext): string {
   }
 
   if (topic === 'comprehensive' || topic === 'habits') {
-    lines.push('', '### 🔥 【微习惯养成与跨模块行动建议】');
+    lines.push('', '### 🔥 【微习惯养成与定量累计评估】');
     if (habitStats) {
       lines.push(
-        `- **习惯与课表协同**：当前维护 **${habitStats.activeHabitCount} 个**微习惯，累计完成事件 **${habitStats.combinedCompletedCount} 次**（其中习惯打卡 ${habitStats.habitCompletedCount} 次、课表完成 ${habitStats.scheduleCompletedCount} 次）。`,
+        `- **习惯与课表协同**：当前维护 **${habitStats.activeHabitCount} 个**微习惯，周期内累计完成事件 **${habitStats.combinedCompletedCount} 次**（其中习惯完成日打卡 ${habitStats.habitCompletedCount} 次、课表完成 ${habitStats.scheduleCompletedCount} 次）。`,
         `- **连续性表现**：当前最高连续打卡 **${habitStats.maxCurrentStreak} 天**，历史最长连续纪录 **${habitStats.maxLongestStreak} 天**。`,
+      );
+      if (habitStats.habitDetails && habitStats.habitDetails.length > 0) {
+        const detailSummary = habitStats.habitDetails
+          .map((d) =>
+            d.trackingMode === 'quantity' || d.unit !== '次'
+              ? `**${d.name}** 累计 **${d.totalQuantity} ${d.unit}**（打卡 ${d.completedDays} 天${d.completedDays > 0 ? `，日均 ${d.averagePerCompletedDay} ${d.unit}` : ''}）`
+              : `**${d.name}** 打卡 **${d.completedDays} 天**`,
+          )
+          .join('；');
+        lines.push(`- **各习惯周期累计量**：${detailSummary}。`);
+      }
+      lines.push(
         habitStats.maxCurrentStreak >= 7
-          ? '- **激励反馈**：已形成稳固的周度连续节律，继续保持即可冲击更高里程碑徽章！'
+          ? '- **激励反馈**：已形成稳固的周度连续节律，继续保持即可稳步提升周期累计总量！'
           : '- **激励反馈**：建议将微习惯绑定在固定课表时间块之后触发（如晨间时段后立即打卡），降低漏打概率。',
       );
     } else {
@@ -451,11 +522,22 @@ export function generateLocalChatReply(context: AiPromptContext, userQuestion: s
     ].join('\n');
   }
 
-  if (/习惯|打卡|坚持|连续|断签/.test(q) || topic === 'habits') {
+  if (/习惯|打卡|坚持|连续|断签|喝水|跑步|运动/.test(q) || topic === 'habits') {
+    const detailText =
+      habitStats?.habitDetails && habitStats.habitDetails.length > 0
+        ? habitStats.habitDetails
+            .map((d) =>
+              d.trackingMode === 'quantity' || d.unit !== '次'
+                ? `${d.name}累计 **${d.totalQuantity} ${d.unit}**（${d.completedDays}天，打卡日均 ${d.averagePerCompletedDay} ${d.unit}）`
+                : `${d.name}打卡 **${d.completedDays} 天**`,
+            )
+            .join('；')
+        : '暂无细分习惯记录';
     return [
       `💡 **针对您的提问「${q}」的微习惯养成建议：**`,
       `1. **当前连续度**：活跃微习惯 **${habitStats?.activeHabitCount ?? 0} 个**，当前最高连续打卡 **${habitStats?.maxCurrentStreak ?? 0} 天**（历史最高 **${habitStats?.maxLongestStreak ?? 0} 天**）。`,
-      `2. **防断签技巧**：采用「最小可执行动作（2 分钟原则）」降低启动阻力，并将习惯打卡紧跟在固定课表时段之后完成。`,
+      `2. **周期累计表现**：${detailText}。`,
+      `3. **进阶与防断签技巧**：采用「保底打卡 + 定量累加」策略——精力不足日哪怕喝一杯水或慢跑 1 km 也先保住连续打卡不断签，状态好时再冲刺每日目标量。`,
     ].join('\n');
   }
 
