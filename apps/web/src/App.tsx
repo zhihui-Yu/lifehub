@@ -146,17 +146,13 @@ export function App() {
           },
           MuiDialog: {
             styleOverrides: {
-              container: {
-                height: '100dvh',
-              },
               paper: {
                 display: 'flex',
                 flexDirection: 'column',
                 borderRadius: 14,
                 margin: 12,
                 width: 'calc(100% - 24px)',
-                maxHeight:
-                  'calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px)',
+                maxHeight: 'calc(100% - 24px)',
                 overflow: 'hidden',
               },
             },

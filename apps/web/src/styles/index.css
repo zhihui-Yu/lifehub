@@ -374,24 +374,13 @@ html.lifehub-ai-locked #root,
   padding-top: 14px !important;
 }
 
-/* 移动端弹窗自适应视口与防遮挡增强：兼容 dvh / 软键盘 / 全面屏手势区，保证底部操作按钮始终可见 */
+/* 移动端弹窗自适应视口与防遮挡增强：依托 fixed inset:0 容器与 adjustResize 自适应，保证底部操作按钮始终可见 */
 @media (max-width: 600px) {
-  .MuiDialog-container {
-    height: 100vh;
-    height: 100dvh !important;
-    padding-top: env(safe-area-inset-top, 0px);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    box-sizing: border-box;
-  }
-
   .MuiDialog-paper {
     margin: 10px !important;
     width: calc(100% - 20px) !important;
     max-width: calc(100vw - 20px) !important;
-    max-height: calc(100vh - 20px) !important;
-    max-height: calc(
-      100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 20px
-    ) !important;
+    max-height: calc(100% - 20px) !important;
   }
 
   .MuiDialogActions-root {
