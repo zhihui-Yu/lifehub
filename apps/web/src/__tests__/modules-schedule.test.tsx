@@ -208,7 +208,7 @@ describe('Module B —— SchedulePage 组件交互测试（B-01 ~ B-05）', () 
     if (firstCheckbox) {
       fireEvent.click(firstCheckbox);
     }
-    expect(screen.queryByTestId('schedule-slot-dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText('编辑时段')).not.toBeInTheDocument();
 
     // 点击时段卡片的时间文本或卡片空白区域均可唤起编辑时段弹窗
     fireEvent.click(screen.getByText('09:00-10:30'));

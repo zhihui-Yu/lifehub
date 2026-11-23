@@ -760,9 +760,6 @@ export function SchedulePage() {
                               borderColor: `${accent}66`,
                               backgroundColor: `${accent}18`,
                             },
-                            '&:active': {
-                              transform: 'scale(0.99)',
-                            },
                           }}
                         >
                           <Stack

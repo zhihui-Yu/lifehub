@@ -3,14 +3,15 @@
  *
  * 架构位置：apps/web 的「通用交互组件」层。
  *
- * 设计原则（极简至上）：
- * - 平时就是标准干净的输入框，无多余图标、角标或附加栏；
- * - 点击输入框即弹出轻量纯数字滚轮浮层（时:分 两列 / 年·月·日 三列），无多余按钮、无预设胶囊、无内嵌 Tab；
- * - 滑动或点选即实时生效，点击外部自动收起，100% 杜绝手动输错格式。
+ * 设计原则（极简至上 & 零抖动）：
+ * - 平时为标准干净输入框，点击弹出纯数字滚轮浮层（使用 Fade 过渡消除缩放果冻感）；
+ * - 首次挂载在绘制前（useLayoutEffect）同步定位，消除打开瞬间跳动；
+ * - 选项字号恒定不触发重排，拦截 mousedown 默认聚焦滚动，消除点击与滚轮时的二次回弹抖动。
  */
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -18,7 +19,15 @@ import {
   type MouseEvent,
   type WheelEvent,
 } from 'react';
-import { Box, IconButton, InputAdornment, Popover, TextField, Typography } from '@mui/material';
+import {
+  Box,
+  Fade,
+  IconButton,
+  InputAdornment,
+  Popover,
+  TextField,
+  Typography,
+} from '@mui/material';
 import type { SxProps, Theme } from '@mui/material/styles';
 import CloseRounded from '@mui/icons-material/CloseRounded';
 import { getTodayLocalDate } from '@/modules/shared/date-utils';
@@ -71,7 +80,7 @@ interface WheelColumnProps {
 }
 
 /**
- * 渲染纯净单列惯性滚轮。
+ * 渲染纯净零抖动单列滚轮。
  */
 function WheelColumn({
   options,
@@ -83,72 +92,110 @@ function WheelColumn({
 }: WheelColumnProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const programmaticRef = useRef(false);
-  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const unlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const interactingRef = useRef(false);
+  const rafRef = useRef<number | null>(null);
+  const didInitialPositionRef = useRef(false);
+  const lastCommittedValueRef = useRef<number>(value);
 
   const selectedIndex = useMemo(() => {
     const idx = options.findIndex((o) => o.value === value);
     return idx >= 0 ? idx : 0;
   }, [options, value]);
 
-  const scrollToIndex = useCallback(
+  const cancelOngoingAnimation = useCallback(() => {
+    if (rafRef.current !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  }, []);
+
+  const moveScrollTo = useCallback(
     (index: number, smooth: boolean) => {
       const el = scrollRef.current;
-      if (!el) return;
+      if (!el || options.length === 0) return;
       const clamped = Math.max(0, Math.min(options.length - 1, index));
-      const top = clamped * ITEM_HEIGHT;
-      programmaticRef.current = true;
-      if (unlockTimerRef.current) clearTimeout(unlockTimerRef.current);
-      try {
-        if (smooth && typeof el.scrollTo === 'function') {
-          el.scrollTo({ top, behavior: 'smooth' });
-        } else {
-          el.scrollTop = top;
-        }
-      } catch {
-        el.scrollTop = top;
-      }
-      unlockTimerRef.current = setTimeout(() => {
+      const targetTop = clamped * ITEM_HEIGHT;
+
+      cancelOngoingAnimation();
+
+      if (
+        !smooth ||
+        typeof requestAnimationFrame !== 'function' ||
+        typeof performance === 'undefined' ||
+        Math.abs(el.scrollTop - targetTop) < 1
+      ) {
+        programmaticRef.current = true;
+        el.style.scrollSnapType = 'y mandatory';
+        el.scrollTop = targetTop;
         programmaticRef.current = false;
-      }, smooth ? 160 : 40);
+        return;
+      }
+
+      // 使用确定性的 120ms easeOutCubic 帧动画：全程关闭 scroll-snap，在精确到达目标像素的那一帧恢复，彻底杜绝二次吸附抖动
+      const startTop = el.scrollTop;
+      const delta = targetTop - startTop;
+      const durationMs = 120;
+      const startAt = performance.now();
+
+      programmaticRef.current = true;
+      el.style.scrollSnapType = 'none';
+
+      const tick = (now: number) => {
+        const node = scrollRef.current;
+        if (!node) {
+          programmaticRef.current = false;
+          rafRef.current = null;
+          return;
+        }
+        const t = Math.min(1, Math.max(0, (now - startAt) / durationMs));
+        const eased = 1 - Math.pow(1 - t, 3);
+        node.scrollTop = startTop + delta * eased;
+
+        if (t < 1) {
+          rafRef.current = requestAnimationFrame(tick);
+        } else {
+          node.scrollTop = targetTop;
+          node.style.scrollSnapType = 'y mandatory';
+          programmaticRef.current = false;
+          rafRef.current = null;
+        }
+      };
+
+      rafRef.current = requestAnimationFrame(tick);
     },
-    [options.length],
+    [cancelOngoingAnimation, options.length],
   );
 
-  useEffect(() => {
-    if (!interactingRef.current) {
-      scrollToIndex(selectedIndex, false);
+  // 首帧绘制前同步定位到当前选中项；外部受控值被动变化（如开始时间带动结束时间顺延）时无动画同步
+  useLayoutEffect(() => {
+    if (!didInitialPositionRef.current) {
+      didInitialPositionRef.current = true;
+      lastCommittedValueRef.current = value;
+      moveScrollTo(selectedIndex, false);
+      return;
     }
-  }, [selectedIndex, scrollToIndex]);
+    if (value !== lastCommittedValueRef.current && !programmaticRef.current) {
+      lastCommittedValueRef.current = value;
+      moveScrollTo(selectedIndex, false);
+    }
+  }, [moveScrollTo, selectedIndex, value]);
 
   useEffect(() => {
     return () => {
-      if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
-      if (unlockTimerRef.current) clearTimeout(unlockTimerRef.current);
+      cancelOngoingAnimation();
     };
-  }, []);
+  }, [cancelOngoingAnimation]);
 
   const handleScroll = () => {
     if (programmaticRef.current) return;
     const el = scrollRef.current;
     if (!el || options.length === 0) return;
 
-    interactingRef.current = true;
     const nextIdx = Math.max(0, Math.min(options.length - 1, Math.round(el.scrollTop / ITEM_HEIGHT)));
     const picked = options[nextIdx];
     if (picked !== undefined && picked.value !== value) {
+      lastCommittedValueRef.current = picked.value;
       onSelect(picked.value);
     }
-
-    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
-    settleTimerRef.current = setTimeout(() => {
-      interactingRef.current = false;
-      const aligned = nextIdx * ITEM_HEIGHT;
-      if (scrollRef.current && Math.abs(scrollRef.current.scrollTop - aligned) > 1) {
-        scrollToIndex(nextIdx, true);
-      }
-    }, 100);
   };
 
   const handleWheel = (e: WheelEvent<HTMLDivElement>) => {
@@ -160,8 +207,9 @@ function WheelColumn({
     const nextIdx = Math.max(0, Math.min(options.length - 1, selectedIndex + step));
     const picked = options[nextIdx];
     if (picked !== undefined) {
+      lastCommittedValueRef.current = picked.value;
       onSelect(picked.value);
-      scrollToIndex(nextIdx, true);
+      moveScrollTo(nextIdx, true);
     }
   };
 
@@ -172,8 +220,9 @@ function WheelColumn({
     const nextIdx = Math.max(0, Math.min(options.length - 1, selectedIndex + step));
     const picked = options[nextIdx];
     if (picked !== undefined) {
+      lastCommittedValueRef.current = picked.value;
       onSelect(picked.value);
-      scrollToIndex(nextIdx, true);
+      moveScrollTo(nextIdx, true);
     }
   };
 
@@ -208,6 +257,7 @@ function WheelColumn({
           overflowY: 'auto',
           touchAction: 'pan-y',
           scrollSnapType: 'y mandatory',
+          scrollBehavior: 'auto',
           WebkitOverflowScrolling: 'touch',
           overscrollBehavior: 'contain',
           scrollbarWidth: 'none',
@@ -225,11 +275,18 @@ function WheelColumn({
               role="option"
               aria-selected={selected}
               data-testid={testId ? `${testId}-opt-${opt.value}` : undefined}
+              onMouseDown={(e) => {
+                // 阻止浏览器 mousedown 默认将焦点滚入视口引起的先跳一下再居中的抖动
+                e.preventDefault();
+              }}
               onClick={() => {
-                interactingRef.current = false;
+                lastCommittedValueRef.current = opt.value;
                 onSelect(opt.value);
-                scrollToIndex(idx, true);
-                onItemClickDone?.();
+                if (onItemClickDone) {
+                  onItemClickDone();
+                } else {
+                  moveScrollTo(idx, true);
+                }
               }}
               sx={{
                 height: ITEM_HEIGHT,
@@ -239,7 +296,7 @@ function WheelColumn({
                 justifyContent: 'center',
                 cursor: 'pointer',
                 fontVariantNumeric: 'tabular-nums',
-                fontSize: selected ? 15 : 13.5,
+                fontSize: 14,
                 fontWeight: selected ? 700 : 400,
                 color: selected ? 'primary.main' : 'var(--lifehub-text-muted)',
                 opacity: selected ? 1 : dist === 1 ? 0.72 : 0.36,
@@ -336,6 +393,8 @@ export function WheelTimeField({
         open={Boolean(anchorEl)}
         anchorEl={anchorEl}
         onClose={() => setAnchorEl(null)}
+        TransitionComponent={Fade}
+        transitionDuration={110}
         marginThreshold={12}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
@@ -478,6 +537,8 @@ export function WheelDateField({
         open={Boolean(anchorEl)}
         anchorEl={anchorEl}
         onClose={() => setAnchorEl(null)}
+        TransitionComponent={Fade}
+        transitionDuration={110}
         marginThreshold={12}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
         transformOrigin={{ vertical: 'top', horizontal: 'left' }}
