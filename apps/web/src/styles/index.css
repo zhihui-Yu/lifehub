@@ -369,6 +369,11 @@ html.lifehub-ai-locked #root,
   white-space: nowrap;
 }
 
+/* 修复 MUI DialogTitle 紧接 DialogContent 时默认 padding-top:0 裁切首行浮动标签上半部分的问题 */
+.MuiDialogTitle-root + .MuiDialogContent-root {
+  padding-top: 14px !important;
+}
+
 /* 移动端弹窗自适应视口与防遮挡增强：兼容 dvh / 软键盘 / 全面屏手势区，保证底部操作按钮始终可见 */
 @media (max-width: 600px) {
   .MuiDialog-container {

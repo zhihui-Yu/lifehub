@@ -746,15 +746,22 @@ export function SchedulePage() {
                           key={`${occ.slotId}:${occ.localDate}`}
                           className="lifehub-schedule-card"
                           data-testid={`schedule-card-${occ.slotId}-${occ.localDate}`}
+                          onClick={() => handleOpenEdit(occ.slot)}
                           sx={{
                             p: 0.9,
                             borderRadius: '8px',
+                            cursor: 'pointer',
                             backgroundColor: `${accent}10`,
                             border: `1px solid ${accent}26`,
                             opacity: occ.completed ? 0.58 : 1,
-                            transition: 'opacity 0.15s ease, border-color 0.15s ease',
+                            transition:
+                              'opacity 0.15s ease, border-color 0.15s ease, background-color 0.15s ease',
                             '&:hover': {
                               borderColor: `${accent}66`,
+                              backgroundColor: `${accent}18`,
+                            },
+                            '&:active': {
+                              transform: 'scale(0.99)',
                             },
                           }}
                         >
@@ -797,9 +804,10 @@ export function SchedulePage() {
                                 'aria-label': `完成确认-${occ.title}-${occ.localDate}`,
                               }}
                               data-testid="schedule-complete-toggle"
+                              onClick={(e) => e.stopPropagation()}
                               onChange={() => void handleToggleCompletion(occ.slotId, occ.localDate)}
                               sx={{
-                                p: 0.15,
+                                p: 0.25,
                                 mr: -0.25,
                                 color: 'var(--lifehub-text-muted)',
                                 '&.Mui-checked': { color: accent },
@@ -814,12 +822,10 @@ export function SchedulePage() {
                               fontSize: 13,
                               lineHeight: 1.35,
                               textDecoration: occ.completed ? 'line-through' : 'none',
-                              cursor: 'pointer',
                               mt: 0.35,
                               color: 'var(--lifehub-text)',
                               wordBreak: 'break-word',
                             }}
-                            onClick={() => handleOpenEdit(occ.slot)}
                           >
                             {occ.title}
                           </Typography>
@@ -881,9 +887,12 @@ export function SchedulePage() {
                   <Box
                     key={`${occ.slotId}:${occ.localDate}`}
                     className="lifehub-schedule-card"
+                    data-testid={`schedule-day-card-${occ.slotId}-${occ.localDate}`}
+                    onClick={() => handleOpenEdit(occ.slot)}
                     sx={{
                       px: { xs: 2, sm: 2.5 },
                       py: 1.5,
+                      cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
@@ -898,8 +907,7 @@ export function SchedulePage() {
                       direction="row"
                       alignItems="center"
                       spacing={1.5}
-                      onClick={() => handleOpenEdit(occ.slot)}
-                      sx={{ cursor: 'pointer', minWidth: 0, flex: 1 }}
+                      sx={{ minWidth: 0, flex: 1 }}
                     >
                       <Typography
                         variant="body2"
@@ -953,6 +961,7 @@ export function SchedulePage() {
                       icon={<RadioButtonUncheckedRounded sx={{ fontSize: 20, opacity: 0.55 }} />}
                       checkedIcon={<CheckCircleRounded sx={{ fontSize: 20 }} />}
                       data-testid="schedule-complete-toggle"
+                      onClick={(e) => e.stopPropagation()}
                       onChange={() => void handleToggleCompletion(occ.slotId, occ.localDate)}
                       sx={{
                         p: 0.5,
@@ -1000,7 +1009,7 @@ export function SchedulePage() {
           </IconButton>
         </DialogTitle>
 
-        <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, py: 1 }}>
+        <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.75, pb: 1.25 }}>
           <Stack spacing={1.5}>
             {dialogError && (
               <Alert

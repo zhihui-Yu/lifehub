@@ -983,7 +983,7 @@ export function HabitsPage() {
             <CloseRounded sx={{ fontSize: 18 }} />
           </IconButton>
         </DialogTitle>
-        <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, py: 1 }}>
+        <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.75, pb: 1.25 }}>
           <Stack spacing={1.5}>
             {/* 记录模式切换 */}
             <ToggleButtonGroup
@@ -1201,7 +1201,7 @@ export function HabitsPage() {
               </IconButton>
             </DialogTitle>
 
-            <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, py: 1 }}>
+            <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.75, pb: 1.25 }}>
               <Stack spacing={1.5}>
                 {quantityDialogError && (
                   <Alert severity="error" sx={{ py: 0.25, borderRadius: '8px' }}>

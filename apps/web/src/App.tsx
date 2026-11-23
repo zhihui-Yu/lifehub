@@ -176,6 +176,9 @@ export function App() {
                 overflowY: 'auto',
                 WebkitOverflowScrolling: 'touch',
                 overscrollBehavior: 'contain',
+                '.MuiDialogTitle-root + &': {
+                  paddingTop: 14,
+                },
               },
             },
           },
