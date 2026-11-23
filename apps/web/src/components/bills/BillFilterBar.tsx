@@ -20,6 +20,7 @@ import {
 import SearchOutlined from '@mui/icons-material/SearchOutlined';
 import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import type { Direction } from '@lifehub/core';
+import { WheelDateField } from '@/components/common/WheelPicker';
 import type { BillFilters } from '@/store/bill-store';
 
 /** 过滤栏的属性。 */
@@ -189,33 +190,29 @@ export function BillFilterBar({
           </MenuItem>
         ))}
       </Select>
-      <TextField
-        size="small"
-        type="date"
+      <WheelDateField
         label="开始日期"
         value={filters.dateFrom}
-        onChange={(event) => onChange({ dateFrom: event.target.value })}
+        clearable
+        onChange={(val) => onChange({ dateFrom: val })}
         sx={{
           display: mobileFiltersOpen ? 'inline-flex' : 'none',
           flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
           minWidth: { xs: 0, sm: 142 },
           '& .MuiOutlinedInput-root': compactInputSx,
         }}
-        InputLabelProps={{ shrink: true }}
       />
-      <TextField
-        size="small"
-        type="date"
+      <WheelDateField
         label="结束日期"
         value={filters.dateTo}
-        onChange={(event) => onChange({ dateTo: event.target.value })}
+        clearable
+        onChange={(val) => onChange({ dateTo: val })}
         sx={{
           display: mobileFiltersOpen ? 'inline-flex' : 'none',
           flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
           minWidth: { xs: 0, sm: 142 },
           '& .MuiOutlinedInput-root': compactInputSx,
         }}
-        InputLabelProps={{ shrink: true }}
       />
       <Select
         size="small"

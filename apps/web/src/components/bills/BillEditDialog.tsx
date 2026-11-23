@@ -27,6 +27,7 @@ import {
 } from '@mui/material';
 import type { Bill, Category, Direction } from '@lifehub/core';
 import { toLocalDate, toWallClock } from '@lifehub/core';
+import { WheelDateField, WheelTimeField } from '@/components/common/WheelPicker';
 import type { ManualBillInput } from '@/lib/bill-factory';
 import { lookupRememberedCategoryId } from '@/lib/category-memory';
 import { useBillStore, useSettingsStore } from '@/store';
@@ -203,8 +204,10 @@ export function BillEditDialog({
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="xs" fullWidth aria-labelledby="bill-edit-title">
-      <DialogTitle id="bill-edit-title">{initial ? '编辑账单' : '记一笔'}</DialogTitle>
-      <DialogContent sx={{ pt: 1 }}>
+      <DialogTitle id="bill-edit-title" sx={{ px: { xs: 2, sm: 3 }, pt: 2, pb: 1 }}>
+        {initial ? '编辑账单' : '记一笔'}
+      </DialogTitle>
+      <DialogContent sx={{ px: { xs: 2, sm: 3 }, pt: 1 }}>
         <Stack spacing={1.5} sx={{ mt: 0.5 }}>
           {/* 第一位：金额（元），打开即聚焦，突出核心操作 */}
           <TextField
@@ -271,26 +274,21 @@ export function BillEditDialog({
             </Box>
           ) : null}
 
-          {/* 第三行：日期 + 时间并排，默认自动填入当前日期与当前时间 */}
+          {/* 第三行：日期 + 时间并排（点击弹出极简纯滚轮） */}
           <Stack direction="row" spacing={1.5}>
-            <TextField
+            <WheelDateField
               fullWidth
-              size="small"
-              type="date"
               label="日期"
               value={date}
-              onChange={(event) => setDate(event.target.value)}
-              InputLabelProps={{ shrink: true }}
+              onChange={setDate}
               sx={{ flex: 1.2 }}
             />
-            <TextField
+            <WheelTimeField
               fullWidth
-              size="small"
-              type="time"
               label="时间（可选）"
               value={time}
-              onChange={(event) => setTime(event.target.value)}
-              InputLabelProps={{ shrink: true }}
+              clearable
+              onChange={setTime}
               sx={{ flex: 1 }}
             />
           </Stack>

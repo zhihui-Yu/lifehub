@@ -968,8 +968,8 @@ export function HabitsPage() {
       >
         <DialogTitle
           sx={{
-            px: 2.5,
-            pt: 2.25,
+            px: { xs: 2, sm: 2.5 },
+            pt: 2,
             pb: 1,
             display: 'flex',
             alignItems: 'center',
@@ -983,7 +983,7 @@ export function HabitsPage() {
             <CloseRounded sx={{ fontSize: 18 }} />
           </IconButton>
         </DialogTitle>
-        <DialogContent sx={{ px: 2.5, py: 1 }}>
+        <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.75, pb: 1.25 }}>
           <Stack spacing={1.5}>
             {/* 记录模式切换 */}
             <ToggleButtonGroup
@@ -1008,8 +1008,9 @@ export function HabitsPage() {
                 '& .MuiToggleButtonGroup-grouped': {
                   border: 0,
                   borderRadius: '7px !important',
-                  py: 0.45,
-                  fontSize: 12.5,
+                  py: 0.5,
+                  px: { xs: 1, sm: 1.5 },
+                  fontSize: { xs: 12, sm: 12.5 },
                   fontWeight: 600,
                   '&.Mui-selected': {
                     backgroundColor: 'var(--lifehub-surface)',
@@ -1020,10 +1021,10 @@ export function HabitsPage() {
               }}
             >
               <ToggleButton value="check" data-testid="habit-mode-check">
-                按次打勾（每天 1 次）
+                按次打勾（每天1次）
               </ToggleButton>
               <ToggleButton value="quantity" data-testid="habit-mode-quantity">
-                定量累加（如 ml / km）
+                定量累加（ml / km）
               </ToggleButton>
             </ToggleButtonGroup>
 
@@ -1126,7 +1127,7 @@ export function HabitsPage() {
             </Stack>
           </Stack>
         </DialogContent>
-        <DialogActions sx={{ px: 2.5, pt: 1.25, pb: 2 }}>
+        <DialogActions sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.25, pb: 2 }}>
           {editingHabit && (
             <Button
               color="error"
@@ -1167,8 +1168,8 @@ export function HabitsPage() {
           <>
             <DialogTitle
               sx={{
-                px: 2.5,
-                pt: 2.25,
+                px: { xs: 2, sm: 2.5 },
+                pt: 2,
                 pb: 1,
                 display: 'flex',
                 alignItems: 'center',
@@ -1200,7 +1201,7 @@ export function HabitsPage() {
               </IconButton>
             </DialogTitle>
 
-            <DialogContent sx={{ px: 2.5, py: 1 }}>
+            <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.75, pb: 1.25 }}>
               <Stack spacing={1.5}>
                 {quantityDialogError && (
                   <Alert severity="error" sx={{ py: 0.25, borderRadius: '8px' }}>
@@ -1238,14 +1239,20 @@ export function HabitsPage() {
                   }}
                 />
 
-                <Stack direction="row" spacing={1}>
+                <Box
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                    gap: 1,
+                  }}
+                >
                   <Button
                     fullWidth
                     variant="contained"
                     disableElevation
                     data-testid="habit-quantity-add-confirm"
                     onClick={() => void handleConfirmAddQuantity()}
-                    sx={{ borderRadius: '8px', fontWeight: 700 }}
+                    sx={{ borderRadius: '8px', fontWeight: 700, px: 1 }}
                   >
                     + 累加本次
                   </Button>
@@ -1254,11 +1261,11 @@ export function HabitsPage() {
                     variant="outlined"
                     data-testid="habit-quantity-set-total"
                     onClick={() => void handleSetDailyTotalDirectly()}
-                    sx={{ borderRadius: '8px', fontWeight: 600 }}
+                    sx={{ borderRadius: '8px', fontWeight: 600, px: 1 }}
                   >
                     设为当日总量
                   </Button>
-                </Stack>
+                </Box>
 
                 {activeQuantityItem.refDateEntries.length > 0 && (
                   <Box
@@ -1321,7 +1328,7 @@ export function HabitsPage() {
               </Stack>
             </DialogContent>
 
-            <DialogActions sx={{ px: 2.5, pt: 1, pb: 2 }}>
+            <DialogActions sx={{ px: { xs: 2, sm: 2.5 }, pt: 1, pb: 2 }}>
               {activeQuantityItem.completedOnRefDate && (
                 <Button
                   color="error"

@@ -43,6 +43,11 @@ import CloseRounded from '@mui/icons-material/CloseRounded';
 import PrintOutlined from '@mui/icons-material/PrintOutlined';
 import RadioButtonUncheckedRounded from '@mui/icons-material/RadioButtonUncheckedRounded';
 import { addDays } from '@lifehub/core';
+import { WheelTimeField } from '@/components/common/WheelPicker';
+import {
+  adjustTimeRangeOnStartChange,
+  clampEndTimeAfterStart,
+} from '@/components/common/wheel-picker-utils';
 import {
   addMonthsToLocalDate,
   getTodayLocalDate,
@@ -100,6 +105,7 @@ export function SchedulePage() {
   const [weekStats, setWeekStats] = useState<ScheduleCompletionStats | null>(null);
   const [monthStats, setMonthStats] = useState<ScheduleCompletionStats | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   // 新增 / 编辑弹窗与折叠统计状态
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -155,6 +161,7 @@ export function SchedulePage() {
     setLocation('');
     setColor('#4F46E5');
     setNote('');
+    setDialogError(null);
     setDialogOpen(true);
   };
 
@@ -186,6 +193,7 @@ export function SchedulePage() {
     setLocation(slot.location ?? '');
     setColor(slot.color ?? '#4F46E5');
     setNote(slot.note ?? '');
+    setDialogError(null);
     setDialogOpen(true);
   };
 
@@ -252,10 +260,13 @@ export function SchedulePage() {
       } else {
         await service.createSlot(payload);
       }
+      setDialogError(null);
       setDialogOpen(false);
       await reloadData();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : '保存课表时段失败');
+      const msg = err instanceof Error ? err.message : '保存课表时段失败';
+      setDialogError(msg);
+      setErrorMsg(msg);
     }
   };
 
@@ -735,15 +746,19 @@ export function SchedulePage() {
                           key={`${occ.slotId}:${occ.localDate}`}
                           className="lifehub-schedule-card"
                           data-testid={`schedule-card-${occ.slotId}-${occ.localDate}`}
+                          onClick={() => handleOpenEdit(occ.slot)}
                           sx={{
                             p: 0.9,
                             borderRadius: '8px',
+                            cursor: 'pointer',
                             backgroundColor: `${accent}10`,
                             border: `1px solid ${accent}26`,
                             opacity: occ.completed ? 0.58 : 1,
-                            transition: 'opacity 0.15s ease, border-color 0.15s ease',
+                            transition:
+                              'opacity 0.15s ease, border-color 0.15s ease, background-color 0.15s ease',
                             '&:hover': {
                               borderColor: `${accent}66`,
+                              backgroundColor: `${accent}18`,
                             },
                           }}
                         >
@@ -786,9 +801,10 @@ export function SchedulePage() {
                                 'aria-label': `完成确认-${occ.title}-${occ.localDate}`,
                               }}
                               data-testid="schedule-complete-toggle"
+                              onClick={(e) => e.stopPropagation()}
                               onChange={() => void handleToggleCompletion(occ.slotId, occ.localDate)}
                               sx={{
-                                p: 0.15,
+                                p: 0.25,
                                 mr: -0.25,
                                 color: 'var(--lifehub-text-muted)',
                                 '&.Mui-checked': { color: accent },
@@ -803,12 +819,10 @@ export function SchedulePage() {
                               fontSize: 13,
                               lineHeight: 1.35,
                               textDecoration: occ.completed ? 'line-through' : 'none',
-                              cursor: 'pointer',
                               mt: 0.35,
                               color: 'var(--lifehub-text)',
                               wordBreak: 'break-word',
                             }}
-                            onClick={() => handleOpenEdit(occ.slot)}
                           >
                             {occ.title}
                           </Typography>
@@ -870,9 +884,12 @@ export function SchedulePage() {
                   <Box
                     key={`${occ.slotId}:${occ.localDate}`}
                     className="lifehub-schedule-card"
+                    data-testid={`schedule-day-card-${occ.slotId}-${occ.localDate}`}
+                    onClick={() => handleOpenEdit(occ.slot)}
                     sx={{
                       px: { xs: 2, sm: 2.5 },
                       py: 1.5,
+                      cursor: 'pointer',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
@@ -887,8 +904,7 @@ export function SchedulePage() {
                       direction="row"
                       alignItems="center"
                       spacing={1.5}
-                      onClick={() => handleOpenEdit(occ.slot)}
-                      sx={{ cursor: 'pointer', minWidth: 0, flex: 1 }}
+                      sx={{ minWidth: 0, flex: 1 }}
                     >
                       <Typography
                         variant="body2"
@@ -942,6 +958,7 @@ export function SchedulePage() {
                       icon={<RadioButtonUncheckedRounded sx={{ fontSize: 20, opacity: 0.55 }} />}
                       checkedIcon={<CheckCircleRounded sx={{ fontSize: 20 }} />}
                       data-testid="schedule-complete-toggle"
+                      onClick={(e) => e.stopPropagation()}
                       onChange={() => void handleToggleCompletion(occ.slotId, occ.localDate)}
                       sx={{
                         p: 0.5,
@@ -973,8 +990,8 @@ export function SchedulePage() {
       >
         <DialogTitle
           sx={{
-            px: 2.5,
-            pt: 2.25,
+            px: { xs: 2, sm: 2.5 },
+            pt: 2,
             pb: 1,
             display: 'flex',
             alignItems: 'center',
@@ -989,8 +1006,18 @@ export function SchedulePage() {
           </IconButton>
         </DialogTitle>
 
-        <DialogContent sx={{ px: 2.5, py: 1 }}>
+        <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.75, pb: 1.25 }}>
           <Stack spacing={1.5}>
+            {dialogError && (
+              <Alert
+                severity="error"
+                sx={{ py: 0.25, borderRadius: '8px' }}
+                onClose={() => setDialogError(null)}
+              >
+                {dialogError}
+              </Alert>
+            )}
+
             {/* 标题 + 内联主题色点 */}
             <TextField
               placeholder="事项名称，如：英语精读 / 健身"
@@ -1003,7 +1030,14 @@ export function SchedulePage() {
               inputProps={{ 'data-testid': 'schedule-input-title' }}
             />
 
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.25 }}>
+            <Stack
+              direction="row"
+              spacing={1}
+              alignItems="center"
+              flexWrap="wrap"
+              useFlexGap
+              sx={{ py: 0.25 }}
+            >
               {SCHEDULE_COLORS.map((c) => {
                 const selected = color === c;
                 return (
@@ -1026,25 +1060,27 @@ export function SchedulePage() {
               })}
             </Stack>
 
-            {/* 起止时间紧凑双列 */}
+            {/* 起止时间紧凑双列（点击弹出纯净双列滚轮） */}
             <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.25 }}>
-              <TextField
+              <WheelTimeField
                 label="开始"
-                placeholder="09:00"
-                size="small"
                 value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
+                inputTestId="schedule-input-start"
                 sx={dialogFieldSx}
-                inputProps={{ 'data-testid': 'schedule-input-start' }}
+                onChange={(nextStart) => {
+                  const next = adjustTimeRangeOnStartChange(nextStart, startTime, endTime);
+                  setStartTime(next.startTime);
+                  setEndTime(next.endTime);
+                }}
               />
-              <TextField
+              <WheelTimeField
                 label="结束"
-                placeholder="10:30"
-                size="small"
                 value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
+                inputTestId="schedule-input-end"
                 sx={dialogFieldSx}
-                inputProps={{ 'data-testid': 'schedule-input-end' }}
+                onChange={(nextEnd) => {
+                  setEndTime(clampEndTimeAfterStart(startTime, nextEnd));
+                }}
               />
             </Box>
 
@@ -1169,7 +1205,7 @@ export function SchedulePage() {
           </Stack>
         </DialogContent>
 
-        <DialogActions sx={{ px: 2.5, pt: 1.25, pb: 2 }}>
+        <DialogActions sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.25, pb: 2 }}>
           {editingSlot && (
             <Button
               color="error"

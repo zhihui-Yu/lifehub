@@ -201,13 +201,19 @@ describe('Module B —— SchedulePage 组件交互测试（B-01 ~ B-05）', () 
       expect(screen.getByText('算法导论精读')).toBeInTheDocument();
     });
 
-    // 勾选完成
+    // 勾选完成（验证点击勾选框不会误触打开编辑弹窗）
     const checkboxes = screen.getAllByTestId('schedule-complete-toggle');
     expect(checkboxes.length).toBeGreaterThan(0);
     const firstCheckbox = checkboxes[0]?.querySelector('input') ?? checkboxes[0];
     if (firstCheckbox) {
       fireEvent.click(firstCheckbox);
     }
+    expect(screen.queryByText('编辑时段')).not.toBeInTheDocument();
+
+    // 点击时段卡片的时间文本或卡片空白区域均可唤起编辑时段弹窗
+    fireEvent.click(screen.getByText('09:00-10:30'));
+    expect(await screen.findByText('编辑时段')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('关闭'));
 
     // 点击打印按钮
     fireEvent.click(screen.getByTestId('schedule-print-button'));

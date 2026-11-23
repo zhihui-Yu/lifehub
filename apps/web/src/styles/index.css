@@ -363,10 +363,35 @@ html.lifehub-ai-locked #root,
   display: none !important;
 }
 
-/* 全局按钮防折行：确保手机端按钮文字始终单行对齐不折行 */
+/* 全局按钮防折行：确保常规工具条按钮文字单行对齐；弹窗内长选项允许自适应防止窄屏裁切 */
 .MuiButton-root,
 .MuiToggleButton-root {
   white-space: nowrap;
+}
+
+/* 修复 MUI DialogTitle 紧接 DialogContent 时默认 padding-top:0 裁切首行浮动标签上半部分的问题 */
+.MuiDialogTitle-root + .MuiDialogContent-root {
+  padding-top: 14px !important;
+}
+
+/* 移动端弹窗自适应视口与防遮挡增强：依托 fixed inset:0 容器与 adjustResize 自适应，保证底部操作按钮始终可见 */
+@media (max-width: 600px) {
+  .MuiDialog-paper {
+    margin: 10px !important;
+    width: calc(100% - 20px) !important;
+    max-width: calc(100vw - 20px) !important;
+    max-height: calc(100% - 20px) !important;
+  }
+
+  .MuiDialogActions-root {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+
+  .MuiDialog-paper .MuiToggleButton-root {
+    white-space: normal;
+    line-height: 1.25;
+  }
 }
 
 /* 移动端 APK（<=768px）：账单表格无侵入式流式原生卡片化布局（保持 <colgroup> 与 7 列 TableCell DOM 不变） */

@@ -146,7 +146,48 @@ export function App() {
           },
           MuiDialog: {
             styleOverrides: {
-              paper: { borderRadius: 14, margin: 12, width: 'calc(100% - 24px)' },
+              paper: {
+                display: 'flex',
+                flexDirection: 'column',
+                borderRadius: 14,
+                margin: 12,
+                width: 'calc(100% - 24px)',
+                maxHeight: 'calc(100% - 24px)',
+                overflow: 'hidden',
+              },
+            },
+          },
+          MuiDialogTitle: {
+            styleOverrides: {
+              root: {
+                flexShrink: 0,
+              },
+            },
+          },
+          MuiDialogContent: {
+            styleOverrides: {
+              root: {
+                flex: '1 1 auto',
+                minHeight: 0,
+                overflowY: 'auto',
+                WebkitOverflowScrolling: 'touch',
+                overscrollBehavior: 'contain',
+                '.MuiDialogTitle-root + &': {
+                  paddingTop: 14,
+                },
+              },
+            },
+          },
+          MuiDialogActions: {
+            styleOverrides: {
+              root: {
+                flexShrink: 0,
+                flexWrap: 'wrap',
+                gap: 8,
+                borderTop: '1px solid var(--lifehub-border)',
+                backgroundColor: 'var(--lifehub-surface)',
+                padding: '10px 20px calc(12px + env(safe-area-inset-bottom, 0px)) 20px',
+              },
             },
           },
         },

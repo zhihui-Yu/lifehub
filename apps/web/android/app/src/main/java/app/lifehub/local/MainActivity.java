@@ -72,7 +72,8 @@ public class MainActivity extends BridgeActivity {
                 Insets insets = windowInsets.getInsets(
                     WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
                 );
-                v.setPadding(insets.left, insets.top, insets.right, insets.bottom);
+                boolean imeVisible = windowInsets.isVisible(WindowInsetsCompat.Type.ime());
+                v.setPadding(insets.left, insets.top, insets.right, imeVisible ? 0 : insets.bottom);
                 return WindowInsetsCompat.CONSUMED;
             });
         }
