@@ -20,6 +20,10 @@ import {
 import SearchOutlined from '@mui/icons-material/SearchOutlined';
 import TuneOutlined from '@mui/icons-material/TuneOutlined';
 import type { Direction } from '@lifehub/core';
+import {
+  FilterDateTriggerField,
+  WheelDateRangeDialog,
+} from '@/components/common/WheelPicker';
 import type { BillFilters } from '@/store/bill-store';
 
 /** 过滤栏的属性。 */
@@ -56,6 +60,7 @@ export function BillFilterBar({
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= 768,
   );
+  const [dateRangeWheelSide, setDateRangeWheelSide] = useState<'from' | 'to' | null>(null);
   const selectedCategoryIds =
     filters.categoryIds && filters.categoryIds.length > 0
       ? filters.categoryIds
@@ -189,33 +194,19 @@ export function BillFilterBar({
           </MenuItem>
         ))}
       </Select>
-      <TextField
-        size="small"
-        type="date"
+      <FilterDateTriggerField
         label="开始日期"
         value={filters.dateFrom}
-        onChange={(event) => onChange({ dateFrom: event.target.value })}
-        sx={{
-          display: mobileFiltersOpen ? 'inline-flex' : 'none',
-          flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
-          minWidth: { xs: 0, sm: 142 },
-          '& .MuiOutlinedInput-root': compactInputSx,
-        }}
-        InputLabelProps={{ shrink: true }}
+        visible={mobileFiltersOpen}
+        onOpenWheel={() => setDateRangeWheelSide('from')}
+        onDirectChange={(val) => onChange({ dateFrom: val })}
       />
-      <TextField
-        size="small"
-        type="date"
+      <FilterDateTriggerField
         label="结束日期"
         value={filters.dateTo}
-        onChange={(event) => onChange({ dateTo: event.target.value })}
-        sx={{
-          display: mobileFiltersOpen ? 'inline-flex' : 'none',
-          flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
-          minWidth: { xs: 0, sm: 142 },
-          '& .MuiOutlinedInput-root': compactInputSx,
-        }}
-        InputLabelProps={{ shrink: true }}
+        visible={mobileFiltersOpen}
+        onOpenWheel={() => setDateRangeWheelSide('to')}
+        onDirectChange={(val) => onChange({ dateTo: val })}
       />
       <Select
         size="small"
@@ -281,6 +272,14 @@ export function BillFilterBar({
       >
         清空筛选
       </Button>
+      <WheelDateRangeDialog
+        open={dateRangeWheelSide !== null}
+        initialSide={dateRangeWheelSide ?? 'from'}
+        dateFrom={filters.dateFrom}
+        dateTo={filters.dateTo}
+        onClose={() => setDateRangeWheelSide(null)}
+        onApply={({ dateFrom, dateTo }) => onChange({ dateFrom, dateTo })}
+      />
     </Box>
   );
 }

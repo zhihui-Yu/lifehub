@@ -43,6 +43,7 @@ import CloseRounded from '@mui/icons-material/CloseRounded';
 import PrintOutlined from '@mui/icons-material/PrintOutlined';
 import RadioButtonUncheckedRounded from '@mui/icons-material/RadioButtonUncheckedRounded';
 import { addDays } from '@lifehub/core';
+import { TimeRangeWheelPicker } from '@/components/common/WheelPicker';
 import {
   addMonthsToLocalDate,
   getTodayLocalDate,
@@ -100,6 +101,7 @@ export function SchedulePage() {
   const [weekStats, setWeekStats] = useState<ScheduleCompletionStats | null>(null);
   const [monthStats, setMonthStats] = useState<ScheduleCompletionStats | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [dialogError, setDialogError] = useState<string | null>(null);
 
   // 新增 / 编辑弹窗与折叠统计状态
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -155,6 +157,7 @@ export function SchedulePage() {
     setLocation('');
     setColor('#4F46E5');
     setNote('');
+    setDialogError(null);
     setDialogOpen(true);
   };
 
@@ -186,6 +189,7 @@ export function SchedulePage() {
     setLocation(slot.location ?? '');
     setColor(slot.color ?? '#4F46E5');
     setNote(slot.note ?? '');
+    setDialogError(null);
     setDialogOpen(true);
   };
 
@@ -252,10 +256,13 @@ export function SchedulePage() {
       } else {
         await service.createSlot(payload);
       }
+      setDialogError(null);
       setDialogOpen(false);
       await reloadData();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : '保存课表时段失败');
+      const msg = err instanceof Error ? err.message : '保存课表时段失败';
+      setDialogError(msg);
+      setErrorMsg(msg);
     }
   };
 
@@ -973,8 +980,8 @@ export function SchedulePage() {
       >
         <DialogTitle
           sx={{
-            px: 2.5,
-            pt: 2.25,
+            px: { xs: 2, sm: 2.5 },
+            pt: 2,
             pb: 1,
             display: 'flex',
             alignItems: 'center',
@@ -989,8 +996,18 @@ export function SchedulePage() {
           </IconButton>
         </DialogTitle>
 
-        <DialogContent sx={{ px: 2.5, py: 1 }}>
+        <DialogContent sx={{ px: { xs: 2, sm: 2.5 }, py: 1 }}>
           <Stack spacing={1.5}>
+            {dialogError && (
+              <Alert
+                severity="error"
+                sx={{ py: 0.25, borderRadius: '8px' }}
+                onClose={() => setDialogError(null)}
+              >
+                {dialogError}
+              </Alert>
+            )}
+
             {/* 标题 + 内联主题色点 */}
             <TextField
               placeholder="事项名称，如：英语精读 / 健身"
@@ -1003,7 +1020,14 @@ export function SchedulePage() {
               inputProps={{ 'data-testid': 'schedule-input-title' }}
             />
 
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 0.25 }}>
+            <Stack
+              direction="row"
+              spacing={1}
+              alignItems="center"
+              flexWrap="wrap"
+              useFlexGap
+              sx={{ py: 0.25 }}
+            >
               {SCHEDULE_COLORS.map((c) => {
                 const selected = color === c;
                 return (
@@ -1026,27 +1050,15 @@ export function SchedulePage() {
               })}
             </Stack>
 
-            {/* 起止时间紧凑双列 */}
-            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.25 }}>
-              <TextField
-                label="开始"
-                placeholder="09:00"
-                size="small"
-                value={startTime}
-                onChange={(e) => setStartTime(e.target.value)}
-                sx={dialogFieldSx}
-                inputProps={{ 'data-testid': 'schedule-input-start' }}
-              />
-              <TextField
-                label="结束"
-                placeholder="10:30"
-                size="small"
-                value={endTime}
-                onChange={(e) => setEndTime(e.target.value)}
-                sx={dialogFieldSx}
-                inputProps={{ 'data-testid': 'schedule-input-end' }}
-              />
-            </Box>
+            {/* 起止时间段双列滚轮选择器（免手输，零格式错误风险，自动保证结束晚于开始） */}
+            <TimeRangeWheelPicker
+              startTime={startTime}
+              endTime={endTime}
+              onChange={(next) => {
+                setStartTime(next.startTime);
+                setEndTime(next.endTime);
+              }}
+            />
 
             {/* 重复规则 + 星期/周期紧凑网格 */}
             <Box
@@ -1169,7 +1181,7 @@ export function SchedulePage() {
           </Stack>
         </DialogContent>
 
-        <DialogActions sx={{ px: 2.5, pt: 1.25, pb: 2 }}>
+        <DialogActions sx={{ px: { xs: 2, sm: 2.5 }, pt: 1.25, pb: 2 }}>
           {editingSlot && (
             <Button
               color="error"
