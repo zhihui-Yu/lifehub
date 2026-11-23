@@ -1,10 +1,7 @@
 /**
- * 滚轮时间与日期选择器的纯函数计算工具。
+ * 极简滚轮时间与日期选择器的纯函数工具。
  *
  * 架构位置：apps/web 的「通用组件」工具层。
- *
- * 说明：将时分换算、时间段联动保序、闰年大小月天数计算与日期区间归一化独立成纯函数模块，
- * 既满足 `react-refresh/only-export-components` 约束，又便于单元测试对边界条件逐一验证。
  */
 
 /** 解析后的时分结构。 */
@@ -17,7 +14,7 @@ export interface ParsedHm {
 
 /** 解析后的年月日结构。 */
 export interface ParsedYmd {
-  /** 四位年份（如 2026）。 */
+  /** 四位年份。 */
   year: number;
   /** 月份（1 ~ 12）。 */
   month: number;
@@ -26,10 +23,10 @@ export interface ParsedYmd {
 }
 
 /**
- * 将小时与分钟格式化为标准两位数 `HH:mm` 字符串。
+ * 将小时与分钟格式化为标准两位数 `HH:mm`。
  *
- * @param hour 小时（自动钳制在 0 ~ 23）
- * @param minute 分钟（自动钳制在 0 ~ 59）
+ * @param hour 小时（0 ~ 23）
+ * @param minute 分钟（0 ~ 59）
  * @returns 标准 `HH:mm` 字符串
  * @throws 无
  */
@@ -40,7 +37,7 @@ export function formatHm(hour: number, minute: number): string {
 }
 
 /**
- * 解析 `HH:mm` 字符串为 `{ hour, minute }`，遇到空值或异常输入时平滑回退。
+ * 解析 `HH:mm` 字符串为 `{ hour, minute }`，异常输入平滑回退。
  *
  * @param raw 原始时间字符串
  * @param fallbackHm 回退时间字符串，默认 `'09:00'`
@@ -71,7 +68,7 @@ export function parseHm(raw: string, fallbackHm = '09:00'): ParsedHm {
 }
 
 /**
- * 将 `HH:mm` 换算为自当日 `00:00` 起的分钟数（0 ~ 1439）。
+ * 将 `HH:mm` 换算为当日分钟总数（0 ~ 1439）。
  *
  * @param hm 时间字符串
  * @returns 分钟总数
@@ -83,29 +80,23 @@ export function hmToMinutes(hm: string): number {
 }
 
 /**
- * 将自当日 `00:00` 起的分钟数换算为标准 `HH:mm` 字符串。
+ * 将当日分钟总数换算为 `HH:mm`。
  *
- * @param totalMinutes 分钟总数（自动钳制在 0 ~ 1439）
+ * @param totalMinutes 分钟总数
  * @returns 标准 `HH:mm` 字符串
  * @throws 无
  */
 export function minutesToHm(totalMinutes: number): string {
   const clamped = Math.max(0, Math.min(23 * 60 + 59, Math.round(totalMinutes)));
-  const h = Math.floor(clamped / 60);
-  const m = clamped % 60;
-  return formatHm(h, m);
+  return formatHm(Math.floor(clamped / 60), clamped % 60);
 }
 
 /**
- * 当用户调整「开始时间」时，智能保持或顺延「结束时间」，确保始终满足 `startTime < endTime` 且格式合法。
+ * 调整开始时间时自动保持或顺延结束时间，确保 `startTime < endTime`。
  *
- * 说明：
- * - 若原时段有效（`prevEnd > prevStart`），记住原时长 `duration`；当新开始时间 `>= 原结束时间` 时，按原时长顺延结束时间（上限 `23:59`）；
- * - 若新开始时间被拨到 `23:59`，自动将开始时间钳制为 `23:58`、结束时间设为 `23:59`，从根源上杜绝 `endTime <= startTime` 报错。
- *
- * @param nextStart 新的开始时间
- * @param prevStart 调整前的开始时间
- * @param prevEnd 调整前的结束时间
+ * @param nextStart 新开始时间
+ * @param prevStart 原开始时间
+ * @param prevEnd 原结束时间
  * @returns 合法有序的 `{ startTime, endTime }`
  * @throws 无
  */
@@ -118,8 +109,7 @@ export function adjustTimeRangeOnStartChange(
   const prevEndMin = hmToMinutes(prevEnd);
   const prevDuration = prevEndMin > prevStartMin ? prevEndMin - prevStartMin : 60;
 
-  const rawStartMin = hmToMinutes(nextStart);
-  const safeStartMin = Math.min(23 * 60 + 58, Math.max(0, rawStartMin));
+  const safeStartMin = Math.min(23 * 60 + 58, Math.max(0, hmToMinutes(nextStart)));
   const nextStartHm = minutesToHm(safeStartMin);
 
   if (prevEndMin > safeStartMin) {
@@ -134,11 +124,11 @@ export function adjustTimeRangeOnStartChange(
 }
 
 /**
- * 当用户调整「结束时间」时，保证 `endTime` 严格晚于 `startTime`。
+ * 调整结束时间时保证严格晚于开始时间。
  *
- * @param startTime 当前开始时间
- * @param candidateEnd 用户选择的结束时间
- * @returns 钳制后合法的结束时间 `HH:mm`
+ * @param startTime 开始时间
+ * @param candidateEnd 候选结束时间
+ * @returns 合法结束时间 `HH:mm`
  * @throws 无
  */
 export function clampEndTimeAfterStart(startTime: string, candidateEnd: string): string {
@@ -147,40 +137,15 @@ export function clampEndTimeAfterStart(startTime: string, candidateEnd: string):
   if (endMin > startMin) {
     return minutesToHm(endMin);
   }
-  const fallbackEnd = Math.min(23 * 60 + 59, startMin + (startMin <= 23 * 60 + 54 ? 5 : 1));
-  return minutesToHm(fallbackEnd);
+  return minutesToHm(Math.min(23 * 60 + 59, startMin + (startMin <= 23 * 60 + 54 ? 5 : 1)));
 }
 
 /**
- * 计算起止时间的中文时长标签（如 `1小时30分`、`45分钟`、`2小时`）。
- *
- * @param startTime 开始时间 `HH:mm`
- * @param endTime 结束时间 `HH:mm`
- * @returns 中文时长描述
- * @throws 无
- */
-export function formatDurationLabel(startTime: string, endTime: string): string {
-  const diff = hmToMinutes(endTime) - hmToMinutes(startTime);
-  if (diff <= 0) {
-    return '0分钟';
-  }
-  const hours = Math.floor(diff / 60);
-  const mins = diff % 60;
-  if (hours === 0) {
-    return `${mins}分钟`;
-  }
-  if (mins === 0) {
-    return `${hours}小时`;
-  }
-  return `${hours}小时${mins}分`;
-}
-
-/**
- * 计算指定年份与月份的最大天数（精确处理闰年 2 月 29 天）。
+ * 计算指定年月的天数（处理闰年 2 月）。
  *
  * @param year 四位年份
  * @param month 月份（1 ~ 12）
- * @returns 当月天数（28 ~ 31）
+ * @returns 当月最大天数
  * @throws 无
  */
 export function getDaysInYearMonth(year: number, month: number): number {
@@ -196,12 +161,12 @@ export function getDaysInYearMonth(year: number, month: number): number {
 }
 
 /**
- * 将年、月、日格式化为标准 `YYYY-MM-DD`，并自动将日钳制在当月最大有效天数内。
+ * 将年月日格式化为 `YYYY-MM-DD` 并自动钳制当月最大天数。
  *
  * @param year 年份
  * @param month 月份（1 ~ 12）
- * @param day 日（自动钳制在 1 ~ 当月最大天数）
- * @returns 标准 `YYYY-MM-DD` 字符串
+ * @param day 日
+ * @returns 标准 `YYYY-MM-DD`
  * @throws 无
  */
 export function formatYmd(year: number, month: number, day: number): string {
@@ -213,11 +178,11 @@ export function formatYmd(year: number, month: number, day: number): string {
 }
 
 /**
- * 解析 `YYYY-MM-DD` 字符串为 `{ year, month, day }`，无效或为空时回退至默认日期或本地今日。
+ * 解析 `YYYY-MM-DD` 字符串，无效或空串时回退至默认日期或今日。
  *
  * @param raw 原始日期字符串
- * @param fallbackYmd 可选回退日期 `YYYY-MM-DD`
- * @returns 合法的 `{ year, month, day }`
+ * @param fallbackYmd 可选回退日期
+ * @returns `{ year, month, day }`
  * @throws 无
  */
 export function parseYmd(raw: string, fallbackYmd?: string): ParsedYmd {
@@ -227,8 +192,7 @@ export function parseYmd(raw: string, fallbackYmd?: string): ParsedYmd {
     const m = Number.parseInt(match[2] ?? '1', 10);
     const d = Number.parseInt(match[3] ?? '1', 10);
     if (m >= 1 && m <= 12) {
-      const maxD = getDaysInYearMonth(y, m);
-      return { year: y, month: m, day: Math.max(1, Math.min(maxD, d)) };
+      return { year: y, month: m, day: Math.max(1, Math.min(getDaysInYearMonth(y, m), d)) };
     }
   }
   if (fallbackYmd && fallbackYmd !== raw) {
@@ -243,18 +207,14 @@ export function parseYmd(raw: string, fallbackYmd?: string): ParsedYmd {
     }
   }
   const now = new Date();
-  return {
-    year: now.getFullYear(),
-    month: now.getMonth() + 1,
-    day: now.getDate(),
-  };
+  return { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() };
 }
 
 /**
- * 归一化起止日期顺序：若起止均非空且 `dateFrom > dateTo`，自动交换起止日期防止无效区间。
+ * 归一化起止日期顺序：若起止均非空且 `dateFrom > dateTo`，自动调换为升序。
  *
- * @param dateFrom 开始日期（可为空串）
- * @param dateTo 结束日期（可为空串）
+ * @param dateFrom 开始日期
+ * @param dateTo 结束日期
  * @returns 有序的 `{ dateFrom, dateTo }`
  * @throws 无
  */

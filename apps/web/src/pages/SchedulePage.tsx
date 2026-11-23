@@ -43,7 +43,11 @@ import CloseRounded from '@mui/icons-material/CloseRounded';
 import PrintOutlined from '@mui/icons-material/PrintOutlined';
 import RadioButtonUncheckedRounded from '@mui/icons-material/RadioButtonUncheckedRounded';
 import { addDays } from '@lifehub/core';
-import { TimeRangeWheelPicker } from '@/components/common/WheelPicker';
+import { WheelTimeField } from '@/components/common/WheelPicker';
+import {
+  adjustTimeRangeOnStartChange,
+  clampEndTimeAfterStart,
+} from '@/components/common/wheel-picker-utils';
 import {
   addMonthsToLocalDate,
   getTodayLocalDate,
@@ -1050,15 +1054,29 @@ export function SchedulePage() {
               })}
             </Stack>
 
-            {/* 起止时间段双列滚轮选择器（免手输，零格式错误风险，自动保证结束晚于开始） */}
-            <TimeRangeWheelPicker
-              startTime={startTime}
-              endTime={endTime}
-              onChange={(next) => {
-                setStartTime(next.startTime);
-                setEndTime(next.endTime);
-              }}
-            />
+            {/* 起止时间紧凑双列（点击弹出纯净双列滚轮） */}
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 1.25 }}>
+              <WheelTimeField
+                label="开始"
+                value={startTime}
+                inputTestId="schedule-input-start"
+                sx={dialogFieldSx}
+                onChange={(nextStart) => {
+                  const next = adjustTimeRangeOnStartChange(nextStart, startTime, endTime);
+                  setStartTime(next.startTime);
+                  setEndTime(next.endTime);
+                }}
+              />
+              <WheelTimeField
+                label="结束"
+                value={endTime}
+                inputTestId="schedule-input-end"
+                sx={dialogFieldSx}
+                onChange={(nextEnd) => {
+                  setEndTime(clampEndTimeAfterStart(startTime, nextEnd));
+                }}
+              />
+            </Box>
 
             {/* 重复规则 + 星期/周期紧凑网格 */}
             <Box

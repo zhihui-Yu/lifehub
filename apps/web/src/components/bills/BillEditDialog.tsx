@@ -27,7 +27,7 @@ import {
 } from '@mui/material';
 import type { Bill, Category, Direction } from '@lifehub/core';
 import { toLocalDate, toWallClock } from '@lifehub/core';
-import { BillDateTimeWheelFields } from '@/components/common/WheelPicker';
+import { WheelDateField, WheelTimeField } from '@/components/common/WheelPicker';
 import type { ManualBillInput } from '@/lib/bill-factory';
 import { lookupRememberedCategoryId } from '@/lib/category-memory';
 import { useBillStore, useSettingsStore } from '@/store';
@@ -274,13 +274,24 @@ export function BillEditDialog({
             </Box>
           ) : null}
 
-          {/* 第三行：日期 + 时间滚轮组合选择，默认自动填入当前日期与当前时间 */}
-          <BillDateTimeWheelFields
-            date={date}
-            time={time}
-            onDateChange={setDate}
-            onTimeChange={setTime}
-          />
+          {/* 第三行：日期 + 时间并排（点击弹出极简纯滚轮） */}
+          <Stack direction="row" spacing={1.5}>
+            <WheelDateField
+              fullWidth
+              label="日期"
+              value={date}
+              onChange={setDate}
+              sx={{ flex: 1.2 }}
+            />
+            <WheelTimeField
+              fullWidth
+              label="时间（可选）"
+              value={time}
+              clearable
+              onChange={setTime}
+              sx={{ flex: 1 }}
+            />
+          </Stack>
 
           {/* 第四行：交易对方与备注（选填） */}
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
