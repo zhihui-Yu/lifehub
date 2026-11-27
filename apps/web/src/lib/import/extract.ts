@@ -285,12 +285,29 @@ export async function readPdfText(
     throw err;
   }
   const pages: string[] = [];
+  const pdfContext: PdfStatementContext = {};
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
     const content = await page.getTextContent();
-    pages.push(itemsToText(content.items));
+    pages.push(itemsToText(content.items, pdfContext));
   }
   return pages.join('\n');
+}
+
+/** 跨页继承的 PDF 对账单上下文（如信用卡对账单首页的账单年月与当前分段）。 */
+interface PdfStatementContext {
+  /** 是否已识别为招商银行信用卡对账单。 */
+  isCmbCreditCard?: boolean;
+  /** 账单参考年份（四位）。 */
+  statementYear?: number;
+  /** 账单参考月份（1~12）。 */
+  statementMonth?: number;
+  /** 是否已从精确「账单日」字段提取年月。 */
+  hasExactStatementDate?: boolean;
+  /** 当前跨页延续的交易分段（如 还款 / 消费 / 分期）。 */
+  currentSection?: string;
+  /** 当前是否处于外币子账户区块。 */
+  inForeignCurrencySection?: boolean;
 }
 
 /** PDF 表头与页脚常见中英文词条（在锚点分桶模式下予以剔除）。 */
@@ -372,7 +389,7 @@ function isHeaderOrFooterItem(str: string, y: number, maxAnchorY: number, minAnc
  * @param items pdfjs 文本层片段
  * @returns 按行拼接的文本
  */
-function itemsToText(items: unknown[]): string {
+function itemsToText(items: unknown[], context: PdfStatementContext = {}): string {
   const rawItems = items.filter((item): item is { str: string; transform: number[] } => {
     const candidate = item as { str?: unknown; transform?: unknown };
     return (
@@ -865,6 +882,227 @@ function itemsToText(items: unknown[]): string {
 
       if (bocLines.length > 0) {
         return bocLines.join('\n');
+      }
+    }
+
+    // 招商银行信用卡对账单坐标锚点分桶：
+    // 表头含「招商银行信用卡对账单 / CMB Credit Card Statement」及「账单日 YYYY年MM月DD日」，
+    // 明细列为「交易日(X≈45, 还款行可空) | 记账日(X≈94, MM/DD) | 交易摘要(X∈[132,350)) | 人民币金额(X∈[350,455)) | 卡号末四位(X∈[450,520)) | 交易地金额」
+    for (const item of positioned) {
+      if (/招商银行信用卡|CMB\s+Credit\s+Card\s+Statement/i.test(item.str)) {
+        context.isCmbCreditCard = true;
+        const ymMatch =
+          /(\d{4})\s*年\s*(\d{1,2})\s*月/.exec(item.str) ??
+          /\((\d{4})\.(\d{1,2})\)/.exec(item.str);
+        if (ymMatch && !context.hasExactStatementDate) {
+          context.statementYear = Number.parseInt(ymMatch[1] ?? '', 10);
+          context.statementMonth = Number.parseInt(ymMatch[2] ?? '', 10);
+        }
+      }
+    }
+    if (
+      !context.isCmbCreditCard &&
+      positioned.some((it) => it.str.includes('本期账务明细')) &&
+      positioned.some((it) => it.str === '人民币金额') &&
+      positioned.some((it) => it.str === '卡号末四位')
+    ) {
+      context.isCmbCreditCard = true;
+    }
+
+    if (context.isCmbCreditCard) {
+      const billDateLabel = positioned.find((it) => it.str === '账单日');
+      if (billDateLabel) {
+        const exactDateItem = positioned.find(
+          (it) =>
+            it.x < 260 &&
+            Math.abs(it.y - billDateLabel.y) <= 25 &&
+            /^\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日$/.test(it.str),
+        );
+        const exactMatch = exactDateItem
+          ? /^(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日$/.exec(exactDateItem.str)
+          : null;
+        if (exactMatch) {
+          context.statementYear = Number.parseInt(exactMatch[1] ?? '', 10);
+          context.statementMonth = Number.parseInt(exactMatch[2] ?? '', 10);
+          context.hasExactStatementDate = true;
+        }
+      }
+
+      if (context.statementYear && context.statementMonth) {
+        const tableHeaderItems = positioned.filter(
+          (it) =>
+            it.str === '记账日' ||
+            it.str === '交易日' ||
+            it.str === '人民币金额' ||
+            it.str.startsWith('本期账务明细'),
+        );
+        const tableTopY =
+          tableHeaderItems.length > 0 ? Math.min(...tableHeaderItems.map((it) => it.y)) - 2 : Infinity;
+
+        const summaryFooterItems = positioned.filter((it) => it.str.includes('本期应还金额'));
+        const tableBottomY =
+          summaryFooterItems.length > 0
+            ? Math.max(...summaryFooterItems.map((it) => it.y)) + 4
+            : -Infinity;
+
+        const rmbSectionItem = positioned.find((it) => /^人民币账户(?:\s|$)/.test(it.str));
+        const foreignSectionItem = positioned.find((it) =>
+          /^(?:美元|欧元|港币|日元|英镑|外币)账户(?:\s|$)/.test(it.str),
+        );
+        if (rmbSectionItem && !foreignSectionItem) {
+          context.inForeignCurrencySection = false;
+        }
+
+        const isCmbRmbAmount = (s: string): boolean => {
+          const compact = s.replace(/\s+/g, '');
+          return (
+            /^[-+]?[¥￥]?[\d,]+\.\d{2}$/.test(compact) ||
+            /^[¥￥][-+]?[\d,]+\.\d{2}$/.test(compact)
+          );
+        };
+
+        const cmbRawAnchors = positioned
+          .filter((item) => {
+            if (item.y >= tableTopY || item.y <= tableBottomY) {
+              return false;
+            }
+            if (foreignSectionItem && item.y <= foreignSectionItem.y + 2) {
+              if (!rmbSectionItem || rmbSectionItem.y > foreignSectionItem.y) {
+                return false;
+              }
+            } else if (context.inForeignCurrencySection && !rmbSectionItem) {
+              return false;
+            }
+            return (
+              /^\d{2}\/\d{2}$/.test(item.str) &&
+              item.x >= 78 &&
+              item.x < 132 &&
+              positioned.some(
+                (amt) =>
+                  amt.x >= 350 &&
+                  amt.x < 455 &&
+                  Math.abs(amt.y - item.y) <= 4 &&
+                  isCmbRmbAmount(amt.str),
+              )
+            );
+          })
+          .sort((a, b) => b.y - a.y);
+
+        const cmbAnchors: { y: number; x: number; str: string }[] = [];
+        for (const cand of cmbRawAnchors) {
+          if (!cmbAnchors.some((existing) => Math.abs(existing.y - cand.y) <= 3)) {
+            cmbAnchors.push(cand);
+          }
+        }
+
+        const sectionMarkers = positioned
+          .filter(
+            (it) =>
+              it.y < tableTopY &&
+              it.y > tableBottomY &&
+              it.x >= 30 &&
+              it.x < 95 &&
+              /^(还款|消费|分期|退款|退货|费用|利息|账务调整|其他)$/.test(it.str),
+          )
+          .sort((a, b) => b.y - a.y);
+
+        if (cmbAnchors.length > 0) {
+          const maxCmbY = Math.max(...cmbAnchors.map((a) => a.y));
+          const minCmbY = Math.min(...cmbAnchors.map((a) => a.y));
+          const cmbBuckets = cmbAnchors.map((anchor) => ({
+            anchor,
+            items: [] as { y: number; x: number; str: string }[],
+          }));
+
+          for (const item of positioned) {
+            if (item.y >= tableTopY || item.y <= tableBottomY) {
+              continue;
+            }
+            if (item.y > maxCmbY + 6 || item.y < minCmbY - 12) {
+              continue;
+            }
+            if (sectionMarkers.includes(item)) {
+              continue;
+            }
+            if (isHeaderOrFooterItem(item.str, item.y, maxCmbY, minCmbY)) {
+              continue;
+            }
+            let bestBucket: (typeof cmbBuckets)[number] | undefined;
+            let bestDist = Infinity;
+            for (const bucket of cmbBuckets) {
+              const dy = bucket.anchor.y - item.y;
+              if (dy >= -3 && dy <= 10 && Math.abs(dy) < bestDist) {
+                bestDist = Math.abs(dy);
+                bestBucket = bucket;
+              }
+            }
+            if (bestBucket) {
+              bestBucket.items.push(item);
+            }
+          }
+
+          const cmbLines: string[] = [
+            `招商银行信用卡对账单 ${context.statementYear}年${String(context.statementMonth).padStart(2, '0')}月`,
+            `账单日 ${context.statementYear}年${String(context.statementMonth).padStart(2, '0')}月01日`,
+          ];
+          let markerIdx = 0;
+          let emittedSection = '';
+          if (context.currentSection) {
+            cmbLines.push(context.currentSection);
+            emittedSection = context.currentSection;
+          }
+
+          for (const bucket of cmbBuckets) {
+            while (
+              markerIdx < sectionMarkers.length &&
+              (sectionMarkers[markerIdx]?.y ?? -Infinity) >= bucket.anchor.y - 2
+            ) {
+              context.currentSection = sectionMarkers[markerIdx]?.str ?? context.currentSection;
+              markerIdx += 1;
+            }
+            if (context.currentSection && context.currentSection !== emittedSection) {
+              cmbLines.push(context.currentSection);
+              emittedSection = context.currentSection;
+            }
+
+            const sorted = sortBucketItems(bucket.items);
+            const transDate = sorted.find(
+              (it) => it.x >= 30 && it.x < 78 && /^\d{2}\/\d{2}$/.test(it.str),
+            )?.str;
+            const postDate = bucket.anchor.str;
+            const desc = sorted
+              .filter((it) => it.x >= 132 && it.x < 350)
+              .map((it) => it.str.trim())
+              .join('');
+            const rmbAmount = sorted
+              .filter((it) => it.x >= 350 && it.x < 455 && isCmbRmbAmount(it.str))
+              .map((it) => it.str.replace(/[¥￥\s]/g, ''))
+              .join('');
+            const cardTail = sorted.find(
+              (it) => it.x >= 450 && it.x < 520 && /^\d{4}$/.test(it.str),
+            )?.str;
+
+            if (postDate && desc && /^[-+]?[\d,]+\.\d{2}$/.test(rmbAmount)) {
+              const prefix = transDate ? `${transDate} ${postDate}` : postDate;
+              const tail = cardTail ? ` ${cardTail}` : '';
+              cmbLines.push(`${prefix} ${desc} ${rmbAmount}${tail}`);
+            }
+          }
+
+          while (markerIdx < sectionMarkers.length) {
+            context.currentSection = sectionMarkers[markerIdx]?.str ?? context.currentSection;
+            markerIdx += 1;
+          }
+          if (foreignSectionItem && (!rmbSectionItem || foreignSectionItem.y < rmbSectionItem.y)) {
+            context.inForeignCurrencySection = true;
+          }
+
+          if (cmbLines.length > 2) {
+            return cmbLines.join('\n');
+          }
+        } else if (foreignSectionItem && (!rmbSectionItem || foreignSectionItem.y < rmbSectionItem.y)) {
+          context.inForeignCurrencySection = true;
+        }
       }
     }
   }
