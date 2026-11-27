@@ -349,6 +349,9 @@ export function CloudStoragePanel() {
       if (remoteCheck.correctedEndpoint) {
         updateConfig({ endpoint: remoteCheck.correctedEndpoint });
       }
+      if (remoteCheck.remoteRecord) {
+        setLastRecord(remoteCheck.remoteRecord);
+      }
       setBanner({
         severity: remoteCheck.ok ? 'success' : 'error',
         text: remoteCheck.message,
@@ -446,6 +449,10 @@ export function CloudStoragePanel() {
             text: `已使用登录密码压缩加密并将 ${syncRes.record.billCount} 条账单及全量生活数据上传至「${syncRes.record.providerName}」${mergeHint}（远程地址：${syncRes.remoteUrl}${revLabel}${refreshedSizeKb}）`,
           });
         } catch (remoteErr) {
+          const latestMeta = loadLatestCloudSyncRecord();
+          if (latestMeta) {
+            setLastRecord(latestMeta);
+          }
           setBanner({
             severity: 'error',
             text:
@@ -504,6 +511,10 @@ export function CloudStoragePanel() {
         text: `已凭登录密码从「${restored.record.providerName}」成功解密并合并恢复 ${mergedResult.merged.bills.length} 条账单记录（含分类 ${mergedResult.merged.categories.length} 项、课表 ${mergedResult.merged.scheduleSlots.length} 项、习惯 ${mergedResult.merged.habits.length} 项、树洞 ${mergedResult.merged.diaryEntries.length} 条）`,
       });
     } catch (err) {
+      const latestMeta = loadLatestCloudSyncRecord();
+      if (latestMeta) {
+        setLastRecord(latestMeta);
+      }
       setBanner({
         severity: 'error',
         text: err instanceof Error ? err.message : '从云端恢复账单失败',

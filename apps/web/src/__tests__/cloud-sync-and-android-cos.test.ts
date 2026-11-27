@@ -531,4 +531,51 @@ describe('Emoji UTF-16 代理对无损压缩加密与历史受损快照自动自
     expect(healed.bills[0]?.counterparty).toBe('历史账单');
     expect(healed.habits.map((h) => h.icon)).toEqual(['💧', '📚']);
   });
+
+  it('同类边界防护：WebDAV 含非 ASCII 账号密码不抛 btoa 异常，且 localStorage 超配额时自动切换内存兜底绝不上传旧快照', async () => {
+    const webdavSigned = await buildSignedCloudHttpRequest(
+      {
+        provider: 'jianguoyun-webdav',
+        endpoint: 'https://dav.jianguoyun.com/dav/LifeHubBackup/',
+        bucket: '',
+        accessKey: '测试账号@example.com',
+        secretKey: '密码测试123',
+        encryptUpload: true,
+      },
+      'PUT',
+    );
+    expect(webdavSigned.headers.Authorization).toMatch(/^Basic [A-Za-z0-9+/=]+$/);
+
+    // 模拟浏览器 localStorage 已存有一份旧快照，随后新快照写入触发 QuotaExceededError
+    const cosConfig: CloudStorageConfig = {
+      provider: 'tencent-cos',
+      endpoint: 'https://example-bucket-1250000000.cos.ap-guangzhou.myqcloud.com',
+      bucket: '',
+      accessKey: '',
+      secretKey: '',
+      encryptUpload: true,
+    };
+    uploadBillsToCloud(cosConfig, [makeBill({ id: 'old-bill', counterparty: '旧账单' })], 'QuotaPass1');
+
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation((key: string) => {
+        if (key === CLOUD_SNAPSHOT_STORAGE_KEY) {
+          throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+        }
+      });
+
+    uploadBillsToCloud(
+      cosConfig,
+      [
+        makeBill({ id: 'new-bill-1', counterparty: '超大容量新账单1' }),
+        makeBill({ id: 'new-bill-2', counterparty: '超大容量新账单2' }),
+      ],
+      'QuotaPass1',
+    );
+
+    const restored = restoreBillsFromCloud(cosConfig, 'QuotaPass1');
+    expect(restored.bills.map((b) => b.id)).toEqual(['new-bill-1', 'new-bill-2']);
+    setItemSpy.mockRestore();
+  });
 });

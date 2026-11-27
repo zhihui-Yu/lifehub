@@ -228,6 +228,59 @@ export const CLOUD_CONFIG_STORAGE_KEY = 'lifehub.cloudStorage.config';
 /** 云端同步快照在 localStorage 中的持久化键名。 */
 export const CLOUD_SNAPSHOT_STORAGE_KEY = 'lifehub.cloudStorage.latestSnapshot';
 
+/** 当超大备份超出浏览器 5MB localStorage 配额时的内存级兜底缓存（防止静默回退读取旧快照）。 */
+let memoryOverflowSnapshotRaw: string | null = null;
+
+/**
+ * 写入最新云快照缓存（优先持久化至 localStorage；超配额时清理旧缓存并转存内存兜底，绝不残留过期旧快照）。
+ */
+function writeSnapshotCache(serialized: string): void {
+  memoryOverflowSnapshotRaw = serialized;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(CLOUD_SNAPSHOT_STORAGE_KEY, serialized);
+      memoryOverflowSnapshotRaw = null;
+    }
+  } catch {
+    try {
+      window.localStorage?.removeItem(CLOUD_SNAPSHOT_STORAGE_KEY);
+    } catch {
+      // 忽略清理异常
+    }
+  }
+}
+
+/**
+ * 读取最新云快照缓存文本。
+ */
+function readSnapshotCache(): string | null {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const fromStorage = window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY);
+      if (fromStorage) {
+        return fromStorage;
+      }
+    }
+  } catch {
+    // 忽略读取异常
+  }
+  return memoryOverflowSnapshotRaw;
+}
+
+/**
+ * 将任意 UTF-8 字符串安全编码为标准 Base64（避免直接调用 btoa 在含非 ASCII 字符时抛 InvalidCharacterError）。
+ */
+function encodeUtf8ToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i] ?? 0);
+  }
+  return typeof btoa === 'function'
+    ? btoa(binary)
+    : Buffer.from(binary, 'binary').toString('base64');
+}
+
 /** 默认阿里云 OSS 预设配置（直接包含存储桶访问域名）。 */
 const DEFAULT_PROVIDER_PRESET: CloudProviderPreset = {
   id: 'aliyun-oss',
@@ -1299,14 +1352,7 @@ export function uploadBillsToCloud(
 
   const serializedSnapshot = JSON.stringify(snapshot);
   meta.sizeBytes = new TextEncoder().encode(serializedSnapshot).length;
-
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(CLOUD_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
-    }
-  } catch {
-    // 忽略存储配额限制
-  }
+  writeSnapshotCache(JSON.stringify(snapshot));
 
   return snapshot.meta;
 }
@@ -1316,10 +1362,7 @@ export function uploadBillsToCloud(
  */
 export function loadLatestCloudSyncRecord(): CloudSyncRecord | null {
   try {
-    if (typeof window === 'undefined' || !window.localStorage) {
-      return null;
-    }
-    const raw = window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY);
+    const raw = readSnapshotCache();
     if (!raw) {
       return null;
     }
@@ -1340,10 +1383,7 @@ export function decryptCloudSourceJson(
   rawJson: string;
   record: CloudSyncRecord;
 } {
-  if (typeof window === 'undefined' || !window.localStorage) {
-    throw new LifeHubError('LIFEHUB_E_VALIDATION', '当前环境不支持读取云端备份快照');
-  }
-  const raw = window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY);
+  const raw = readSnapshotCache();
   if (!raw) {
     throw new LifeHubError(
       'LIFEHUB_E_VALIDATION',
@@ -1392,10 +1432,7 @@ export function restoreBillsFromCloud(
   tombstones: DeletedEntityTombstone[];
   extraModules: Required<CloudBackupExtraModules>;
 } {
-  if (typeof window === 'undefined' || !window.localStorage) {
-    throw new LifeHubError('LIFEHUB_E_VALIDATION', '当前环境不支持读取云端备份快照');
-  }
-  const raw = window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY);
+  const raw = readSnapshotCache();
   if (!raw) {
     throw new LifeHubError(
       'LIFEHUB_E_VALIDATION',
@@ -1720,12 +1757,9 @@ export async function buildSignedCloudHttpRequest(
 
   const { effectiveProvider, objectUrl, host, bucketName, objectPath, webdavDirUrl } = resolved;
 
-  // WebDAV Basic Auth
+  // WebDAV Basic Auth（UTF-8 安全 Base64，兼容含非 ASCII 字符的账号或密码）
   if (effectiveProvider === 'jianguoyun-webdav') {
-    const authB64 =
-      typeof btoa === 'function'
-        ? btoa(`${accessKey}:${secretKey}`)
-        : Buffer.from(`${accessKey}:${secretKey}`, 'utf8').toString('base64');
+    const authB64 = encodeUtf8ToBase64(`${accessKey}:${secretKey}`);
     const headers: Record<string, string> = {
       Authorization: `Basic ${authB64}`,
     };
@@ -2066,6 +2100,7 @@ export async function probeRemoteCloudConnection(config: CloudStorageConfig): Pr
   ok: boolean;
   message: string;
   correctedEndpoint?: string;
+  remoteRecord?: CloudSyncRecord;
 }> {
   const localCheck = testCloudConnection(config);
   if (!localCheck.ok) {
@@ -2086,6 +2121,7 @@ export async function probeRemoteCloudConnection(config: CloudStorageConfig): Pr
       return {
         ok: true,
         message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} · 云端已有备份 v${rev}，含 ${remote.snapshot.meta.billCount} 条账单）`,
+        remoteRecord: remote.snapshot.meta,
         ...(remote.correctedEndpoint ? { correctedEndpoint: remote.correctedEndpoint } : {}),
       };
     }
@@ -2120,10 +2156,7 @@ export async function pushSnapshotToRemoteCloud(
     );
   }
 
-  const rawSnapshot =
-    typeof window !== 'undefined' && window.localStorage
-      ? window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY)
-      : null;
+  const rawSnapshot = readSnapshotCache();
   if (!rawSnapshot) {
     throw new LifeHubError('LIFEHUB_E_VALIDATION', '本地尚无待上传的加密备份快照');
   }
@@ -2249,20 +2282,31 @@ export async function syncUploadWithRemoteMerge(
     const remoteFp = remoteSnap.meta.passwordFingerprint;
 
     if (remoteFp && remoteFp !== currentFp && !options?.allowPasswordChange) {
+      if (remoteStatus.rawBody) {
+        writeSnapshotCache(remoteStatus.rawBody);
+      }
       throw new LifeHubError(
         'LIFEHUB_E_VALIDATION',
-        '云端已有备份且加密密码与当前输入不一致！为防止覆盖另一端数据，请输入正确的云端备份密码以合并数据，或勾选「允许使用新密码覆盖云端备份」。',
+        '云端已有备份且加密密码与当前输入不一致！为防止覆盖另一端数据，请输入正确的云端备份密码以合并数据，或勾选「允许用新密码覆盖云端备份」。',
       );
     }
 
     // 密码一致（或未记录指纹但可解密）时，强制解密远端快照并与本地增量合并
     if (!remoteFp || remoteFp === currentFp) {
-      const { dataset: remoteDataset } = decryptSnapshotToDataset(remoteSnap, normalizedSecret);
-      const mergeRes = mergeCloudDatasets(finalDataset, remoteDataset, localRevision, remoteRev);
-      finalDataset = mergeRes.merged;
-      purged = mergeRes.purged;
-      mergedFromRemote = true;
-      nextRevision = mergeRes.nextRevision;
+      try {
+        const { dataset: remoteDataset } = decryptSnapshotToDataset(remoteSnap, normalizedSecret);
+        const mergeRes = mergeCloudDatasets(finalDataset, remoteDataset, localRevision, remoteRev);
+        finalDataset = mergeRes.merged;
+        purged = mergeRes.purged;
+        mergedFromRemote = true;
+        nextRevision = mergeRes.nextRevision;
+      } catch (err) {
+        if (!remoteFp && options?.allowPasswordChange) {
+          nextRevision = Math.max(localRevision, remoteRev) + 1;
+        } else {
+          throw err;
+        }
+      }
     } else {
       // 用户显式勾选 allowPasswordChange 更换新密码覆盖：仍保持版本号单调递增
       nextRevision = Math.max(localRevision, remoteRev) + 1;
@@ -2316,9 +2360,7 @@ export async function pullSnapshotFromRemoteCloud(config: CloudStorageConfig): P
 
   const remote = await fetchRemoteSnapshotStatus(config);
   if (remote.exists && remote.rawBody) {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      window.localStorage.setItem(CLOUD_SNAPSHOT_STORAGE_KEY, remote.rawBody);
-    }
+    writeSnapshotCache(remote.rawBody);
   } else if (!remote.exists) {
     throw new LifeHubError(
       'LIFEHUB_E_STORAGE',
