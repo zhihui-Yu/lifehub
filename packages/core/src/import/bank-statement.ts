@@ -22,8 +22,8 @@ interface PendingRecord {
   time: string;
   /** 摘要（如 快捷支付）。 */
   summary: string;
-  /** 收 / 支原始标识。 */
-  sign: '支' | '收';
+  /** 收 / 支 / 退原始标识。 */
+  sign: '支' | '收' | '退';
   /** 带符号的金额文本（如 '-6,000.00'）。 */
   amount: string;
   /** 交易用途 / 对方等后续碎片的原始行。 */
@@ -51,6 +51,38 @@ const CCB_MAIN_LINE =
 /** 交易主行（中国银行等）：'YYYY-MM-DD HH:MM:SS 币别 带符号金额 余额 交易名称 [网点名称/附言/对方账户名]'。 */
 const BOC_MAIN_LINE =
   /^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}:\d{2})\s+\S+\s+([-+]?[\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(\S+)(?:\s+(.*))?$/;
+
+/**
+ * 交易主行（招商银行信用卡对账单）：
+ * '[交易日(MM/DD)] 记账日(MM/DD) 交易摘要 人民币金额 [卡号末四位] [交易地金额]'。
+ * 说明：还款行的交易日可能为空，仅含记账日；正数金额为信用卡消费支出，负数金额为还款或退款。
+ */
+const CMB_CREDIT_CARD_MAIN_LINE =
+  /^(?:(\d{2}\/\d{2})\s+)?(\d{2}\/\d{2})\s+(.+?)\s+([-+]?[¥￥]?[\d,]+\.\d{2}|[¥￥][-+]?[\d,]+\.\d{2})(?:\s+(\d{4}))?(?:\s+[-+]?[\d,]+\.\d{2}(?:\s*\([A-Za-z]+\))?)?$/;
+
+/** 招商银行信用卡账单分段标题行。 */
+const CMB_CREDIT_CARD_SECTION_LINE = /^(还款|消费|分期|退款|退货|费用|利息|账务调整|其他)$/;
+
+/**
+ * 根据账单参考年月将信用卡的 'MM/DD' 日期补全为 'YYYY-MM-DD'。
+ *
+ * 说明：若交易月份大于账单参考月份（例如 2026年01月账单中出现 12/25 的交易），自动归入上一年（2025-12-25）。
+ *
+ * @param mmdd 'MM/DD' 格式的月日文本
+ * @param refYear 账单参考年份（四位）
+ * @param refMonth 账单参考月份（1~12）
+ * @returns 'YYYY-MM-DD' 日期文本；格式非法时返回空串
+ */
+function resolveCreditCardMmDd(mmdd: string, refYear: number, refMonth: number): string {
+  const parts = mmdd.split('/');
+  const mm = Number.parseInt(parts[0] ?? '', 10);
+  const dd = Number.parseInt(parts[1] ?? '', 10);
+  if (!Number.isFinite(mm) || !Number.isFinite(dd) || mm < 1 || mm > 12 || dd < 1 || dd > 31) {
+    return '';
+  }
+  const year = mm > refMonth ? refYear - 1 : refYear;
+  return `${String(year).padStart(4, '0')}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+}
 
 /** 银行 PDF 文本里的噪声行（表头英文、页脚、说明等），应从「交易用途」里剔除。 */
 const NOISE_PATTERNS: readonly RegExp[] = [
@@ -133,16 +165,25 @@ export function parseBankStatementText(lines: readonly string[]): RawTable {
   const headers = ['交易时间', '记账日期', '摘要', '收支方向', '交易金额', '交易用途'];
   const rows: string[][] = [];
   let pending: PendingRecord | null = null;
+  let isCmbCreditCard = false;
+  let cmbRefYear: number | null = null;
+  let cmbRefMonth: number | null = null;
+  let cmbHasExactBillDate = false;
+  let cmbSawBillDateLabel = false;
+  let cmbSection = '';
+  let cmbForeignAccount = false;
 
   const flush = (): void => {
     if (pending && pending.realized) {
       const occurredAt = pending.time === '' ? pending.date : `${pending.date} ${pending.time}`;
       const sep = pending.joinSeparator ?? ' ';
+      const directionLabel =
+        pending.sign === '支' ? '支出' : pending.sign === '退' ? '退款' : '收入';
       rows.push([
         occurredAt,
         pending.date,
         pending.summary,
-        pending.sign === '支' ? '支出' : '收入',
+        directionLabel,
         toAbsoluteAmount(pending.amount),
         pending.usageLines.join(sep).trim(),
       ]);
@@ -152,6 +193,96 @@ export function parseBankStatementText(lines: readonly string[]): RawTable {
 
   for (const rawLine of lines) {
     let line = rawLine.trim();
+    if (/招商银行信用卡|CMB\s+Credit\s+Card\s+Statement/i.test(line)) {
+      isCmbCreditCard = true;
+      const ymMatch =
+        /(\d{4})\s*年\s*(\d{1,2})\s*月/.exec(line) ?? /\((\d{4})\.(\d{1,2})\)/.exec(line);
+      if (ymMatch && !cmbHasExactBillDate) {
+        cmbRefYear = Number.parseInt(ymMatch[1] ?? '', 10);
+        cmbRefMonth = Number.parseInt(ymMatch[2] ?? '', 10);
+      }
+      continue;
+    }
+    if (isCmbCreditCard) {
+      const inlineBillDate = /账单日[:：\s]*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/.exec(line);
+      if (inlineBillDate) {
+        cmbRefYear = Number.parseInt(inlineBillDate[1] ?? '', 10);
+        cmbRefMonth = Number.parseInt(inlineBillDate[2] ?? '', 10);
+        cmbHasExactBillDate = true;
+        cmbSawBillDateLabel = false;
+        continue;
+      }
+      if (/^账单日(?:\s|$)/.test(line)) {
+        cmbSawBillDateLabel = true;
+        continue;
+      }
+      if (cmbSawBillDateLabel && !cmbHasExactBillDate) {
+        const nextLineDate = /(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日/.exec(line);
+        if (nextLineDate) {
+          cmbRefYear = Number.parseInt(nextLineDate[1] ?? '', 10);
+          cmbRefMonth = Number.parseInt(nextLineDate[2] ?? '', 10);
+          cmbHasExactBillDate = true;
+          cmbSawBillDateLabel = false;
+          continue;
+        }
+      }
+      if (/^人民币账户(?:\s|$)/.test(line)) {
+        cmbForeignAccount = false;
+        continue;
+      }
+      if (/^(?:美元|欧元|港币|日元|英镑|外币)账户(?:\s|$)/.test(line)) {
+        cmbForeignAccount = true;
+        continue;
+      }
+      if (CMB_CREDIT_CARD_SECTION_LINE.test(line)) {
+        flush();
+        cmbSection = line;
+        continue;
+      }
+      if (!cmbForeignAccount && cmbRefYear !== null && cmbRefMonth !== null) {
+        const cmbMatch = CMB_CREDIT_CARD_MAIN_LINE.exec(line);
+        if (cmbMatch) {
+          flush();
+          const postDate = resolveCreditCardMmDd(cmbMatch[2] ?? '', cmbRefYear, cmbRefMonth);
+          const transDate = cmbMatch[1]
+            ? resolveCreditCardMmDd(cmbMatch[1], cmbRefYear, cmbRefMonth)
+            : postDate;
+          const desc = (cmbMatch[3] ?? '').trim();
+          const rawAmount = (cmbMatch[4] ?? '0').replace(/[¥￥\s]/g, '');
+          if (postDate !== '' && transDate !== '' && desc !== '') {
+            const isNegative = rawAmount.startsWith('-');
+            let directionLabel: '支出' | '收入' | '退款';
+            let summary: string;
+            if (isNegative) {
+              const isRepayment =
+                cmbSection === '还款' || /还款|缴款|自动扣款|预约扣款|约定扣款/.test(desc);
+              directionLabel = isRepayment ? '收入' : '退款';
+              summary = isRepayment ? '信用卡还款' : '退款';
+            } else {
+              directionLabel = '支出';
+              if (cmbSection === '分期' || /分期/.test(desc)) {
+                summary = '分期';
+              } else if (cmbSection === '利息' || /利息/.test(desc)) {
+                summary = '利息';
+              } else if (cmbSection === '费用' || /年费|手续费|违约金/.test(desc)) {
+                summary = '费用';
+              } else {
+                summary = '消费';
+              }
+            }
+            rows.push([
+              transDate,
+              postDate,
+              summary,
+              directionLabel,
+              toAbsoluteAmount(rawAmount),
+              desc,
+            ]);
+            continue;
+          }
+        }
+      }
+    }
     const datePrefixed = DATE_PREFIXED_MAIN_LINE.exec(line);
     if (datePrefixed) {
       flush();

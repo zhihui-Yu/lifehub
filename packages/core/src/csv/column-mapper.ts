@@ -162,8 +162,10 @@ const SAMPLE_AMOUNT_PATTERN = /^[+-]?[¥￥$]?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.
 const SAMPLE_DIRECTION_VALUES: ReadonlySet<string> = new Set([
   '收入',
   '支出',
+  '退款',
   '收',
   '支',
+  '退',
   '/',
   '不计收支',
   '中性交易',

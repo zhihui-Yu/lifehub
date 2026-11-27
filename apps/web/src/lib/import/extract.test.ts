@@ -12,6 +12,20 @@ vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs', () => ({
   WorkerMessageHandler: {},
 }));
 
+const DEFAULT_MOCK_PDF_PAGES = [
+  [
+    { str: '2026-08-01', transform: [1, 0, 0, 1, 10, 800] },
+    { str: '11:03:18', transform: [1, 0, 0, 1, 60, 800] },
+    { str: '20260801', transform: [1, 0, 0, 1, 120, 800] },
+    { str: '快捷支付', transform: [1, 0, 0, 1, 180, 800] },
+    { str: '支', transform: [1, 0, 0, 1, 240, 800] },
+    { str: '-35.50', transform: [1, 0, 0, 1, 280, 800] },
+    { str: '******', transform: [1, 0, 0, 1, 340, 800] },
+  ],
+];
+
+let mockPdfPages = DEFAULT_MOCK_PDF_PAGES;
+
 /**
  * pdfjs 替身：仅验证 PDF 路由与文本拼行逻辑，不加载真实 worker。
  * 必须放在模块顶层（Vitest 要求 `vi.mock` 在文件作用域）。
@@ -21,18 +35,12 @@ vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   getDocument: () =>
     ({
       promise: Promise.resolve({
-        numPages: 1,
-        getPage: async () => ({
+        get numPages() {
+          return mockPdfPages.length;
+        },
+        getPage: async (pageNumber: number) => ({
           getTextContent: async () => ({
-            items: [
-              { str: '2026-08-01', transform: [1, 0, 0, 1, 10, 800] },
-              { str: '11:03:18', transform: [1, 0, 0, 1, 60, 800] },
-              { str: '20260801', transform: [1, 0, 0, 1, 120, 800] },
-              { str: '快捷支付', transform: [1, 0, 0, 1, 180, 800] },
-              { str: '支', transform: [1, 0, 0, 1, 240, 800] },
-              { str: '-35.50', transform: [1, 0, 0, 1, 280, 800] },
-              { str: '******', transform: [1, 0, 0, 1, 340, 800] },
-            ],
+            items: mockPdfPages[pageNumber - 1] ?? [],
           }),
         }),
       }),
@@ -96,11 +104,69 @@ describe('buildImportSource 路由', () => {
 
 describe('buildImportSource · PDF 路由（pdfjs 替身）', () => {
   it('PDF：抽出文本并按视觉行拼回主行，且挂载 globalThis.pdfjsWorker', async () => {
+    mockPdfPages = DEFAULT_MOCK_PDF_PAGES;
     const bytes = new Uint8Array([1, 2, 3]);
     const source = await buildImportSource(fakeFile('兴业银行.pdf'), bytes);
     expect(source.format).toBe('pdf');
     expect(source.text).toBe('2026-08-01 11:03:18 20260801 快捷支付 支 -35.50 ******');
     expect((globalThis as Record<string, unknown>).pdfjsWorker).toBeDefined();
+  });
+
+  it('招商银行信用卡 PDF：支持跨页继承账单年月与分段、无交易日还款行、跨行商户摘要无缝拼接及页尾汇总剔除', async () => {
+    mockPdfPages = [
+      [
+        { str: '招商银行信用卡对账单（个人消费卡账户 2026年08月）', transform: [1, 0, 0, 1, 95, 785] },
+        { str: 'CMB Credit Card Statement (2026.08)', transform: [1, 0, 0, 1, 185, 765] },
+        { str: '账单日', transform: [1, 0, 0, 1, 45, 616] },
+        { str: '2026年08月24日', transform: [1, 0, 0, 1, 144, 606] },
+        { str: '到期还款日', transform: [1, 0, 0, 1, 310, 616] },
+        { str: '2026年09月11日', transform: [1, 0, 0, 1, 410, 606] },
+        { str: '本期账务明细 Transaction Details', transform: [1, 0, 0, 1, 43, 424] },
+        { str: '人民币账户 RMB A/C', transform: [1, 0, 0, 1, 43, 405] },
+        { str: '交易日', transform: [1, 0, 0, 1, 43, 389] },
+        { str: '记账日', transform: [1, 0, 0, 1, 92, 389] },
+        { str: '交易摘要', transform: [1, 0, 0, 1, 140, 389] },
+        { str: '人民币金额', transform: [1, 0, 0, 1, 369, 389] },
+        { str: '卡号末四位', transform: [1, 0, 0, 1, 455, 389] },
+        { str: '交易地金额', transform: [1, 0, 0, 1, 542, 389] },
+        { str: '还款', transform: [1, 0, 0, 1, 43, 363] },
+        { str: '07/24', transform: [1, 0, 0, 1, 94, 346] },
+        { str: '手机银行还款', transform: [1, 0, 0, 1, 140, 346] },
+        { str: '-200.00', transform: [1, 0, 0, 1, 388, 346] },
+        { str: '1234', transform: [1, 0, 0, 1, 479, 346] },
+        { str: '-200.00', transform: [1, 0, 0, 1, 561, 346] },
+        { str: '消费', transform: [1, 0, 0, 1, 43, 330] },
+        { str: '08/16', transform: [1, 0, 0, 1, 45, 315] },
+        { str: '08/17', transform: [1, 0, 0, 1, 94, 315] },
+        { str: '财付通-示例网络科技有', transform: [1, 0, 0, 1, 140, 315] },
+        { str: '限公司', transform: [1, 0, 0, 1, 140, 307] },
+        { str: '158.00', transform: [1, 0, 0, 1, 387, 315] },
+        { str: '1234', transform: [1, 0, 0, 1, 479, 315] },
+        { str: '158.00(CN)', transform: [1, 0, 0, 1, 543, 315] },
+      ],
+      [
+        { str: '08/20', transform: [1, 0, 0, 1, 45, 740] },
+        { str: '08/21', transform: [1, 0, 0, 1, 94, 740] },
+        { str: '京东支付-示例超市', transform: [1, 0, 0, 1, 140, 740] },
+        { str: '42.00', transform: [1, 0, 0, 1, 395, 740] },
+        { str: '1234', transform: [1, 0, 0, 1, 479, 740] },
+        { str: '42.00(CN)', transform: [1, 0, 0, 1, 551, 740] },
+        { str: '本期应还金额 = 上期账单金额 - 上期还款金额 + 本期账单金额', transform: [1, 0, 0, 1, 43, 680] },
+        { str: '¥ 200.00 = ¥ 200.00 - ¥ 200.00 + ¥ 200.00', transform: [1, 0, 0, 1, 43, 660] },
+      ],
+    ];
+    try {
+      const bytes = new Uint8Array([1, 2, 3]);
+      const source = await buildImportSource(fakeFile('信用卡账单.pdf'), bytes);
+      expect(source.format).toBe('pdf');
+      expect(source.text).toContain('招商银行信用卡对账单 2026年08月');
+      expect(source.text).toContain('07/24 手机银行还款 -200.00 1234');
+      expect(source.text).toContain('08/16 08/17 财付通-示例网络科技有限公司 158.00 1234');
+      expect(source.text).toContain('08/20 08/21 京东支付-示例超市 42.00 1234');
+      expect(source.text).not.toContain('本期应还金额');
+    } finally {
+      mockPdfPages = DEFAULT_MOCK_PDF_PAGES;
+    }
   });
 });
 
