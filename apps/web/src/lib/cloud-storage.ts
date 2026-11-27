@@ -788,7 +788,58 @@ const BACKUP_JSON_DICT: readonly string[] = [
 ];
 
 /**
- * 对备份 JSON 文本执行同步无损「高频字典 + LZ77 滑动窗口」双级压缩。
+ * 判断 UTF-16 码元是否为高代理项（0xD800 ~ 0xDBFF）。
+ */
+function isHighSurrogateCode(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+/**
+ * 判断 UTF-16 码元是否为低代理项（0xDC00 ~ 0xDFFF）。
+ */
+function isLowSurrogateCode(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
+ * 清理字符串中因旧版代理对截断残留的孤立高低代理项，统一折叠为单个 U+FFFD 供下游字段修复。
+ */
+function cleanBrokenSurrogates(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (isHighSurrogateCode(code)) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (isLowSurrogateCode(next)) {
+        out += (text[i] ?? '') + (text[i + 1] ?? '');
+        i += 1;
+      } else if (next === 0xfffd) {
+        out += '\ufffd';
+        i += 1;
+      } else {
+        out += '\ufffd';
+      }
+      continue;
+    }
+    if (code === 0xfffd) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (isLowSurrogateCode(next)) {
+        i += 1;
+      }
+      out += '\ufffd';
+      continue;
+    }
+    if (isLowSurrogateCode(code)) {
+      out += '\ufffd';
+      continue;
+    }
+    out += text[i] ?? '';
+  }
+  return out;
+}
+
+/**
+ * 对备份 JSON 文本执行同步无损「高频字典 + LZ77 滑动窗口」双级压缩（严格保护 UTF-16 Emoji 代理对完整性）。
  */
 export function compressBackupJson(jsonText: string): string {
   let escaped = '';
@@ -815,10 +866,14 @@ export function compressBackupJson(jsonText: string): string {
   let i = 0;
   const len = tokenized.length;
   while (i < len) {
-    if (i >= 4 && i + 4 <= len) {
+    const curCode = tokenized.charCodeAt(i);
+    if (!isLowSurrogateCode(curCode) && i >= 4 && i + 4 <= len) {
       const seed = tokenized.slice(i, i + 4);
       const searchStart = Math.max(0, i - windowSize);
-      const prevIdx = tokenized.lastIndexOf(seed, i - 1);
+      let prevIdx = tokenized.lastIndexOf(seed, i - 1);
+      while (prevIdx >= searchStart && isLowSurrogateCode(tokenized.charCodeAt(prevIdx))) {
+        prevIdx = prevIdx > 0 ? tokenized.lastIndexOf(seed, prevIdx - 1) : -1;
+      }
       if (prevIdx >= searchStart && prevIdx < i) {
         let matchLen = 4;
         const maxPossible = Math.min(maxMatchLen, len - i);
@@ -828,17 +883,32 @@ export function compressBackupJson(jsonText: string): string {
         ) {
           matchLen += 1;
         }
-        const offset = i - prevIdx;
-        out +=
-          '\ue07f' +
-          String.fromCharCode(0xe100 + offset) +
-          String.fromCharCode(0xe100 + matchLen);
-        i += matchLen;
-        continue;
+        // 若匹配末端恰好截断在高代理项（如不同 Emoji 共享 0xD83D / 0xD83C），回退 1 个码元以保持代理对完整
+        if (isHighSurrogateCode(tokenized.charCodeAt(i + matchLen - 1))) {
+          matchLen -= 1;
+        }
+        if (matchLen >= 4) {
+          const offset = i - prevIdx;
+          out +=
+            '\ue07f' +
+            String.fromCharCode(0xe100 + offset) +
+            String.fromCharCode(0xe100 + matchLen);
+          i += matchLen;
+          continue;
+        }
       }
     }
-    out += tokenized[i];
-    i += 1;
+    if (
+      isHighSurrogateCode(curCode) &&
+      i + 1 < len &&
+      isLowSurrogateCode(tokenized.charCodeAt(i + 1))
+    ) {
+      out += (tokenized[i] ?? '') + (tokenized[i + 1] ?? '');
+      i += 2;
+    } else {
+      out += tokenized[i] ?? '';
+      i += 1;
+    }
   }
 
   return out;
@@ -927,14 +997,15 @@ function encodeEncryptedPayload(jsonText: string, secret: string, salt: string):
 }
 
 /**
- * 使用登录密码派生的密钥流将 Base64 密文解码还原为原始 JSON 字符串。
+ * 使用登录密码派生的密钥流将 Base64 密文解码还原为原始文本（兼容自愈旧版因 Emoji 代理对截断导致 authTag 偏移的历史快照）。
  */
 function decodeEncryptedPayload(
   cipherBase64: string,
   secret: string,
   salt: string,
   expectedAuthTag: string,
-): string {
+  expectedPasswordFingerprint?: string,
+): { plainText: string; salvagedLegacySurrogate: boolean } {
   let plainText: string;
   try {
     const binary =
@@ -957,10 +1028,32 @@ function decodeEncryptedPayload(
   }
 
   const actualTag = computePasswordAuthTag(secret, salt, plainText);
-  if (actualTag !== expectedAuthTag) {
-    throw new LifeHubError('LIFEHUB_E_VALIDATION', '登录密码错误，无法解密还原云端数据');
+  if (actualTag === expectedAuthTag) {
+    return { plainText, salvagedLegacySurrogate: false };
   }
-  return plainText;
+
+  // 自愈兼容：旧版压缩器在多个 Emoji 共享高代理项时可能截断代理对，导致加密前 TextEncoder 将孤立代理项转为 U+FFFD，
+  // 从而使解密后文本与加密前 authTag 产生差异。当密码指纹已严格匹配且载荷含 U+FFFD 时，交由上层 JSON 结构校验自愈恢复。
+  const currentFp = computePasswordFingerprint(secret);
+  const fingerprintVerified =
+    Boolean(expectedPasswordFingerprint) && expectedPasswordFingerprint === currentFp;
+  if (fingerprintVerified && plainText.includes('\ufffd')) {
+    return { plainText, salvagedLegacySurrogate: true };
+  }
+
+  throw new LifeHubError('LIFEHUB_E_VALIDATION', '登录密码错误，无法解密还原云端数据');
+}
+
+/**
+ * 根据习惯单位推断回退图标（用于修复旧版因代理对截断受损的单个图标字符）。
+ */
+function fallbackHabitIconForUnit(unit: string): string {
+  const u = (unit || '').trim().toLowerCase();
+  if (u === 'ml' || u === 'l' || u === '杯') return '💧';
+  if (u === 'km' || u === '米' || u === '步') return '🏃';
+  if (u === '页' || u === '章') return '📚';
+  if (u === '分钟' || u === '小时') return '🧘';
+  return '✨';
 }
 
 /**
@@ -979,48 +1072,81 @@ function decryptSnapshotToDataset(
   }
   const salt = typeof snapshot.salt === 'string' ? snapshot.salt : '';
   const expectedTag = typeof snapshot.authTag === 'string' ? snapshot.authTag : '';
-  const decodedPayload = decodeEncryptedPayload(
+  const { plainText: decodedPayload, salvagedLegacySurrogate } = decodeEncryptedPayload(
     snapshot.ciphertextBase64,
     normalizedSecret,
     salt,
     expectedTag,
+    snapshot.meta?.passwordFingerprint,
   );
-  const decompressedJson =
-    snapshot.compression === 'lh-lz1' ? decompressBackupJson(decodedPayload) : decodedPayload;
 
-  const parsed = JSON.parse(decompressedJson) as
+  let decompressedJson: string;
+  let parsed:
     | ({
+        format?: string;
         bills?: Bill[];
       } & CloudBackupExtraModules)
     | Bill[];
-  const isArray = Array.isArray(parsed);
-  const bills = isArray ? parsed : Array.isArray(parsed.bills) ? parsed.bills : [];
-  const categories = !isArray && Array.isArray(parsed.categories) ? [...parsed.categories] : [];
-  const scheduleSlots =
-    !isArray && Array.isArray(parsed.scheduleSlots)
-      ? [...parsed.scheduleSlots]
-      : !isArray && Array.isArray(parsed.scheduleEvents)
-        ? [...parsed.scheduleEvents]
-        : [];
-  const completionEvents =
-    !isArray && Array.isArray(parsed.completionEvents)
-      ? [...parsed.completionEvents]
-      : !isArray && Array.isArray(parsed.scheduleCompletions)
-        ? [...parsed.scheduleCompletions]
-        : [];
-  const habits = !isArray && Array.isArray(parsed.habits) ? [...parsed.habits] : [];
-  const habitCheckIns =
-    !isArray && Array.isArray(parsed.habitCheckIns)
-      ? [...parsed.habitCheckIns]
-      : !isArray && Array.isArray(parsed.habitCheckins)
-        ? [...parsed.habitCheckins]
-        : [];
-  const diaryEntries =
-    !isArray && Array.isArray(parsed.diaryEntries) ? [...parsed.diaryEntries] : [];
-  const tombstones =
-    !isArray && Array.isArray(parsed.tombstones)
-      ? normalizeCloudTombstones(parsed.tombstones)
+
+  try {
+    const rawDecompressed =
+      snapshot.compression === 'lh-lz1' ? decompressBackupJson(decodedPayload) : decodedPayload;
+    decompressedJson = salvagedLegacySurrogate
+      ? cleanBrokenSurrogates(rawDecompressed)
+      : rawDecompressed;
+    parsed = JSON.parse(decompressedJson) as
+      | ({
+          format?: string;
+          bills?: Bill[];
+        } & CloudBackupExtraModules)
+      | Bill[];
+    if (
+      salvagedLegacySurrogate &&
+      !Array.isArray(parsed) &&
+      (!parsed ||
+        typeof parsed !== 'object' ||
+        (parsed.format !== 'lifehub-cloud-backup-v1' && !Array.isArray(parsed.bills)))
+    ) {
+      throw new Error('Invalid backup structure');
+    }
+  } catch {
+    if (salvagedLegacySurrogate) {
+      throw new LifeHubError('LIFEHUB_E_VALIDATION', '登录密码错误，无法解密还原云端数据');
+    }
+    throw new LifeHubError('LIFEHUB_E_STORAGE', '云端加密备份内容损坏，无法解析 JSON 数据');
+  }
+
+  const parsedObj = Array.isArray(parsed) ? null : parsed;
+  const bills = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(parsedObj?.bills)
+      ? parsedObj.bills
       : [];
+  const categories = Array.isArray(parsedObj?.categories) ? [...parsedObj.categories] : [];
+  const scheduleSlots = Array.isArray(parsedObj?.scheduleSlots)
+    ? [...parsedObj.scheduleSlots]
+    : Array.isArray(parsedObj?.scheduleEvents)
+      ? [...parsedObj.scheduleEvents]
+      : [];
+  const completionEvents = Array.isArray(parsedObj?.completionEvents)
+    ? [...parsedObj.completionEvents]
+    : Array.isArray(parsedObj?.scheduleCompletions)
+      ? [...parsedObj.scheduleCompletions]
+      : [];
+  const habits = (Array.isArray(parsedObj?.habits) ? [...parsedObj.habits] : []).map((h) =>
+    salvagedLegacySurrogate && h.icon.includes('\ufffd')
+      ? { ...h, icon: fallbackHabitIconForUnit(h.unit) }
+      : h,
+  );
+  const habitCheckIns = Array.isArray(parsedObj?.habitCheckIns)
+    ? [...parsedObj.habitCheckIns]
+    : Array.isArray(parsedObj?.habitCheckins)
+      ? [...parsedObj.habitCheckins]
+      : [];
+  const diaryEntries = Array.isArray(parsedObj?.diaryEntries) ? [...parsedObj.diaryEntries] : [];
+  const tombstones = Array.isArray(parsedObj?.tombstones)
+    ? normalizeCloudTombstones(parsedObj.tombstones)
+    : [];
 
   return {
     rawJson: decompressedJson,
@@ -1139,7 +1265,8 @@ export function uploadBillsToCloud(
     ...(clonedTombstones.length > 0 ? { tombstones: clonedTombstones } : {}),
   });
 
-  const compressedPayload = compressBackupJson(compactSourceJson);
+  const rawCompressed = compressBackupJson(compactSourceJson);
+  const compressedPayload = new TextDecoder().decode(new TextEncoder().encode(rawCompressed));
   const salt = `lh-salt-${syncedAt}`;
   const ciphertextBase64 = encodeEncryptedPayload(compressedPayload, normalizedSecret, salt);
   const authTag = computePasswordAuthTag(normalizedSecret, salt, compressedPayload);
