@@ -7,13 +7,18 @@ import { makeBill } from '@/__tests__/test-utils/fixtures';
 import {
   buildSignedCloudHttpRequest,
   CLOUD_CONFIG_STORAGE_KEY,
+  CLOUD_SNAPSHOT_STORAGE_KEY,
+  compressBackupJson,
+  decompressBackupJson,
   loadCloudConfig,
   mergeCloudDatasets,
   probeRemoteCloudConnection,
   recordCloudTombstone,
   resolveCloudEndpointTarget,
+  restoreBillsFromCloud,
   syncUploadWithRemoteMerge,
   testCloudConnection,
+  uploadBillsToCloud,
   type CloudFullDataset,
   type CloudStorageConfig,
 } from '@/lib/cloud-storage';
@@ -299,5 +304,278 @@ describe('mergeCloudDatasets 多端系统分类 ID 自动对齐', () => {
     expect(res.merged.categories).toHaveLength(1);
     expect(res.merged.categories[0]?.id).toBe('cat-desktop-food');
     expect(res.merged.bills[0]?.categoryId).toBe('cat-desktop-food');
+  });
+});
+
+describe('Emoji UTF-16 代理对无损压缩加密与历史受损快照自动自愈回归测试', () => {
+  it('包含多个同高代理项 Emoji（如 💧/📚/💤 及 🏃/🌿）的习惯与树洞上传后可 100% 无损解密合并，绝不误报密码错误', async () => {
+    const store = new Map<string, string>();
+    const responseQueue = new Map<string, string>();
+    g.LifeHubAndroid = {
+      startCloudHttpRequest(reqId, targetUrl, method, _headersJson, bodyText) {
+        const objectUrl = targetUrl.split('?')[0] ?? targetUrl;
+        if (method === 'GET') {
+          const existing = store.get(objectUrl);
+          responseQueue.set(
+            reqId,
+            existing
+              ? JSON.stringify({ proxied: true, status: 200, body: existing })
+              : JSON.stringify({ proxied: true, status: 404, body: '<Error><Code>NoSuchKey</Code></Error>' }),
+          );
+        } else if (method === 'PUT') {
+          store.set(objectUrl, bodyText);
+          responseQueue.set(reqId, JSON.stringify({ proxied: true, status: 200, body: '' }));
+        }
+        queueMicrotask(() => {
+          window.dispatchEvent(
+            new CustomEvent('lifehub:android-http-done', { detail: { requestId: reqId } }),
+          );
+        });
+      },
+      takeCloudHttpResponse(reqId) {
+        const val = responseQueue.get(reqId) ?? '';
+        responseQueue.delete(reqId);
+        return val;
+      },
+    };
+
+    const cosConfig: CloudStorageConfig = {
+      provider: 'tencent-cos',
+      endpoint: 'https://example-bucket-1250000000.cos.ap-guangzhou.myqcloud.com',
+      bucket: '',
+      accessKey: 'AKID_EMOJI_TEST',
+      secretKey: 'SECRET_EMOJI_TEST',
+      encryptUpload: true,
+    };
+
+    const dataset1 = emptyDataset({
+      bills: [makeBill({ id: 'b-emoji-1', note: '早餐 ☕️ + 🍎' })],
+      habits: [
+        {
+          id: 'h-water',
+          name: '喝水',
+          unit: 'ml',
+          targetPerPeriod: 7,
+          trackingMode: 'quantity',
+          defaultIncrement: 250,
+          dailyTarget: 2000,
+          icon: '💧', // \uD83D\uDCA7
+          color: '#0284C7',
+          createdAt: '2026-11-20T00:00:00.000Z',
+          updatedAt: '2026-11-20T00:00:00.000Z',
+        },
+        {
+          id: 'h-read',
+          name: '阅读',
+          unit: '页',
+          targetPerPeriod: 7,
+          trackingMode: 'quantity',
+          defaultIncrement: 20,
+          dailyTarget: 1000, // 与上方同以 "000" 结尾 + 紧接 "icon":"\uD83D..."，精确复现代理对边界
+          icon: '📚', // \uD83D\uDCDA
+          color: '#4F46E5',
+          createdAt: '2026-11-20T00:00:00.000Z',
+          updatedAt: '2026-11-20T00:00:00.000Z',
+        },
+        {
+          id: 'h-run',
+          name: '跑步',
+          unit: 'km',
+          targetPerPeriod: 7,
+          trackingMode: 'quantity',
+          dailyTarget: 5,
+          icon: '🏃', // \uD83C\uDFC3
+          color: '#16A34A',
+          createdAt: '2026-11-20T00:00:00.000Z',
+          updatedAt: '2026-11-20T00:00:00.000Z',
+        },
+      ],
+      diaryEntries: [
+        {
+          id: 'd-1',
+          title: '晚间复盘',
+          body: '今天跑了 3.5km 🏃，心情 🌿 很放松',
+          mood: '🌿 平静', // \uD83C\uDF3F
+          tags: ['运动'],
+          isPinned: false,
+          localDate: '2026-11-23',
+          occurredAt: '2026-11-23T12:00:00.000Z',
+          createdAt: '2026-11-23T12:00:00.000Z',
+          updatedAt: '2026-11-23T12:00:00.000Z',
+        },
+      ],
+    });
+
+    // 验证压缩结果不含任何孤立代理项，经过 UTF-8 编解码 100% 恒等
+    const rawJson = JSON.stringify(dataset1);
+    const compressed = compressBackupJson(rawJson);
+    const utf8Roundtrip = new TextDecoder().decode(new TextEncoder().encode(compressed));
+    expect(utf8Roundtrip).toBe(compressed);
+    expect(decompressBackupJson(compressed)).toBe(rawJson);
+
+    // 第一次上传至远端
+    await syncUploadWithRemoteMerge(cosConfig, dataset1, 'MySamePass!123');
+
+    // 第二次从 App 端执行 Pull-Merge-Push 上传：解密远端快照并合并成功，绝不抛「登录密码错误」
+    const dataset2 = emptyDataset({
+      bills: [makeBill({ id: 'b-emoji-2', note: '晚餐 🍜' })],
+    });
+    const secondSync = await syncUploadWithRemoteMerge(cosConfig, dataset2, 'MySamePass!123');
+    expect(secondSync.mergedFromRemote).toBe(true);
+    expect(secondSync.mergedDataset.bills).toHaveLength(2);
+    expect(secondSync.mergedDataset.habits.map((h) => h.icon)).toEqual(['💧', '📚', '🏃']);
+    expect(secondSync.mergedDataset.diaryEntries[0]?.mood).toBe('🌿 平静');
+  });
+
+  it('当远端已存有旧版因代理对截断导致 authTag 偏移的历史快照时，凭正确同指纹密码可自动自愈恢复，错误密码仍严格拒绝', () => {
+    const cosConfig: CloudStorageConfig = {
+      provider: 'tencent-cos',
+      endpoint: 'https://example-bucket-1250000000.cos.ap-guangzhou.myqcloud.com',
+      bucket: '',
+      accessKey: '',
+      secretKey: '',
+      encryptUpload: true,
+    };
+
+    // 先生成一份正常快照作为模板
+    uploadBillsToCloud(
+      cosConfig,
+      [makeBill({ id: 'b-legacy-1', counterparty: '历史账单' })],
+      'CorrectPass888',
+      {
+        habits: [
+          {
+            id: 'h-w',
+            name: '喝水',
+            unit: 'ml',
+            targetPerPeriod: 7,
+            dailyTarget: 2000,
+            icon: '💧',
+            color: '#0284C7',
+            createdAt: '2026-11-20T00:00:00.000Z',
+            updatedAt: '2026-11-20T00:00:00.000Z',
+          },
+          {
+            id: 'h-r',
+            name: '阅读',
+            unit: '页',
+            targetPerPeriod: 7,
+            dailyTarget: 1000,
+            icon: '📚',
+            color: '#4F46E5',
+            createdAt: '2026-11-20T00:00:00.000Z',
+            updatedAt: '2026-11-20T00:00:00.000Z',
+          },
+        ],
+      },
+    );
+
+    // 模拟旧版 Bug 现场：将快照内某个孤立低代理项变成 U+FFFD 后加密（此时解密得到含 U+FFFD 的文本，但 authTag 仍是变化前的值）
+    const templateSnap = JSON.parse(
+      window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY) ?? '{}',
+    ) as {
+      meta: Record<string, unknown>;
+      ciphertextBase64: string;
+      salt: string;
+      authTag: string;
+      compression: string;
+    };
+    const originalAuthTag = templateSnap.authTag;
+
+    // 再次生成含 U+FFFD 的密文载荷，保留原密码指纹但注入不匹配的旧 authTag
+    uploadBillsToCloud(
+      cosConfig,
+      [makeBill({ id: 'b-legacy-1', counterparty: '历史账单' })],
+      'CorrectPass888',
+      {
+        habits: [
+          {
+            id: 'h-w',
+            name: '喝水',
+            unit: 'ml',
+            targetPerPeriod: 7,
+            dailyTarget: 2000,
+            icon: '💧',
+            color: '#0284C7',
+            createdAt: '2026-11-20T00:00:00.000Z',
+            updatedAt: '2026-11-20T00:00:00.000Z',
+          },
+          {
+            id: 'h-r',
+            name: '阅读',
+            unit: '页',
+            targetPerPeriod: 7,
+            dailyTarget: 1000,
+            icon: '\ufffd',
+            color: '#4F46E5',
+            createdAt: '2026-11-20T00:00:00.000Z',
+            updatedAt: '2026-11-20T00:00:00.000Z',
+          },
+        ],
+      },
+    );
+    const corruptedSnap = JSON.parse(
+      window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY) ?? '{}',
+    ) as typeof templateSnap;
+    corruptedSnap.authTag = originalAuthTag;
+    window.localStorage.setItem(CLOUD_SNAPSHOT_STORAGE_KEY, JSON.stringify(corruptedSnap));
+
+    // 1. 密码真正错误时：指纹不匹配，依然严格拦截报错
+    expect(() => restoreBillsFromCloud(cosConfig, 'WrongPass999')).toThrow(
+      '登录密码错误，无法解密还原云端数据',
+    );
+
+    // 2. 密码正确（指纹一致）时：自动自愈还原账单与习惯数据，且受损图标回退为合理图标 📚
+    const healed = restoreBillsFromCloud(cosConfig, 'CorrectPass888');
+    expect(healed.bills).toHaveLength(1);
+    expect(healed.bills[0]?.counterparty).toBe('历史账单');
+    expect(healed.habits.map((h) => h.icon)).toEqual(['💧', '📚']);
+  });
+
+  it('同类边界防护：WebDAV 含非 ASCII 账号密码不抛 btoa 异常，且 localStorage 超配额时自动切换内存兜底绝不上传旧快照', async () => {
+    const webdavSigned = await buildSignedCloudHttpRequest(
+      {
+        provider: 'jianguoyun-webdav',
+        endpoint: 'https://dav.jianguoyun.com/dav/LifeHubBackup/',
+        bucket: '',
+        accessKey: '测试账号@example.com',
+        secretKey: '密码测试123',
+        encryptUpload: true,
+      },
+      'PUT',
+    );
+    expect(webdavSigned.headers.Authorization).toMatch(/^Basic [A-Za-z0-9+/=]+$/);
+
+    // 模拟浏览器 localStorage 已存有一份旧快照，随后新快照写入触发 QuotaExceededError
+    const cosConfig: CloudStorageConfig = {
+      provider: 'tencent-cos',
+      endpoint: 'https://example-bucket-1250000000.cos.ap-guangzhou.myqcloud.com',
+      bucket: '',
+      accessKey: '',
+      secretKey: '',
+      encryptUpload: true,
+    };
+    uploadBillsToCloud(cosConfig, [makeBill({ id: 'old-bill', counterparty: '旧账单' })], 'QuotaPass1');
+
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, 'setItem')
+      .mockImplementation((key: string) => {
+        if (key === CLOUD_SNAPSHOT_STORAGE_KEY) {
+          throw new DOMException('QuotaExceededError', 'QuotaExceededError');
+        }
+      });
+
+    uploadBillsToCloud(
+      cosConfig,
+      [
+        makeBill({ id: 'new-bill-1', counterparty: '超大容量新账单1' }),
+        makeBill({ id: 'new-bill-2', counterparty: '超大容量新账单2' }),
+      ],
+      'QuotaPass1',
+    );
+
+    const restored = restoreBillsFromCloud(cosConfig, 'QuotaPass1');
+    expect(restored.bills.map((b) => b.id)).toEqual(['new-bill-1', 'new-bill-2']);
+    setItemSpy.mockRestore();
   });
 });
