@@ -50,6 +50,8 @@ export interface RemoteAiClientOptions {
   moduleName?: string;
   /** 多轮对话历史消息（可选，追加在脱敏上下文之后）。 */
   chatHistory?: readonly AiChatMessage[];
+  /** 流式增量回调：模型边思考边生成时实时回调当前完整渲染文本（含 `💭 【正在深度思考…】` 或已生成正文）。 */
+  onStreamUpdate?: (partialReplyText: string) => void;
 }
 
 /**
@@ -80,6 +82,7 @@ function buildProviderRequestPayload(
   prompt: BuiltAiPrompt,
   chatHistory?: readonly AiChatMessage[],
   thinkingEnabled?: boolean,
+  enableStream = false,
 ): { endpoint: string; bodyJson: string } {
   const normalizedBase = baseUrl.trim().replace(/\/+$/, '');
   const messages: Array<{ role: string; content: string }> = [
@@ -108,7 +111,7 @@ function buildProviderRequestPayload(
     const bodyJson = JSON.stringify({
       model,
       messages,
-      stream: false,
+      stream: enableStream,
     });
     return { endpoint, bodyJson };
   }
@@ -124,8 +127,11 @@ function buildProviderRequestPayload(
   const payloadObj: Record<string, unknown> = {
     model,
     messages,
-    stream: false,
+    stream: enableStream,
   };
+  if (enableStream) {
+    payloadObj['stream_options'] = { include_usage: true };
+  }
   if (isDeepSeek && !isClassicDeepSeekV3OrR1) {
     payloadObj['thinking'] = { type: useThinking ? 'enabled' : 'disabled' };
   }
@@ -134,6 +140,248 @@ function buildProviderRequestPayload(
   }
   const bodyJson = JSON.stringify(payloadObj);
   return { endpoint, bodyJson };
+}
+
+/**
+ * 统一合并思考链（`reasoning_content` 或 `<think>...</think>` 标签）与正式回复文本。
+ */
+export function formatThinkingAndContentReply(
+  rawReasoning: string,
+  rawContent: string,
+  isStreaming: boolean,
+): string {
+  let effectiveReasoning = rawReasoning;
+  let effectiveContent = rawContent;
+
+  // 兼容 Ollama / 第三方网关将推理过程包裹在正文开头的 `<think>...</think>` 中
+  if (!effectiveReasoning) {
+    const trimmedStart = effectiveContent.trimStart();
+    if (trimmedStart.startsWith('<think>')) {
+      const afterOpen = trimmedStart.slice('<think>'.length);
+      const closeIdx = afterOpen.indexOf('</think>');
+      if (closeIdx >= 0) {
+        effectiveReasoning = afterOpen.slice(0, closeIdx);
+        effectiveContent = afterOpen.slice(closeIdx + '</think>'.length);
+      } else {
+        effectiveReasoning = afterOpen;
+        effectiveContent = '';
+      }
+    }
+  }
+
+  const hasReasoning = effectiveReasoning.trim().length > 0;
+  const hasContent = effectiveContent.trim().length > 0;
+
+  if (hasReasoning) {
+    if (isStreaming && !hasContent) {
+      return `💭 【正在深度思考…】\n${effectiveReasoning.trimStart()}\n\n---\n\n`;
+    }
+    return `💭 【深度思考过程】\n${effectiveReasoning.trim()}\n\n---\n\n${effectiveContent.trimStart()}`;
+  }
+
+  return isStreaming ? effectiveContent : effectiveContent.trim();
+}
+
+/**
+ * 增量消费 SSE（DeepSeek / OpenAI）或 NDJSON（Ollama）流式响应，实时回调思考链与正文。
+ */
+async function consumeStreamingProviderResponse(
+  response: Response,
+  onStreamUpdate?: (partialReplyText: string) => void,
+): Promise<{
+  replyText: string;
+  tokenUsage: AiTokenUsage;
+}> {
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    const rawJson: unknown = await response.json();
+    return parseProviderResponse(rawJson);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let lineBuffer = '';
+  const allRawChunks: string[] = [];
+
+  let reasoningAcc = '';
+  let contentAcc = '';
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let totalTokens = 0;
+  let parsedAnyStreamEvent = false;
+  let lastEmitMs = 0;
+
+  const emitProgress = (force = false): void => {
+    if (!onStreamUpdate) return;
+    const now = Date.now();
+    if (!force && now - lastEmitMs < 32) {
+      return;
+    }
+    lastEmitMs = now;
+    const formatted = formatThinkingAndContentReply(reasoningAcc, contentAcc, !force);
+    if (formatted.length > 0) {
+      onStreamUpdate(formatted);
+    }
+  };
+
+  const processSingleLine = (rawLine: string): boolean => {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith(':')) {
+      return false;
+    }
+
+    if (trimmed.startsWith('data:')) {
+      const dataStr = trimmed.slice(5).trim();
+      if (dataStr === '[DONE]') {
+        return true;
+      }
+      try {
+        const parsed = JSON.parse(dataStr) as Record<string, unknown>;
+        parsedAnyStreamEvent = true;
+        const usage = parsed['usage'] as Record<string, unknown> | undefined;
+        if (usage) {
+          if (typeof usage['prompt_tokens'] === 'number') promptTokens = usage['prompt_tokens'];
+          if (typeof usage['completion_tokens'] === 'number') {
+            completionTokens = usage['completion_tokens'];
+          }
+          if (typeof usage['total_tokens'] === 'number') totalTokens = usage['total_tokens'];
+        }
+        const choices = parsed['choices'];
+        if (Array.isArray(choices) && choices.length > 0) {
+          const first = choices[0] as Record<string, unknown> | undefined;
+          const delta = (first?.['delta'] ?? first?.['message']) as
+            | Record<string, unknown>
+            | undefined;
+          if (delta) {
+            const rChunk =
+              typeof delta['reasoning_content'] === 'string'
+                ? delta['reasoning_content']
+                : typeof delta['reasoning'] === 'string'
+                  ? delta['reasoning']
+                  : '';
+            const cChunk = typeof delta['content'] === 'string' ? delta['content'] : '';
+            if (rChunk) reasoningAcc += rChunk;
+            if (cChunk) contentAcc += cChunk;
+            if (rChunk || cChunk) {
+              emitProgress(false);
+            }
+          }
+        }
+      } catch {
+        // 忽略半截非标准片段
+      }
+      return false;
+    }
+
+    // 兼容 Ollama NDJSON 行流（`{"message":{"thinking":"...","content":"..."},"done":false}`）
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+        // 若网关忽略了 stream:true 返回单包完整 OpenAI JSON，留给下方完整 JSON 兜底分支解析
+        if (Array.isArray(parsed['choices'])) {
+          return false;
+        }
+        const ollamaMsg = parsed['message'] as Record<string, unknown> | undefined;
+        if (ollamaMsg || typeof parsed['response'] === 'string' || typeof parsed['done'] === 'boolean') {
+          parsedAnyStreamEvent = true;
+          const rChunk =
+            typeof ollamaMsg?.['thinking'] === 'string'
+              ? ollamaMsg['thinking']
+              : typeof ollamaMsg?.['reasoning_content'] === 'string'
+                ? ollamaMsg['reasoning_content']
+                : '';
+          const cChunk =
+            typeof ollamaMsg?.['content'] === 'string'
+              ? ollamaMsg['content']
+              : typeof parsed['response'] === 'string'
+                ? parsed['response']
+                : '';
+          if (rChunk) reasoningAcc += rChunk;
+          if (cChunk) contentAcc += cChunk;
+          if (typeof parsed['prompt_eval_count'] === 'number') {
+            promptTokens = parsed['prompt_eval_count'] as number;
+          }
+          if (typeof parsed['eval_count'] === 'number') {
+            completionTokens = parsed['eval_count'] as number;
+          }
+          if (rChunk || cChunk) {
+            emitProgress(false);
+          }
+          if (parsed['done'] === true) {
+            return true;
+          }
+        }
+      } catch {
+        // 非完整单行 JSON，交由收尾整体 JSON 兜底处理
+      }
+    }
+    return false;
+  };
+
+  try {
+    let streamDone = false;
+    while (!streamDone) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      const chunkText = decoder.decode(value, { stream: true });
+      allRawChunks.push(chunkText);
+      lineBuffer += chunkText;
+      let newlineIdx = lineBuffer.indexOf('\n');
+      while (newlineIdx >= 0) {
+        const line = lineBuffer.slice(0, newlineIdx);
+        lineBuffer = lineBuffer.slice(newlineIdx + 1);
+        if (processSingleLine(line)) {
+          streamDone = true;
+          break;
+        }
+        newlineIdx = lineBuffer.indexOf('\n');
+      }
+    }
+    const tail = decoder.decode();
+    if (tail) {
+      allRawChunks.push(tail);
+      lineBuffer += tail;
+    }
+    if (lineBuffer.trim()) {
+      processSingleLine(lineBuffer);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // 忽略释放异常
+    }
+  }
+
+  // 若服务端忽略了 stream:true 直接返回整段标准 JSON，无缝回退整包解析
+  if (!parsedAnyStreamEvent) {
+    try {
+      const fullRawText = allRawChunks.join('').trim();
+      if (fullRawText) {
+        const parsedJson = JSON.parse(fullRawText) as unknown;
+        const singleRes = parseProviderResponse(parsedJson);
+        onStreamUpdate?.(singleRes.replyText);
+        return singleRes;
+      }
+    } catch {
+      // 继续走下方汇总输出
+    }
+  }
+
+  const finalReply = formatThinkingAndContentReply(reasoningAcc, contentAcc, false);
+  if (finalReply) {
+    onStreamUpdate?.(finalReply);
+  }
+  const resolvedTotal = totalTokens > 0 ? totalTokens : promptTokens + completionTokens;
+  return {
+    replyText: finalReply.trim() || '（模型未返回有效文本内容）',
+    tokenUsage: {
+      promptTokens,
+      completionTokens,
+      totalTokens: resolvedTotal,
+    },
+  };
 }
 
 /**
@@ -149,32 +397,31 @@ function parseProviderResponse(rawResponse: unknown): {
   const data = (rawResponse ?? {}) as Record<string, unknown>;
 
   // OpenAI / DeepSeek 兼容格式：choices[0].message.content（及 deepseek-reasoner 的 reasoning_content）
-  let replyText = '';
+  let rawContent = '';
+  let rawReasoning = '';
   const choices = data['choices'];
   if (Array.isArray(choices) && choices.length > 0) {
     const firstChoice = choices[0] as Record<string, unknown> | undefined;
     const message = firstChoice?.['message'] as Record<string, unknown> | undefined;
-    const content = typeof message?.['content'] === 'string' ? message['content'].trim() : '';
-    const reasoning =
-      typeof message?.['reasoning_content'] === 'string'
-        ? message['reasoning_content'].trim()
-        : '';
-    if (reasoning && content) {
-      replyText = `💭 【深度思考过程】\n${reasoning}\n\n---\n\n${content}`;
-    } else {
-      replyText = content || reasoning;
+    rawContent = typeof message?.['content'] === 'string' ? message['content'] : '';
+    rawReasoning =
+      typeof message?.['reasoning_content'] === 'string' ? message['reasoning_content'] : '';
+  }
+
+  // Ollama 格式：message.content / thinking 或 response
+  if (!rawContent && !rawReasoning) {
+    const ollamaMsg = data['message'] as Record<string, unknown> | undefined;
+    if (typeof ollamaMsg?.['thinking'] === 'string') {
+      rawReasoning = ollamaMsg['thinking'];
+    }
+    if (typeof ollamaMsg?.['content'] === 'string') {
+      rawContent = ollamaMsg['content'];
+    } else if (typeof data['response'] === 'string') {
+      rawContent = data['response'];
     }
   }
 
-  // Ollama 格式：message.content 或 response
-  if (!replyText) {
-    const ollamaMsg = data['message'] as Record<string, unknown> | undefined;
-    if (typeof ollamaMsg?.['content'] === 'string') {
-      replyText = ollamaMsg['content'];
-    } else if (typeof data['response'] === 'string') {
-      replyText = data['response'];
-    }
-  }
+  const replyText = formatThinkingAndContentReply(rawReasoning, rawContent, false);
 
   const usage = data['usage'] as Record<string, unknown> | undefined;
   const promptTokens =
@@ -371,6 +618,7 @@ export async function executeRemoteAiAnalysis(
     );
   }
 
+  const enableStream = Boolean(options.onStreamUpdate);
   let { endpoint, bodyJson } = buildProviderRequestPayload(
     config.provider,
     config.baseUrl,
@@ -378,6 +626,7 @@ export async function executeRemoteAiAnalysis(
     prompt,
     options.chatHistory,
     config.thinkingEnabled,
+    enableStream,
   );
   let payloadDigest = await computePayloadSha256Hex(bodyJson);
   const startedAtMs = Date.now();
@@ -411,6 +660,7 @@ export async function executeRemoteAiAnalysis(
           prompt,
           options.chatHistory,
           false,
+          enableStream,
         );
         response = await sendHttpWithDesktopFallback(
           fetchImpl,
@@ -442,6 +692,7 @@ export async function executeRemoteAiAnalysis(
         prompt,
         options.chatHistory,
         false,
+        enableStream,
       );
       const dsResp = await sendHttpWithDesktopFallback(
         fetchImpl,
@@ -479,6 +730,7 @@ export async function executeRemoteAiAnalysis(
         prompt,
         options.chatHistory,
         config.thinkingEnabled,
+        enableStream,
       );
       const fallbackResp = await sendHttpWithDesktopFallback(
         fetchImpl,
@@ -521,8 +773,9 @@ export async function executeRemoteAiAnalysis(
       );
     }
 
-    const rawJson: unknown = await response.json();
-    const { replyText, tokenUsage } = parseProviderResponse(rawJson);
+    const { replyText, tokenUsage } = enableStream
+      ? await consumeStreamingProviderResponse(response, options.onStreamUpdate)
+      : parseProviderResponse(await response.json());
 
     const successRecord: AIAnalysisRequestRecord = {
       id: generateAuditId(),

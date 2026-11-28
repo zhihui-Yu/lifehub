@@ -331,6 +331,59 @@ describe('Module E —— E-01 API Key 本地 AES-GCM 加密存储与 E-04 / X-1
     ).toThrow(/违反 X-13 红线/);
   });
 
+  it('流式 SSE 增量输出实时回调思考过程（reasoning_content）与最终正文，不再长时间空白等待', async () => {
+    const db = fakeDbHolder.db as LifeHubDatabase;
+    const storage = new AiStorageService(db);
+    await storage.saveConfig({
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-flash',
+      thinkingEnabled: true,
+      apiKey: 'sk-stream-test-key',
+    });
+
+    const sseLines = [
+      'data: {"choices":[{"delta":{"reasoning_content":"先核对月度支出占比，"}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_content":"发现交通与餐饮占大头。"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"> 💡 **核心洞察**：支出结构清晰。\\n\\n## 🎯 建议\\n- 控制高频项目"}}],"usage":{"prompt_tokens":95,"completion_tokens":45,"total_tokens":140}}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of sseLines) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+
+    const streamSnapshots: string[] = [];
+    const mockStreamFetch = vi.fn().mockResolvedValue(
+      new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    );
+
+    const redacted = redactBillsForAi(makeSampleBills());
+    const builtPrompt = buildLifeReviewPrompt({ redactedBills: redacted, topic: 'finance' });
+
+    const res = await executeRemoteAiAnalysis(builtPrompt, {
+      storage,
+      fetchFn: mockStreamFetch as unknown as typeof fetch,
+      onStreamUpdate: (partial) => streamSnapshots.push(partial),
+    });
+
+    expect(streamSnapshots.length).toBeGreaterThanOrEqual(2);
+    expect(streamSnapshots[0]).toContain('💭 【正在深度思考…】');
+    expect(streamSnapshots[0]).toContain('先核对月度支出占比');
+    expect(res.replyText).toContain('💭 【深度思考过程】');
+    expect(res.replyText).toContain('发现交通与餐饮占大头');
+    expect(res.replyText).toContain('支出结构清晰');
+    expect(res.auditRecord.tokensUsed).toBe(140);
+  });
+
   it('executeLocalSmartAnalysis 零网络生成本地复盘总结并记录 local 审计指标', async () => {
     const db = fakeDbHolder.db as LifeHubDatabase;
     const storage = new AiStorageService(db);

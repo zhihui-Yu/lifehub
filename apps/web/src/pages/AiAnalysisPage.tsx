@@ -264,6 +264,7 @@ export function AiAnalysisPage() {
   });
   const [chatInput, setChatInput] = useState('');
   const [analysisOutput, setAnalysisOutput] = useState<string>('');
+  const [streamingReply, setStreamingReply] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
@@ -305,6 +306,23 @@ export function AiAnalysisPage() {
     }
   }, []);
 
+  const scrollToBottomIfNearBottom = useCallback(() => {
+    const container = chatScrollContainerRef.current;
+    if (!container) return;
+    const distanceToBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceToBottom < 160) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, []);
+
+  const handleStreamChunk = useCallback(
+    (partialText: string) => {
+      setStreamingReply(partialText);
+      scrollToBottomIfNearBottom();
+    },
+    [scrollToBottomIfNearBottom],
+  );
   // 进入 AI 页面时锁定外层 html/body 视口并归零外层残留滚动条，确保仅内部会话区可滑动
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -896,13 +914,29 @@ export function AiAnalysisPage() {
   };
 
   const handleRemoteAnalyze = async () => {
+    let baseMessagesBeforeRun: AiChatMessage[] | null = null;
     try {
       setAnalyzing(true);
+      setStreamingReply(null);
       setErrorMsg(null);
       await Promise.all([syncFormConfigIfNeeded(), ensureDataReady()]);
       const { builtPrompt: activePrompt } = latestPromptRef.current;
       const sysUserBubble = buildSystemContextUserBubble('AI 深度复盘', activePrompt);
-      const result = await executeRemoteAiAnalysis(activePrompt, { storage: aiStorage });
+      // 立即将上下文卡片推入会话流，让流式思考与生成直接在对话区实时铺开
+      upsertSession((cur) => {
+        baseMessagesBeforeRun = cur.messages;
+        return {
+          ...cur,
+          topic: selectedTopic,
+          timeRange,
+          messages: [...cur.messages, sysUserBubble],
+        };
+      });
+      const result = await executeRemoteAiAnalysis(activePrompt, {
+        storage: aiStorage,
+        onStreamUpdate: handleStreamChunk,
+      });
+      setStreamingReply(null);
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
         ...cur,
@@ -910,7 +944,6 @@ export function AiAnalysisPage() {
         timeRange,
         messages: [
           ...cur.messages,
-          sysUserBubble,
           {
             role: 'assistant',
             content: result.replyText,
@@ -921,11 +954,17 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } catch (err) {
+      setStreamingReply(null);
+      if (baseMessagesBeforeRun !== null) {
+        const rollback = baseMessagesBeforeRun;
+        upsertSession((cur) => ({ ...cur, messages: rollback }));
+      }
       const msg = err instanceof Error ? err.message : '远程 AI 分析请求失败';
       setErrorMsg(msg);
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } finally {
+      setStreamingReply(null);
       setAnalyzing(false);
     }
   };
@@ -968,11 +1007,14 @@ export function AiAnalysisPage() {
 
     try {
       setAnalyzing(true);
+      setStreamingReply(null);
       setErrorMsg(null);
       await syncFormConfigIfNeeded();
       const result = await executeAiChatMessage(activeCtx, nextHistory, {
         storage: aiStorage,
+        onStreamUpdate: handleStreamChunk,
       });
+      setStreamingReply(null);
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
         ...cur,
@@ -988,6 +1030,7 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } catch (err) {
+      setStreamingReply(null);
       const msg = err instanceof Error ? err.message : '发送对话请求失败';
       setErrorMsg(msg);
       upsertSession((cur) => ({
@@ -1004,6 +1047,7 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } finally {
+      setStreamingReply(null);
       setAnalyzing(false);
     }
   };
@@ -1018,17 +1062,20 @@ export function AiAnalysisPage() {
       .reverse()
       .find((m) => m.role === 'user' && !m.isSystemPromptContext);
 
-    // 若上一轮是用户的自由追问，则针对该追问原地重新生成回复（而非错误追加整篇新复盘报告）
+    // 若上一轮是用户的自由追问，则针对该追问原地重新流式生成回复
     if (lastRealUserQuestion) {
       try {
         setAnalyzing(true);
+        setStreamingReply(null);
         setErrorMsg(null);
         await Promise.all([syncFormConfigIfNeeded(), ensureDataReady()]);
         const { promptContext: activeCtx } = latestPromptRef.current;
         upsertSession((cur) => ({ ...cur, messages: withoutLastAssistant }));
         const result = await executeAiChatMessage(activeCtx, withoutLastAssistant, {
           storage: aiStorage,
+          onStreamUpdate: handleStreamChunk,
         });
+        setStreamingReply(null);
         setAnalysisOutput(result.replyText);
         upsertSession((cur) => ({
           ...cur,
@@ -1044,9 +1091,11 @@ export function AiAnalysisPage() {
         const audits = await aiStorage.listRequestAudits();
         setAuditHistory(audits);
       } catch (err) {
+        setStreamingReply(null);
         const msg = err instanceof Error ? err.message : '重新生成回复失败';
         setErrorMsg(msg);
       } finally {
+        setStreamingReply(null);
         setAnalyzing(false);
       }
       return;
@@ -1661,14 +1710,42 @@ export function AiAnalysisPage() {
                 })
               )}
 
-              {analyzing && (
+              {analyzing && streamingReply ? (
+                <Stack
+                  direction="row"
+                  spacing={{ xs: 0, sm: 1.5 }}
+                  alignItems="flex-start"
+                  data-testid="ai-streaming-message"
+                  sx={{ width: '100%', minWidth: 0 }}
+                >
+                  <Box
+                    sx={{
+                      width: 28,
+                      height: 28,
+                      borderRadius: '9px',
+                      backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                      color: 'primary.main',
+                      display: { xs: 'none', sm: 'flex' },
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                      mt: 0.25,
+                    }}
+                  >
+                    <AutoAwesomeOutlined sx={{ fontSize: 16 }} />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0, maxWidth: '100%' }}>
+                    <AiMarkdownRenderer content={streamingReply} />
+                  </Box>
+                </Stack>
+              ) : analyzing ? (
                 <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.75 }}>
                   <CircularProgress size={15} thickness={5} />
                   <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 13 }}>
-                    正在思考…
+                    正在连接模型开始思考…
                   </Typography>
                 </Stack>
-              )}
+              ) : null}
 
               {/* 保留回归校验锚点 */}
               {analysisOutput && (

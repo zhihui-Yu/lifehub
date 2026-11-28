@@ -7,9 +7,10 @@
  *    代码块（```）、有序/无序列表（1. / - ）以及行内加粗（**text**）与行内代码（`code`），
  *    彻底告别裸露的 Markdown 符号与纯文本堆砌。
  */
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Box,
+  CircularProgress,
   Collapse,
   Divider,
   Paper,
@@ -382,21 +383,30 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
 }
 
 /**
- * 渲染 DeepSeek 风格 Markdown 消息体（含 R1 深度思考折叠栏与结构化正文）。
+ * 渲染 DeepSeek 风格 Markdown 消息体（含实时流式思考链展示与一键折叠/展开）。
  */
 export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
-  const [reasoningExpanded, setReasoningExpanded] = useState(false);
-
-  // 检测是否包含 DeepSeek R1 深度思考段落
+  // 检测是否包含实时思考中（`💭 【正在深度思考…】`）或已完成思考（`💭 【深度思考过程】`）段落
+  const isStreamingThinking = content.startsWith('💭 【正在深度思考…】');
+  const isFinishedThinking = content.startsWith('💭 【深度思考过程】');
   let reasoningText = '';
   let mainText = content;
-  if (content.startsWith('💭 【深度思考过程】') && content.includes('\n\n---\n\n')) {
+  if ((isStreamingThinking || isFinishedThinking) && content.includes('\n\n---\n\n')) {
+    const prefix = isStreamingThinking ? '💭 【正在深度思考…】' : '💭 【深度思考过程】';
     const splitIdx = content.indexOf('\n\n---\n\n');
-    reasoningText = content
-      .slice('💭 【深度思考过程】'.length, splitIdx)
-      .trim();
+    reasoningText = content.slice(prefix.length, splitIdx).trim();
     mainText = content.slice(splitIdx + '\n\n---\n\n'.length).trim();
   }
+
+  // 默认直接展开思考过程（让用户实时看到边思考边推导的过程，点击标题栏可随时手动收起/展开）
+  const [reasoningExpanded, setReasoningExpanded] = useState<boolean>(true);
+  const userToggledRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (isStreamingThinking && !userToggledRef.current) {
+      setReasoningExpanded(true);
+    }
+  }, [isStreamingThinking]);
 
   return (
     <Box
@@ -411,8 +421,9 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
       {reasoningText && (
         <Paper
           variant="outlined"
+          data-testid="ai-reasoning-block"
           sx={{
-            mb: 1.5,
+            mb: mainText ? 1.5 : 0.5,
             borderRadius: 2,
             backgroundColor: 'var(--lifehub-bg)',
             borderColor: 'var(--lifehub-border)',
@@ -420,7 +431,10 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
           }}
         >
           <Box
-            onClick={() => setReasoningExpanded((prev) => !prev)}
+            onClick={() => {
+              userToggledRef.current = true;
+              setReasoningExpanded((prev) => !prev);
+            }}
             sx={{
               px: 1.5,
               py: 0.85,
@@ -431,10 +445,16 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
               userSelect: 'none',
             }}
           >
-            <Stack direction="row" spacing={0.75} alignItems="center">
-              <PsychologyOutlined sx={{ fontSize: 16, color: 'primary.main' }} />
+            <Stack direction="row" spacing={0.85} alignItems="center">
+              {isStreamingThinking ? (
+                <CircularProgress size={13} thickness={5} />
+              ) : (
+                <PsychologyOutlined sx={{ fontSize: 16, color: 'primary.main' }} />
+              )}
               <Typography variant="caption" sx={{ fontWeight: 700, color: 'var(--lifehub-text-muted)' }}>
-                已深度思考（点击{reasoningExpanded ? '收起' : '展开'}推理过程）
+                {isStreamingThinking
+                  ? `正在深度思考…（点击${reasoningExpanded ? '收起' : '展开'}）`
+                  : `深度思考过程（点击${reasoningExpanded ? '收起' : '展开'}）`}
               </Typography>
             </Stack>
             {reasoningExpanded ? (
@@ -464,7 +484,7 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
         </Paper>
       )}
 
-      <Box>{renderMarkdownBlocks(mainText)}</Box>
+      {mainText && <Box>{renderMarkdownBlocks(mainText)}</Box>}
     </Box>
   );
 }
