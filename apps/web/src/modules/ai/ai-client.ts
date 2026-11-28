@@ -116,14 +116,17 @@ function buildProviderRequestPayload(
   const endpoint = normalizedBase.endsWith('/chat/completions')
     ? normalizedBase
     : `${normalizedBase}/chat/completions`;
-  const isDeepSeek = provider === 'deepseek' || model.toLowerCase().startsWith('deepseek-');
-  const useThinking = Boolean(thinkingEnabled) || model.toLowerCase().includes('reasoner');
+  const modelLower = model.toLowerCase();
+  const isDeepSeek = provider === 'deepseek' || modelLower.startsWith('deepseek-');
+  const isClassicDeepSeekV3OrR1 =
+    modelLower === 'deepseek-chat' || modelLower === 'deepseek-reasoner';
+  const useThinking = Boolean(thinkingEnabled) || modelLower.includes('reasoner');
   const payloadObj: Record<string, unknown> = {
     model,
     messages,
     stream: false,
   };
-  if (isDeepSeek) {
+  if (isDeepSeek && !isClassicDeepSeekV3OrR1) {
     payloadObj['thinking'] = { type: useThinking ? 'enabled' : 'disabled' };
   }
   if (!useThinking) {
@@ -201,8 +204,69 @@ function parseProviderResponse(rawResponse: unknown): {
   };
 }
 
+interface AndroidAiHttpBridge {
+  startCloudHttpRequest?: (
+    requestId: string,
+    targetUrl: string,
+    method: string,
+    headersJson: string,
+    bodyText: string,
+  ) => void;
+  takeCloudHttpResponse?: (requestId: string) => string;
+}
+
+let androidAiReqSeq = 0;
+
+async function sendViaAndroidNativeBridge(
+  bridge: Required<Pick<AndroidAiHttpBridge, 'startCloudHttpRequest' | 'takeCloudHttpResponse'>>,
+  endpoint: string,
+  headers: Record<string, string>,
+  bodyJson: string,
+): Promise<Response> {
+  androidAiReqSeq += 1;
+  const reqId = `lh-ai-${Date.now()}-${androidAiReqSeq}`;
+  return new Promise<Response>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('lifehub:android-http-done', onDone as EventListener);
+      }
+      clearTimeout(timer);
+      fn();
+    };
+    const onDone = (evt: Event): void => {
+      const detail = (evt as CustomEvent<{ requestId?: string }>).detail;
+      if (!detail || detail.requestId !== reqId) return;
+      finish(() => {
+        try {
+          const raw = bridge.takeCloudHttpResponse(reqId);
+          const parsed = JSON.parse(raw || '{}') as { status?: number; body?: string };
+          const status = typeof parsed.status === 'number' ? parsed.status : 502;
+          const body = typeof parsed.body === 'string' ? parsed.body : '';
+          resolve(new Response(body, { status, headers: { 'Content-Type': 'application/json' } }));
+        } catch (err) {
+          reject(err);
+        }
+      });
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error('Android 原生 AI 请求超时')));
+    }, 60000);
+    if (typeof window !== 'undefined') {
+      window.addEventListener('lifehub:android-http-done', onDone as EventListener);
+    }
+    try {
+      bridge.startCloudHttpRequest(reqId, endpoint, 'POST', JSON.stringify(headers), bodyJson);
+    } catch (err) {
+      finish(() => reject(err));
+    }
+  });
+}
+
 /**
- * 发送远程 AI HTTP 请求；在 Windows 桌面端若遇到浏览器 CORS 或网络拦截，自动回退至本地宿主代理。
+ * 发送远程 AI HTTP 请求；在 Windows 桌面端或 Android 手机端若遇到 WebView CORS / 局域网拦截，自动回退至宿主原生代理。
  */
 async function sendHttpWithDesktopFallback(
   fetchImpl: typeof fetch,
@@ -217,20 +281,39 @@ async function sendHttpWithDesktopFallback(
       body: bodyJson,
     });
   } catch (primaryErr) {
-    const isDesktop =
-      typeof window !== 'undefined' &&
-      (window as unknown as Record<string, unknown>)['__LIFEHUB_DESKTOP__'] === true;
-    if (isDesktop && fetchImpl === globalThis.fetch) {
-      const proxyResp = await fetchImpl('/__lifehub_desktop__/ai-proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: endpoint,
-          authHeader: headers['Authorization'] ?? '',
+    if (fetchImpl === globalThis.fetch) {
+      const androidBridge = (globalThis as { LifeHubAndroid?: AndroidAiHttpBridge }).LifeHubAndroid;
+      if (
+        androidBridge &&
+        typeof androidBridge.startCloudHttpRequest === 'function' &&
+        typeof androidBridge.takeCloudHttpResponse === 'function'
+      ) {
+        return sendViaAndroidNativeBridge(
+          {
+            startCloudHttpRequest: androidBridge.startCloudHttpRequest.bind(androidBridge),
+            takeCloudHttpResponse: androidBridge.takeCloudHttpResponse.bind(androidBridge),
+          },
+          endpoint,
+          headers,
           bodyJson,
-        }),
-      });
-      return proxyResp;
+        );
+      }
+
+      const isDesktop =
+        typeof window !== 'undefined' &&
+        (window as unknown as Record<string, unknown>)['__LIFEHUB_DESKTOP__'] === true;
+      if (isDesktop) {
+        const proxyResp = await fetchImpl('/__lifehub_desktop__/ai-proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: endpoint,
+            authHeader: headers['Authorization'] ?? '',
+            bodyJson,
+          }),
+        });
+        return proxyResp;
+      }
     }
     throw primaryErr;
   }
@@ -376,6 +459,37 @@ export async function executeRemoteAiAnalysis(
         });
         endpoint = dsPayload.endpoint;
         bodyJson = dsPayload.bodyJson;
+        payloadDigest = await computePayloadSha256Hex(bodyJson);
+      }
+    }
+
+    // DeepSeek 模型别名自适应回退：若网关尚未映射 deepseek-flash / deepseek-v4-pro 而返回 400/404 Model Not Exist，自动无缝回退至 deepseek-chat / deepseek-reasoner
+    if (
+      !response.ok &&
+      !options.fetchFn &&
+      config.provider === 'deepseek' &&
+      (response.status === 400 || response.status === 404) &&
+      (config.model === 'deepseek-flash' || config.model === 'deepseek-v4-pro')
+    ) {
+      const fallbackModel = config.thinkingEnabled ? 'deepseek-reasoner' : 'deepseek-chat';
+      const fallbackPayload = buildProviderRequestPayload(
+        'deepseek',
+        config.baseUrl,
+        fallbackModel,
+        prompt,
+        options.chatHistory,
+        config.thinkingEnabled,
+      );
+      const fallbackResp = await sendHttpWithDesktopFallback(
+        fetchImpl,
+        fallbackPayload.endpoint,
+        headers,
+        fallbackPayload.bodyJson,
+      );
+      if (fallbackResp.ok) {
+        response = fallbackResp;
+        endpoint = fallbackPayload.endpoint;
+        bodyJson = fallbackPayload.bodyJson;
         payloadDigest = await computePayloadSha256Hex(bodyJson);
       }
     }

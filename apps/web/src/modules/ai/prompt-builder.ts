@@ -16,8 +16,8 @@ export const PROMPT_TEMPLATE_ID = 'lifehub-life-review-v1';
 /** AI 专项分析与互动对话主题类型。 */
 export type AiAnalysisTopic = 'comprehensive' | 'finance' | 'life' | 'habits' | 'persona';
 
-/** AI 分析数据时间段预设（最长支持近半年 6 个月）。 */
-export type AiTimeRangePreset = '7d' | '1m' | '3m' | '6m';
+/** AI 分析数据时间段预设（支持近 7 天至近 1 年及全量历史数据）。 */
+export type AiTimeRangePreset = '7d' | '1m' | '3m' | '6m' | '1y' | 'all';
 
 export const AI_TIME_RANGE_OPTIONS: ReadonlyArray<{
   value: AiTimeRangePreset;
@@ -28,6 +28,8 @@ export const AI_TIME_RANGE_OPTIONS: ReadonlyArray<{
   { value: '1m', label: '近 1 个月', days: 30 },
   { value: '3m', label: '近 3 个月', days: 90 },
   { value: '6m', label: '近半年', days: 180 },
+  { value: '1y', label: '近 1 年', days: 365 },
+  { value: 'all', label: '全部数据', days: 3650 },
 ];
 
 /** AI 多轮对话单条消息结构。 */
@@ -104,6 +106,20 @@ export const AI_TOPIC_META: Record<
   },
 };
 
+/** 单个课表时间块在所选周期内的执行明细。 */
+export interface AiScheduleSlotDetail {
+  /** 时间块标题（如「晨间英语」「力量训练」）。 */
+  title: string;
+  /** 时间区间 'HH:mm-HH:mm'。 */
+  timeWindow: string;
+  /** 所选周期内应执行次数。 */
+  expectedCount: number;
+  /** 所选周期内已完成次数。 */
+  completedCount: number;
+  /** 单项完成率（0..100）。 */
+  completionRate: number;
+}
+
 /**
  * 课表模块聚合指标摘要。
  */
@@ -120,6 +136,14 @@ export interface AiScheduleSummaryInput {
   monthCompleted: number;
   /** 本月完成率（0..100）。 */
   monthRate: number;
+  /** 所选分析周期内应完成总时段数。 */
+  rangeExpected?: number;
+  /** 所选分析周期内已完成总时段数。 */
+  rangeCompleted?: number;
+  /** 所选分析周期整体完成率（0..100）。 */
+  rangeRate?: number;
+  /** 各课表时间块在所选周期内的具体执行率排行。 */
+  slotDetails?: readonly AiScheduleSlotDetail[];
 }
 
 /**
@@ -180,10 +204,12 @@ export interface AiPromptContext {
   diaryStats?: RedactedDiarySummary;
   /** 可选的专项分析主题（默认 'comprehensive'）。 */
   topic?: AiAnalysisTopic;
-  /** 分析数据覆盖的起始日期（YYYY-MM-DD，最长半年）。 */
+  /** 分析数据覆盖的起始日期（YYYY-MM-DD）。 */
   fromDate?: string;
   /** 分析数据覆盖的结束日期（YYYY-MM-DD）。 */
   toDate?: string;
+  /** 当所选短期窗口无账单时，是否已自动回退纳入历史全量账单供参考。 */
+  usedHistoricalBillsFallback?: boolean;
 }
 
 /**
@@ -265,17 +291,58 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
     '4. 列表项请使用 `- **核心词**：具体说明` 的格式，重点数据或结论用 `**加粗**` 标注，保持排版清爽易读。',
   ].join('\n');
 
-  const bucketLines = Object.entries(redactedBills.bucketDistribution)
-    .map(([bucket, count]) => `  - ${bucket}: ${count} 笔`)
-    .join('\n');
+  const expenseBucketLines = Object.entries(redactedBills.expenseBucketDistribution)
+    .map(([bucket, count]) => `${bucket}: ${count}笔`)
+    .join(' | ');
+  const incomeBucketLines = Object.entries(redactedBills.incomeBucketDistribution)
+    .filter(([, count]) => count > 0)
+    .map(([bucket, count]) => `${bucket}: ${count}笔`)
+    .join(' | ');
 
-  const categoryLines =
-    Object.entries(redactedBills.categoryDistribution)
-      .sort((a, b) => b[1] - a[1])
-      .map(([cat, count]) => `  - ${cat}: ${count} 笔`)
-      .join('\n') || '  - 暂无分类数据';
+  const expenseCategoryLines =
+    redactedBills.expenseCategoryStats.length > 0
+      ? redactedBills.expenseCategoryStats
+          .map(
+            (c) =>
+              `  - ${c.categoryName}: ${c.count} 笔 | 占总支出 ${c.amountSharePercent}% | 粗化累计 ${c.amountRange}（主力区间 ${c.dominantBucket}）`,
+          )
+          .join('\n')
+      : Object.entries(redactedBills.categoryDistribution)
+          .sort((a, b) => b[1] - a[1])
+          .map(([cat, count]) => `  - ${cat}: ${count} 笔`)
+          .join('\n') || '  - 暂无分类数据';
 
-  const sampleItems = redactedBills.items.slice(0, 20);
+  const incomeCategoryLines =
+    redactedBills.incomeCategoryStats.length > 0
+      ? redactedBills.incomeCategoryStats
+          .map(
+            (c) =>
+              `  - ${c.categoryName}: ${c.count} 笔 | 占总收入 ${c.amountSharePercent}% | 粗化累计 ${c.amountRange}`,
+          )
+          .join('\n')
+      : '';
+
+  const monthlyTrendLines =
+    redactedBills.monthlyStats.length > 0
+      ? redactedBills.monthlyStats
+          .map(
+            (m) =>
+              `  - [${m.yearMonth}] 支出 ${m.expenseCount} 笔（${m.expenseRange}） | 收入 ${m.incomeCount} 笔（${m.incomeRange}） | ${m.balanceStatus}${m.topExpenseCategories.length > 0 ? ` | 主要支出分类: ${m.topExpenseCategories.join('、')}` : ''}`,
+          )
+          .join('\n')
+      : '  - 暂无月度收支记录';
+
+  const topMerchantLines =
+    redactedBills.topMerchants.length > 0
+      ? redactedBills.topMerchants
+          .map(
+            (mer) =>
+              `  - ${mer.merchantAlias}（主分类:${mer.primaryCategory}）: 支出 ${mer.expenseCount} 笔 | 占总支出 ${mer.expenseSharePercent}%（${mer.expenseRange}）`,
+          )
+          .join('\n')
+      : '  - 暂无高频匿名商户统计';
+
+  const sampleItems = redactedBills.items.slice(0, 36);
   const sampleLines =
     sampleItems.length > 0
       ? sampleItems
@@ -286,11 +353,28 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
           .join('\n')
       : '  （暂无账单样本）';
 
+  const scheduleSlotLines =
+    scheduleStats?.slotDetails && scheduleStats.slotDetails.length > 0
+      ? [
+          '- 各课表时间块在所选周期内的执行率明细（全量覆盖）：',
+          ...scheduleStats.slotDetails.map(
+            (s) =>
+              `  * ${s.title}（${s.timeWindow}）：已完成 ${s.completedCount}/${s.expectedCount} 次（完成率 ${s.completionRate}%）`,
+          ),
+        ]
+      : [];
+
   const scheduleSection = scheduleStats
     ? [
-        '【生活课表执行情况（模块 B）】',
+        '【生活课表执行情况（模块 B · 全量时段统计）】',
+        ...(scheduleStats.rangeExpected !== undefined
+          ? [
+              `- 所选周期整体完成率：${scheduleStats.rangeRate ?? 0}%（已完成 ${scheduleStats.rangeCompleted ?? 0} / 应完成 ${scheduleStats.rangeExpected}）`,
+            ]
+          : []),
         `- 本周完成率：${scheduleStats.weekRate}%（已完成 ${scheduleStats.weekCompleted} / 应完成 ${scheduleStats.weekExpected}）`,
         `- 本月完成率：${scheduleStats.monthRate}%（已完成 ${scheduleStats.monthCompleted} / 应完成 ${scheduleStats.monthExpected}）`,
+        ...scheduleSlotLines,
       ].join('\n')
     : '【生活课表执行情况（模块 B）】\n- 暂无课表统计数据';
 
@@ -304,7 +388,7 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 
   const habitSection = habitStats
     ? [
-        '【微习惯打卡与跨模块完成统计（模块 C）】',
+        '【微习惯打卡与跨模块完成统计（模块 C · 全量习惯汇总）】',
         `- 活跃习惯数：${habitStats.activeHabitCount} 个`,
         `- 习惯打卡完成总次数（按完成日计）：${habitStats.habitCompletedCount} 次`,
         `- 课表完成次数：${habitStats.scheduleCompletedCount} 次`,
@@ -314,41 +398,64 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
       ].join('\n')
     : '【微习惯打卡与跨模块完成统计（模块 C）】\n- 暂无习惯打卡数据';
 
+  const diaryTagLine =
+    diaryStats && Object.keys(diaryStats.tagDistribution ?? {}).length > 0
+      ? `- 高频关注标签：${Object.entries(diaryStats.tagDistribution)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 12)
+          .map(([t, c]) => `#${t}(${c}次)`)
+          .join('、')}`
+      : '';
+  const diaryMonthLine =
+    diaryStats && Object.keys(diaryStats.monthlyCountDistribution ?? {}).length > 0
+      ? `- 按月记录密度：${Object.entries(diaryStats.monthlyCountDistribution)
+          .map(([ym, c]) => `${ym}: ${c}篇`)
+          .join(' | ')}`
+      : '';
+
   const diarySection =
     diaryStats && diaryStats.selectedCount > 0
       ? [
-          `【树洞随笔与人物/心情摘要（模块 D · 已自动强制脱敏 ${diaryStats.selectedCount} 条，脱敏文本 ${diaryStats.sanitizedCharLength} 字）】`,
-          `- 心情分布：${Object.entries(diaryStats.moodDistribution)
+          `【树洞随笔与人物/心情摘要（模块 D · 已自动强制脱敏全量 ${diaryStats.selectedCount} 条，脱敏文本 ${diaryStats.sanitizedCharLength} 字）】`,
+          `- 全量心情分布：${Object.entries(diaryStats.moodDistribution)
             .map(([mood, count]) => `${mood} ${count} 条`)
             .join('、')}`,
-          ...diaryStats.items
-            .slice(0, 12)
-            .map(
-              (item, idx) =>
-                `  ${idx + 1}. [${item.yearMonth} · ${item.moodLabel}] ${item.tags.length > 0 ? `(${item.tags.map((t) => `#${t}`).join(' ')}) ` : ''}${item.sanitizedExcerpt}`,
-            ),
+          ...(diaryTagLine ? [diaryTagLine] : []),
+          ...(diaryMonthLine ? [diaryMonthLine] : []),
+          ...diaryStats.items.map(
+            (item, idx) =>
+              `  ${idx + 1}. [${item.yearMonth} · ${item.moodLabel}] ${item.tags.length > 0 ? `(${item.tags.map((t) => `#${t}`).join(' ')}) ` : ''}${item.sanitizedExcerpt}`,
+          ),
         ].join('\n')
       : '【树洞随笔与人物/心情摘要（模块 D）】\n- 所选时间段内暂无树洞条目';
 
+  const fallbackHint = context.usedHistoricalBillsFallback
+    ? '；注：所选近期窗口内无新增账单，已自动纳入本机可用历史账单供完整复盘'
+    : '';
   const rangeLine =
     context.fromDate && context.toDate
-      ? `数据时间段: ${context.fromDate.slice(0, 7)} ~ ${context.toDate.slice(0, 7)}（系统已强制全量脱敏，最长不超过半年）`
-      : '数据时间段: 默认周期（系统已强制全量脱敏）';
+      ? `数据时间段: ${context.fromDate.slice(0, 7)} ~ ${context.toDate.slice(0, 7)}（100% 全量聚合 + X-14 本地强制脱敏${fallbackHint}）`
+      : '数据时间段: 默认周期（100% 全量聚合 + X-14 本地强制脱敏）';
 
   const userPrompt = [
     `Prompt 模板版本: ${PROMPT_TEMPLATE_ID}`,
     `分析维度: ${AI_TOPIC_META[topic]?.label ?? '全维综合复盘'}`,
     rangeLine,
     '',
-    '【脱敏账单结构摘要（模块 A · X-14 已强制脱敏）】',
+    '【脱敏账单全量结构摘要（模块 A · 100% 账单已纳入聚合，非抽样截断）】',
     `- 覆盖月份: ${redactedBills.months.length > 0 ? redactedBills.months.join(', ') : '无'}`,
-    `- 总笔数: ${redactedBills.totalCount} 笔（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔）`,
-    `- 独立匿名商户数: ${redactedBills.merchantAliasCount} 个`,
-    '- 金额区间分桶分布:',
-    bucketLines,
-    '- 消费分类笔数分布:',
-    categoryLines,
-    '- 脱敏流水样本（前 20 条）:',
+    `- 账单总规模: 共 ${redactedBills.totalCount} 笔（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔${redactedBills.neutralCount > 0 ? ` / 中性流转 ${redactedBills.neutralCount} 笔` : ''}），涉及独立匿名商户 ${redactedBills.merchantAliasCount} 个`,
+    `- 收支体量与结余（粗化区间）: 总支出约 ${redactedBills.totalExpenseRange} | 总收入约 ${redactedBills.totalIncomeRange} | ${redactedBills.overallBalanceSummary}`,
+    `- 支出金额分桶分布: ${expenseBucketLines}`,
+    ...(incomeBucketLines ? [`- 收入金额分桶分布: ${incomeBucketLines}`] : []),
+    '- 按月收支趋势全表（100% 月份覆盖）:',
+    monthlyTrendLines,
+    '- 支出分类全量结构（按实际支出金额占比排序）:',
+    expenseCategoryLines,
+    ...(incomeCategoryLines ? ['- 收入分类全量结构:', incomeCategoryLines] : []),
+    '- 高支出占比 / 高频匿名商户 Top 15:',
+    topMerchantLines,
+    `- 代表性分层样本（中大额重点与跨月均衡抽样，共 ${sampleItems.length} 条）:`,
     sampleLines,
     '',
     scheduleSection,
@@ -357,7 +464,7 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
     '',
     diarySection,
     '',
-    '请基于上述系统自动构造的脱敏上下文给出深度复盘洞察与可执行行动建议。',
+    '请基于上述 100% 全量聚合的脱敏多维生活数据，给出有数据支撑的深度复盘洞察与可执行行动建议。',
   ].join('\n');
 
   const fullPreviewText = `=== System Prompt ===\n${systemPrompt}\n\n=== User Prompt (${PROMPT_TEMPLATE_ID}) ===\n${userPrompt}`;
@@ -408,14 +515,28 @@ export function generateLocalSmartSummary(context: AiPromptContext): string {
   ];
 
   if (topic === 'comprehensive' || topic === 'finance') {
+    const topExpenseCat = redactedBills.expenseCategoryStats[0];
+    const topExpenseShareText = topExpenseCat
+      ? `**${topExpenseCat.categoryName}**（占总支出 **${topExpenseCat.amountSharePercent}%**，约 ${topExpenseCat.amountRange}，共 ${topExpenseCat.count} 笔）`
+      : `**${topCategoryText}**`;
+    const bigExpenseCount =
+      redactedBills.expenseBucketDistribution['500–1000 元'] +
+      redactedBills.expenseBucketDistribution['1000 元以上'];
     lines.push(
       '',
-      '### 💰 【财务收支与脱敏分桶洞察】',
-      `- **账单概览**：共分析 **${redactedBills.totalCount} 笔**脱敏流水（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔），覆盖月份：\`${redactedBills.months.join('、') || '暂无'}\`。`,
-      `- **金额分桶特征**：最高频交易区间集中在 **${topBucketText}**，主要高频分类为 **${topCategoryText}**，涉及 **${redactedBills.merchantAliasCount} 个**泛化匿名商户。`,
-      redactedBills.bucketDistribution['500–1000 元'] + redactedBills.bucketDistribution['1000 元以上'] > 0
-        ? `- **支出提醒**：检测到 **${redactedBills.bucketDistribution['500–1000 元'] + redactedBills.bucketDistribution['1000 元以上']} 笔**中大额区间（500 元以上）账单，建议复核大额支出的必要性。`
-        : '- **支出提醒**：当前账单主要集中在中小额日常区间，整体消费结构平稳。',
+      '### 💰 【财务收支与全量脱敏结构洞察】',
+      `- **收支总览**：共纳入 **${redactedBills.totalCount} 笔**全量流水（支出 ${redactedBills.expenseCount} 笔 · 约 **${redactedBills.totalExpenseRange}** / 收入 ${redactedBills.incomeCount} 笔 · 约 **${redactedBills.totalIncomeRange}**），整体状态：**${redactedBills.overallBalanceSummary}**。`,
+      `- **主力支出结构**：支出金额占比第一的分类为 ${topExpenseShareText}；高频单笔区间集中在 **${topBucketText}**，涉及 **${redactedBills.merchantAliasCount} 个**匿名商户。`,
+      ...(redactedBills.monthlyStats.length > 1
+        ? [
+            `- **月度收支走势**：${redactedBills.monthlyStats
+              .map((m) => `\`${m.yearMonth}\` 支出 ${m.expenseRange}（${m.expenseCount}笔）`)
+              .join(' → ')}。`,
+          ]
+        : []),
+      bigExpenseCount > 0
+        ? `- **支出提醒**：检测到 **${bigExpenseCount} 笔**中大额支出（500 元以上区间），建议重点复核排名前二分类中的大额消费必要性。`
+        : '- **支出提醒**：当前支出主要分布在中小额日常区间，整体消费节奏平稳。',
     );
   }
 

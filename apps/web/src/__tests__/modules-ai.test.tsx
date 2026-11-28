@@ -175,6 +175,12 @@ describe('Module E —— X-14 脱敏管线与 Prompt 构造器安全断言', ()
     expect(fullPrompt).toContain('50–100 元');
     expect(fullPrompt).toContain('100–500 元');
     expect(fullPrompt).toContain('2026-10');
+    // 验证全量分类金额权重占比、粗化收支体量区间、月度趋势与高频商户画像已完整纳入
+    expect(fullPrompt).toContain('总支出约 300–400 元');
+    expect(fullPrompt).toContain('交通出行: 1 笔 | 占总支出 79% | 粗化累计 200–300 元');
+    expect(fullPrompt).toContain('餐饮美食: 1 笔 | 占总支出 21% | 粗化累计 50–100 元');
+    expect(fullPrompt).toContain('按月收支趋势全表（100% 月份覆盖）');
+    expect(fullPrompt).toContain('高支出占比 / 高频匿名商户 Top 15');
     expect(fullPrompt).toContain('喝水（定量·ml）：打卡 10 天 | 周期累计总量 18500 ml | 打卡日均 1850 ml/天');
     expect(fullPrompt).toContain('跑步（定量·km）：打卡 5 天 | 周期累计总量 16.5 km | 打卡日均 3.3 km/天');
   });

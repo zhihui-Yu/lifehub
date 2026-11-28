@@ -18,25 +18,30 @@ import { createDatabase } from '@/platform/db';
 /** 支持的远程或本地 AI 接口提供方类型。 */
 export type AiProviderType = 'deepseek' | 'openai-compatible' | 'ollama';
 
-/** DeepSeek 官方当前主力模型列表（V4 系列）。 */
-export const DEEPSEEK_OFFICIAL_MODELS = ['deepseek-flash', 'deepseek-v4-pro'] as const;
+/** DeepSeek 官方模型列表（同时兼容 V4 系列与标准 V3/R1 接口标识）。 */
+export const DEEPSEEK_OFFICIAL_MODELS = [
+  'deepseek-flash',
+  'deepseek-v4-pro',
+  'deepseek-chat',
+  'deepseek-reasoner',
+] as const;
 
 /** 默认 DeepSeek 模型名称。 */
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
 
 /**
- * 将已退役的旧版 DeepSeek 模型标识（deepseek-chat / deepseek-reasoner）平滑迁移至 V4 模型体系。
+ * 规范化 DeepSeek 模型标识，保留显式选择的标准模型并迁移跨厂商遗留默认值。
  */
 export function normalizeDeepSeekConfig(
   rawModel: string,
   inputThinking?: boolean,
 ): { model: string; thinkingEnabled: boolean } {
   const trimmed = rawModel.trim();
-  if (!trimmed || trimmed === 'gpt-4o-mini' || trimmed === 'qwen2.5:7b' || trimmed === 'deepseek-chat' || trimmed === 'deepseek-v4-flash') {
+  if (!trimmed || trimmed === 'gpt-4o-mini' || trimmed === 'qwen2.5:7b' || trimmed === 'deepseek-v4-flash') {
     return { model: DEFAULT_DEEPSEEK_MODEL, thinkingEnabled: inputThinking ?? false };
   }
   if (trimmed === 'deepseek-reasoner') {
-    return { model: DEFAULT_DEEPSEEK_MODEL, thinkingEnabled: inputThinking ?? true };
+    return { model: 'deepseek-reasoner', thinkingEnabled: inputThinking ?? true };
   }
   return { model: trimmed, thinkingEnabled: inputThinking ?? false };
 }
