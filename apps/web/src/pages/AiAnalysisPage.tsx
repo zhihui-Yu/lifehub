@@ -10,7 +10,7 @@
  *    - 桌面端左侧精简会话栏 + 右侧无干扰阅读流，配置与审计收纳至独立弹窗；
  * 3. **适配 DeepSeek V4 模型体系**：原生支持 `deepseek-flash` 与 `deepseek-v4-pro` 及 `thinking` 深度思考开关。
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Badge,
@@ -97,6 +97,7 @@ import {
   executeAiChatMessage,
   executeLocalSmartAnalysis,
   executeRemoteAiAnalysis,
+  formatThinkingAndContentReply,
 } from '@/modules/ai/ai-client';
 import { AiMarkdownRenderer } from '@/modules/ai/AiMarkdownRenderer';
 
@@ -138,6 +139,209 @@ function createSessionId(): string {
     return `session-${crypto.randomUUID()}`;
   }
   return `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+interface StreamBufferState {
+  targetText: string;
+  networkDone: boolean;
+  onDrainComplete: (() => void) | null;
+  notify: (() => void) | null;
+}
+
+function splitStreamReplyParts(text: string): {
+  hasReasoningEnvelope: boolean;
+  reasoning: string;
+  main: string;
+  isStreamingThinking: boolean;
+} {
+  const isStreamingThinking = text.startsWith('💭 【正在深度思考…】');
+  const isFinishedThinking = text.startsWith('💭 【深度思考过程】');
+  if ((isStreamingThinking || isFinishedThinking) && text.includes('\n\n---\n\n')) {
+    const prefix = isStreamingThinking ? '💭 【正在深度思考…】' : '💭 【深度思考过程】';
+    const splitIdx = text.indexOf('\n\n---\n\n');
+    return {
+      hasReasoningEnvelope: true,
+      reasoning: text.slice(prefix.length, splitIdx).replace(/^\n/, ''),
+      main: text.slice(splitIdx + '\n\n---\n\n'.length),
+      isStreamingThinking,
+    };
+  }
+  return {
+    hasReasoningEnvelope: false,
+    reasoning: '',
+    main: text,
+    isStreamingThinking: false,
+  };
+}
+
+function advanceSmoothCursor(shown: number, targetStr: string, fastDrain: boolean): number {
+  const backlog = targetStr.length - shown;
+  if (backlog <= 0) {
+    return targetStr.length;
+  }
+  // 60fps 自适应阻尼平滑推进：网络突发几十个字时拆解为每帧平顺滑出，网络间隔期保持 1~2 字/帧匀速吐字，消除「一顿一顿」感
+  const step = fastDrain
+    ? Math.max(8, Math.ceil(backlog * 0.36))
+    : Math.max(1, Math.min(24, Math.ceil(backlog * 0.16)));
+  let next = Math.min(targetStr.length, shown + step);
+  if (next < targetStr.length) {
+    const code = targetStr.charCodeAt(next - 1);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      next += 1;
+    }
+  }
+  return next;
+}
+
+/**
+ * 独立隔离的 60fps 流式气泡组件：
+ * 流式吐字期间仅刷新此叶子节点（外层 AiAnalysisPage 与历史消息零重渲染），并通过 rAF 自适应缓冲抹平网络包突发抖动。
+ */
+function LiveStreamingAssistantBubble({
+  bufferRef,
+  scrollContainerRef,
+}: {
+  bufferRef: React.MutableRefObject<StreamBufferState>;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const [displayedText, setDisplayedText] = useState<string>('');
+  const cursorRef = useRef({ reasoningLen: 0, mainLen: 0 });
+  const rafIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const state = bufferRef.current;
+    cursorRef.current = { reasoningLen: 0, mainLen: 0 };
+
+    const tick = () => {
+      rafIdRef.current = null;
+      const curTarget = state.targetText;
+      if (!curTarget) {
+        if (state.networkDone && state.onDrainComplete) {
+          const cb = state.onDrainComplete;
+          state.onDrainComplete = null;
+          cb();
+        }
+        return;
+      }
+
+      const parts = splitStreamReplyParts(curTarget);
+      let { reasoningLen, mainLen } = cursorRef.current;
+      if (reasoningLen > parts.reasoning.length) reasoningLen = parts.reasoning.length;
+      if (mainLen > parts.main.length) mainLen = parts.main.length;
+
+      if (reasoningLen < parts.reasoning.length) {
+        reasoningLen = advanceSmoothCursor(reasoningLen, parts.reasoning, state.networkDone);
+      } else if (mainLen < parts.main.length) {
+        mainLen = advanceSmoothCursor(mainLen, parts.main, state.networkDone);
+      }
+      cursorRef.current = { reasoningLen, mainLen };
+
+      const visibleReasoning = parts.reasoning.slice(0, reasoningLen);
+      const visibleMain =
+        reasoningLen >= parts.reasoning.length ? parts.main.slice(0, mainLen) : '';
+      const stillThinking =
+        parts.hasReasoningEnvelope &&
+        (parts.isStreamingThinking || visibleMain.trim().length === 0) &&
+        !state.networkDone;
+      const nextRendered = parts.hasReasoningEnvelope
+        ? formatThinkingAndContentReply(visibleReasoning, visibleMain, stillThinking)
+        : visibleMain;
+
+      setDisplayedText((prev) => (prev === nextRendered ? prev : nextRendered));
+
+      const fullyCaughtUp =
+        reasoningLen >= parts.reasoning.length && mainLen >= parts.main.length;
+      if (!fullyCaughtUp) {
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+          rafIdRef.current = window.requestAnimationFrame(tick);
+        }
+      } else if (state.networkDone && state.onDrainComplete) {
+        const cb = state.onDrainComplete;
+        state.onDrainComplete = null;
+        cb();
+      }
+    };
+
+    const scheduleTick = () => {
+      const ua = typeof navigator !== 'undefined' ? (navigator.userAgent ?? '') : '';
+      if (/jsdom/i.test(ua) || typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+        setDisplayedText(state.targetText);
+        if (state.networkDone && state.onDrainComplete) {
+          const cb = state.onDrainComplete;
+          state.onDrainComplete = null;
+          cb();
+        }
+        return;
+      }
+      if (rafIdRef.current === null) {
+        rafIdRef.current = window.requestAnimationFrame(tick);
+      }
+    };
+
+    state.notify = scheduleTick;
+    if (state.targetText) {
+      scheduleTick();
+    }
+
+    return () => {
+      state.notify = null;
+      if (rafIdRef.current !== null && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
+  }, [bufferRef]);
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !displayedText) return;
+    const distanceToBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceToBottom < 180) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [displayedText, scrollContainerRef]);
+
+  if (!displayedText) {
+    return (
+      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.75 }}>
+        <CircularProgress size={15} thickness={5} />
+        <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 13 }}>
+          正在连接模型开始思考…
+        </Typography>
+      </Stack>
+    );
+  }
+
+  return (
+    <Stack
+      direction="row"
+      spacing={{ xs: 0, sm: 1.5 }}
+      alignItems="flex-start"
+      data-testid="ai-streaming-message"
+      sx={{ width: '100%', minWidth: 0 }}
+    >
+      <Box
+        sx={{
+          width: 28,
+          height: 28,
+          borderRadius: '9px',
+          backgroundColor: 'rgba(99, 102, 241, 0.1)',
+          color: 'primary.main',
+          display: { xs: 'none', sm: 'flex' },
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+          mt: 0.25,
+        }}
+      >
+        <AutoAwesomeOutlined sx={{ fontSize: 16 }} />
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0, maxWidth: '100%' }}>
+        <AiMarkdownRenderer content={displayedText} />
+      </Box>
+    </Stack>
+  );
 }
 
 /**
@@ -264,8 +468,13 @@ export function AiAnalysisPage() {
   });
   const [chatInput, setChatInput] = useState('');
   const [analysisOutput, setAnalysisOutput] = useState<string>('');
-  const [streamingReply, setStreamingReply] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+  const streamBufferRef = useRef<StreamBufferState>({
+    targetText: '',
+    networkDone: false,
+    onDrainComplete: null,
+    notify: null,
+  });
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [auditHistory, setAuditHistory] = useState<AIAnalysisRequestRecord[]>([]);
@@ -306,23 +515,37 @@ export function AiAnalysisPage() {
     }
   }, []);
 
-  const scrollToBottomIfNearBottom = useCallback(() => {
-    const container = chatScrollContainerRef.current;
-    if (!container) return;
-    const distanceToBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distanceToBottom < 160) {
-      container.scrollTop = container.scrollHeight;
-    }
+  const resetStreamBuffer = useCallback(() => {
+    streamBufferRef.current.targetText = '';
+    streamBufferRef.current.networkDone = false;
+    streamBufferRef.current.onDrainComplete = null;
   }, []);
 
-  const handleStreamChunk = useCallback(
-    (partialText: string) => {
-      setStreamingReply(partialText);
-      scrollToBottomIfNearBottom();
-    },
-    [scrollToBottomIfNearBottom],
-  );
+  const handleStreamChunk = useCallback((partialText: string) => {
+    streamBufferRef.current.targetText = partialText;
+    streamBufferRef.current.notify?.();
+  }, []);
+
+  const finishAndDrainStreamBuffer = useCallback(async (finalText: string) => {
+    const state = streamBufferRef.current;
+    if (!state.targetText) {
+      return;
+    }
+    state.targetText = finalText;
+    state.networkDone = true;
+    const ua = typeof navigator !== 'undefined' ? (navigator.userAgent ?? '') : '';
+    if (/jsdom/i.test(ua) || !state.notify) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      const safetyTimer = setTimeout(resolve, 180);
+      state.onDrainComplete = () => {
+        clearTimeout(safetyTimer);
+        resolve();
+      };
+      state.notify?.();
+    });
+  }, []);
   // 进入 AI 页面时锁定外层 html/body 视口并归零外层残留滚动条，确保仅内部会话区可滑动
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -916,8 +1139,8 @@ export function AiAnalysisPage() {
   const handleRemoteAnalyze = async () => {
     let baseMessagesBeforeRun: AiChatMessage[] | null = null;
     try {
+      resetStreamBuffer();
       setAnalyzing(true);
-      setStreamingReply(null);
       setErrorMsg(null);
       await Promise.all([syncFormConfigIfNeeded(), ensureDataReady()]);
       const { builtPrompt: activePrompt } = latestPromptRef.current;
@@ -936,7 +1159,7 @@ export function AiAnalysisPage() {
         storage: aiStorage,
         onStreamUpdate: handleStreamChunk,
       });
-      setStreamingReply(null);
+      await finishAndDrainStreamBuffer(result.replyText);
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
         ...cur,
@@ -954,7 +1177,6 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } catch (err) {
-      setStreamingReply(null);
       if (baseMessagesBeforeRun !== null) {
         const rollback = baseMessagesBeforeRun;
         upsertSession((cur) => ({ ...cur, messages: rollback }));
@@ -964,7 +1186,7 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } finally {
-      setStreamingReply(null);
+      resetStreamBuffer();
       setAnalyzing(false);
     }
   };
@@ -1006,15 +1228,15 @@ export function AiAnalysisPage() {
     );
 
     try {
+      resetStreamBuffer();
       setAnalyzing(true);
-      setStreamingReply(null);
       setErrorMsg(null);
       await syncFormConfigIfNeeded();
       const result = await executeAiChatMessage(activeCtx, nextHistory, {
         storage: aiStorage,
         onStreamUpdate: handleStreamChunk,
       });
-      setStreamingReply(null);
+      await finishAndDrainStreamBuffer(result.replyText);
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
         ...cur,
@@ -1030,7 +1252,6 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } catch (err) {
-      setStreamingReply(null);
       const msg = err instanceof Error ? err.message : '发送对话请求失败';
       setErrorMsg(msg);
       upsertSession((cur) => ({
@@ -1047,7 +1268,7 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } finally {
-      setStreamingReply(null);
+      resetStreamBuffer();
       setAnalyzing(false);
     }
   };
@@ -1065,8 +1286,8 @@ export function AiAnalysisPage() {
     // 若上一轮是用户的自由追问，则针对该追问原地重新流式生成回复
     if (lastRealUserQuestion) {
       try {
+        resetStreamBuffer();
         setAnalyzing(true);
-        setStreamingReply(null);
         setErrorMsg(null);
         await Promise.all([syncFormConfigIfNeeded(), ensureDataReady()]);
         const { promptContext: activeCtx } = latestPromptRef.current;
@@ -1075,7 +1296,7 @@ export function AiAnalysisPage() {
           storage: aiStorage,
           onStreamUpdate: handleStreamChunk,
         });
-        setStreamingReply(null);
+        await finishAndDrainStreamBuffer(result.replyText);
         setAnalysisOutput(result.replyText);
         upsertSession((cur) => ({
           ...cur,
@@ -1091,11 +1312,10 @@ export function AiAnalysisPage() {
         const audits = await aiStorage.listRequestAudits();
         setAuditHistory(audits);
       } catch (err) {
-        setStreamingReply(null);
         const msg = err instanceof Error ? err.message : '重新生成回复失败';
         setErrorMsg(msg);
       } finally {
-        setStreamingReply(null);
+        resetStreamBuffer();
         setAnalyzing(false);
       }
       return;
@@ -1710,42 +1930,12 @@ export function AiAnalysisPage() {
                 })
               )}
 
-              {analyzing && streamingReply ? (
-                <Stack
-                  direction="row"
-                  spacing={{ xs: 0, sm: 1.5 }}
-                  alignItems="flex-start"
-                  data-testid="ai-streaming-message"
-                  sx={{ width: '100%', minWidth: 0 }}
-                >
-                  <Box
-                    sx={{
-                      width: 28,
-                      height: 28,
-                      borderRadius: '9px',
-                      backgroundColor: 'rgba(99, 102, 241, 0.1)',
-                      color: 'primary.main',
-                      display: { xs: 'none', sm: 'flex' },
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      flexShrink: 0,
-                      mt: 0.25,
-                    }}
-                  >
-                    <AutoAwesomeOutlined sx={{ fontSize: 16 }} />
-                  </Box>
-                  <Box sx={{ flex: 1, minWidth: 0, maxWidth: '100%' }}>
-                    <AiMarkdownRenderer content={streamingReply} />
-                  </Box>
-                </Stack>
-              ) : analyzing ? (
-                <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.75 }}>
-                  <CircularProgress size={15} thickness={5} />
-                  <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 13 }}>
-                    正在连接模型开始思考…
-                  </Typography>
-                </Stack>
-              ) : null}
+              {analyzing && (
+                <LiveStreamingAssistantBubble
+                  bufferRef={streamBufferRef}
+                  scrollContainerRef={chatScrollContainerRef}
+                />
+              )}
 
               {/* 保留回归校验锚点 */}
               {analysisOutput && (

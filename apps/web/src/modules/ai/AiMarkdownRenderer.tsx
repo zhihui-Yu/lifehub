@@ -7,11 +7,10 @@
  *    代码块（```）、有序/无序列表（1. / - ）以及行内加粗（**text**）与行内代码（`code`），
  *    彻底告别裸露的 Markdown 符号与纯文本堆砌。
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import {
   Box,
   CircularProgress,
-  Collapse,
   Divider,
   Paper,
   Stack,
@@ -128,6 +127,7 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
 
     // 2. 代码块 ```
     if (trimmed.startsWith('```')) {
+      const startLine = i;
       const lang = trimmed.slice(3).trim();
       const codeLines: string[] = [];
       i++;
@@ -138,7 +138,7 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
       if (i < lines.length) i++; // 跳过闭合 ```
       elements.push(
         <Box
-          key={`code-${i}`}
+          key={`code-${startLine}`}
           sx={{
             my: 1.5,
             borderRadius: 2,
@@ -224,6 +224,7 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
       i + 1 < lines.length &&
       isTableSeparatorLine(lines[i + 1] ?? '')
     ) {
+      const startLine = i;
       const headers = splitTableRow(trimmed);
       i += 2; // 跳过表头和分隔线
       const rows: string[][] = [];
@@ -237,7 +238,7 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
       }
       elements.push(
         <Box
-          key={`tbl-${i}`}
+          key={`tbl-${startLine}`}
           sx={{
             my: 1.5,
             overflowX: 'auto',
@@ -274,6 +275,7 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
 
     // 6. 引用高亮块 >
     if (trimmed.startsWith('>')) {
+      const startLine = i;
       const quoteLines: string[] = [];
       while (i < lines.length && (lines[i] ?? '').trim().startsWith('>')) {
         quoteLines.push((lines[i] ?? '').trim().replace(/^>\s?/, ''));
@@ -281,7 +283,7 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
       }
       elements.push(
         <Box
-          key={`quote-${i}`}
+          key={`quote-${startLine}`}
           sx={{
             my: 1.25,
             py: 1.1,
@@ -306,13 +308,14 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
 
     // 7. 无序列表 (- / * / •)
     if (/^([-*•])\s+/.test(trimmed)) {
+      const startLine = i;
       const items: string[] = [];
       while (i < lines.length && /^([-*•])\s+/.test((lines[i] ?? '').trim())) {
         items.push((lines[i] ?? '').trim().replace(/^([-*•])\s+/, ''));
         i++;
       }
       elements.push(
-        <Stack key={`ul-${i}`} component="ul" spacing={0.6} sx={{ my: 1, pl: 2.5, m: 0 }}>
+        <Stack key={`ul-${startLine}`} component="ul" spacing={0.6} sx={{ my: 1, pl: 2.5, m: 0 }}>
           {items.map((it, idx) => (
             <Box
               component="li"
@@ -334,13 +337,14 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
 
     // 8. 有序列表 (1. / 2.)
     if (/^\d+\.\s+/.test(trimmed)) {
+      const startLine = i;
       const items: string[] = [];
       while (i < lines.length && /^\d+\.\s+/.test((lines[i] ?? '').trim())) {
         items.push((lines[i] ?? '').trim().replace(/^\d+\.\s+/, ''));
         i++;
       }
       elements.push(
-        <Stack key={`ol-${i}`} component="ol" spacing={0.6} sx={{ my: 1, pl: 2.5, m: 0 }}>
+        <Stack key={`ol-${startLine}`} component="ol" spacing={0.6} sx={{ my: 1, pl: 2.5, m: 0 }}>
           {items.map((it, idx) => (
             <Box
               component="li"
@@ -385,7 +389,7 @@ function renderMarkdownBlocks(markdown: string): React.ReactNode[] {
 /**
  * 渲染 DeepSeek 风格 Markdown 消息体（含实时流式思考链展示与一键折叠/展开）。
  */
-export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
+function AiMarkdownRendererInner({ content }: AiMarkdownRendererProps) {
   // 检测是否包含实时思考中（`💭 【正在深度思考…】`）或已完成思考（`💭 【深度思考过程】`）段落
   const isStreamingThinking = content.startsWith('💭 【正在深度思考…】');
   const isFinishedThinking = content.startsWith('💭 【深度思考过程】');
@@ -463,7 +467,7 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
               <ExpandMore sx={{ fontSize: 16, color: 'var(--lifehub-text-muted)' }} />
             )}
           </Box>
-          <Collapse in={reasoningExpanded}>
+          {reasoningExpanded && (
             <Box
               sx={{
                 px: 2,
@@ -480,7 +484,7 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
             >
               {reasoningText}
             </Box>
-          </Collapse>
+          )}
         </Paper>
       )}
 
@@ -488,3 +492,8 @@ export function AiMarkdownRenderer({ content }: AiMarkdownRendererProps) {
     </Box>
   );
 }
+
+/**
+ * 渲染 DeepSeek 风格 Markdown 消息体（memo 化避免流式生成时重渲染已完成的历史消息）。
+ */
+export const AiMarkdownRenderer = memo(AiMarkdownRendererInner);

@@ -208,16 +208,10 @@ async function consumeStreamingProviderResponse(
   let completionTokens = 0;
   let totalTokens = 0;
   let parsedAnyStreamEvent = false;
-  let lastEmitMs = 0;
 
-  const emitProgress = (force = false): void => {
+  const emitProgress = (isDone = false): void => {
     if (!onStreamUpdate) return;
-    const now = Date.now();
-    if (!force && now - lastEmitMs < 32) {
-      return;
-    }
-    lastEmitMs = now;
-    const formatted = formatThinkingAndContentReply(reasoningAcc, contentAcc, !force);
+    const formatted = formatThinkingAndContentReply(reasoningAcc, contentAcc, !isDone);
     if (formatted.length > 0) {
       onStreamUpdate(formatted);
     }
