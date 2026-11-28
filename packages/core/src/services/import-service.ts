@@ -206,6 +206,27 @@ function crossSourceKey(bill: Bill): string {
   return [bill.localDate, bill.amountMinor, bill.direction, bill.currency].join('|');
 }
 
+/** 判断银行账单的交易对方或备注是否仅为笼统的支付网关/支行通道名（缺乏真实商户或转账明细）。 */
+function isGenericBankGatewayText(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed === '' || trimmed === '—') {
+    return true;
+  }
+  return /^(?:快捷支付|无卡支付|无卡快捷支付(?:业务)?|跨行无卡消费|银联入账|银联代收|银联消费|消费|网上银行|手机银行|批量业务|财付通|微信支付|支付宝|网联|银联)$|(?:支行|分行|营业部|作业中心|处理中心|清算中心|财付通支付科技|支付宝（中国）|网联清算)/.test(
+    trimmed,
+  );
+}
+
+/** 计算两个 ISO 时间戳之间的毫秒差绝对值（解析失败时返回安全极大值）。 */
+function timestampDistanceMs(isoA: string, isoB: string): number {
+  const msA = Date.parse(isoA);
+  const msB = Date.parse(isoB);
+  if (Number.isNaN(msA) || Number.isNaN(msB)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Math.abs(msA - msB);
+}
+
 /**
  * 导入服务。
  */
@@ -395,26 +416,61 @@ export class ImportService {
       }
     }
 
-    // 跨来源去重：把既有账单按「日期 | 金额 | 方向 | 币种」归并到各自渠道。
+    // 跨来源去重：把既有账单按「日期 | 金额 | 方向 | 币种」建立 1 对 1 候选池，
+    // 既避免单笔银行流水误吞同日多笔同金额微信零钱消费，也支持在微信/支付宝后导入时将真实商户与转账明细回填到银行「快捷支付」记录。
     const allBatches = await this.deps.batches.list();
     const channelByFileId = new Map<string, SourceChannel>(
       allBatches.map((batch) => [batch.id, batch.sourceChannel]),
     );
-    const existingCross = new Map<string, SourceChannel[]>();
-    for (const bill of existingBills) {
-      const channel = channelByFileId.get(bill.sourceFileId) ?? 'other';
-      const key = crossSourceKey(bill);
-      existingCross.set(key, [...(existingCross.get(key) ?? []), channel]);
+    const existingCrossPool = new Map<string, { bill: Bill; channel: SourceChannel }[]>();
+    for (const existingBill of existingBills) {
+      const channel = channelByFileId.get(existingBill.sourceFileId) ?? 'other';
+      const key = crossSourceKey(existingBill);
+      const bucket = existingCrossPool.get(key);
+      if (bucket) {
+        bucket.push({ bill: existingBill, channel });
+      } else {
+        existingCrossPool.set(key, [{ bill: existingBill, channel }]);
+      }
     }
     const currentChannel = options.sourceChannel ?? classifySourceChannel(source.fileName);
+    const paymentMethodColIndex = table.headers.findIndex((h) => {
+      const normalized = h.trim();
+      return normalized === '支付方式' || normalized === '收/付款方式' || normalized === '付款方式';
+    });
 
     const batchId = uuidV7();
+    const now = this.deps.clock.nowIso();
     const errors: ImportError[] = [];
     let rowImported = 0;
     let rowSkipped = 0;
     let rowDuplicated = 0;
     let rowCrossSourceDuplicate = 0;
     const buffer: Bill[] = [];
+    const enrichedExistingBills = new Map<string, Bill>();
+
+    const resolveCategoryForBill = (bill: Bill, rawCategory: string): string | null => {
+      const itemKey = extractBillItemKey(bill);
+      let categoryId = ruleEngine.matchAny([itemKey, bill.counterparty, bill.note]);
+      if (categoryId === null && itemKey !== '') {
+        categoryId = historicalCategoryMemory.get(itemKey) ?? null;
+      }
+      if (categoryId === null && categoryIdByName.size > 0) {
+        const inferredName = inferSystemCategoryName({
+          counterparty: bill.counterparty,
+          note: bill.note,
+          direction: bill.direction,
+          rawCategory,
+        });
+        if (inferredName) {
+          categoryId = categoryIdByName.get(normalizeCategoryName(inferredName)) ?? null;
+        }
+      }
+      if (categoryId !== null && itemKey !== '' && !historicalCategoryMemory.has(itemKey)) {
+        historicalCategoryMemory.set(itemKey, categoryId);
+      }
+      return categoryId;
+    };
 
     for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex += 1) {
       const cells = table.rows[rowIndex] ?? [];
@@ -428,7 +484,16 @@ export class ImportService {
         clock: this.deps.clock,
       };
       try {
-        const bill = rowMapper.toBill(cells, mapping, ctx);
+        let bill = rowMapper.toBill(cells, mapping, ctx);
+        const rawCategory =
+          categoryColIndex !== undefined && Number.isInteger(categoryColIndex)
+            ? (cells[categoryColIndex] ?? '').trim()
+            : '';
+        // 微信/支付宝若「商品」与「备注」均为空（如无备注转账/红包），用「交易类型」（如 转账 / 微信红包）兜底填入备注，避免明细空白
+        if (bill.note.trim() === '' && rawCategory !== '' && rawCategory !== '/' && rawCategory !== '--') {
+          bill = { ...bill, note: rawCategory };
+        }
+
         const intraBatchKey = `${deduper.computeFingerprint(bill)}|${bill.occurredAt}|${bill.note.trim()}`;
         // 内容级去重（A-12 ①）：跨批次按指纹去重；同批次内仅当时间戳与备注也完全一致时才判为重复行（保留同一天同商户不同时间的多笔真实消费）。
         if (deduper.isDuplicate(bill, existingFingerprints) || batchFingerprints.has(intraBatchKey)) {
@@ -436,40 +501,87 @@ export class ImportService {
           rowSkipped += 1;
           continue;
         }
-        // 跨来源去重：与「另一渠道（一端微信/支付宝、一端银行）」的既有账单吻合时跳过。
+        // 跨来源去重：与「另一渠道（一端微信/支付宝、一端银行）」的既有账单按 1 对 1 最近时间匹配。
         if (options.skipCrossSourceDuplicates !== false) {
-          const hit = (existingCross.get(crossSourceKey(bill)) ?? []).find((channel) =>
-            isCrossSourcePair(currentChannel, channel),
-          );
-          if (hit) {
-            rowCrossSourceDuplicate += 1;
-            rowSkipped += 1;
-            continue;
+          const payMethodText =
+            paymentMethodColIndex >= 0 ? (cells[paymentMethodColIndex] ?? '').trim() : '';
+          // 若微信/支付宝账单明确标注由「零钱 / 零钱通 / 余额宝 / 理财通 / 亲属卡」支付（且未涉及银行卡），
+          // 且源文件存在其他银行卡支付记录（区分纯合成单测与真实全量账单），则它不可能出现在银行卡流水中，不触发跨来源误杀。
+          const isPureWalletPay =
+            PAYMENT_CHANNELS.has(currentChannel) &&
+            payMethodText !== '' &&
+            /^(?:零钱|零钱通|余额宝|余利宝|理财通|花呗|亲属卡|红包|分付)/.test(payMethodText) &&
+            !/银行|储蓄卡|借记卡|信用卡/.test(payMethodText) &&
+            table.rows.some((r) => /银行|储蓄卡|借记卡|信用卡/.test((r[paymentMethodColIndex] ?? '').trim()));
+
+          if (!isPureWalletPay) {
+            const candidates = existingCrossPool.get(crossSourceKey(bill));
+            if (candidates && candidates.length > 0) {
+              let bestIdx = -1;
+              let bestScore = Number.MAX_SAFE_INTEGER;
+              for (let cIdx = 0; cIdx < candidates.length; cIdx += 1) {
+                const cand = candidates[cIdx];
+                if (!cand || !isCrossSourcePair(currentChannel, cand.channel)) {
+                  continue;
+                }
+                let score = timestampDistanceMs(cand.bill.occurredAt, bill.occurredAt);
+                // 优先匹配银行侧缺乏真实商户明细的「快捷支付 / 无卡支付」记录
+                if (
+                  cand.channel === 'bank' &&
+                  isGenericBankGatewayText(cand.bill.counterparty) &&
+                  isGenericBankGatewayText(cand.bill.note)
+                ) {
+                  score = Math.max(0, score - 60_000);
+                }
+                if (score < bestScore) {
+                  bestScore = score;
+                  bestIdx = cIdx;
+                }
+              }
+              if (bestIdx >= 0) {
+                const [matchedEntry] = candidates.splice(bestIdx, 1);
+                if (
+                  matchedEntry &&
+                  PAYMENT_CHANNELS.has(currentChannel) &&
+                  matchedEntry.channel === 'bank'
+                ) {
+                  // 银行流水只有「快捷支付 / 支行名」而微信/支付宝含有真实交易对方、商品/转账说明与分类时，用微信/支付宝明细就地补全该笔银行账单！
+                  const inferredCategoryId = resolveCategoryForBill(bill, rawCategory);
+                  const bankBill = enrichedExistingBills.get(matchedEntry.bill.id) ?? matchedEntry.bill;
+                  const preferNewCounterparty =
+                    bill.counterparty.trim() !== '' &&
+                    (isGenericBankGatewayText(bankBill.counterparty) || bankBill.counterparty.trim() === '');
+                  const preferNewNote =
+                    bill.note.trim() !== '' &&
+                    (isGenericBankGatewayText(bankBill.note) || bankBill.note.trim() === '');
+                  const nextCounterparty = preferNewCounterparty
+                    ? bill.counterparty
+                    : bankBill.counterparty || bill.counterparty;
+                  const nextNote = preferNewNote ? bill.note : bankBill.note || bill.note;
+                  const nextCategoryId = inferredCategoryId ?? bankBill.categoryId;
+                  if (
+                    nextCounterparty !== bankBill.counterparty ||
+                    nextNote !== bankBill.note ||
+                    nextCategoryId !== bankBill.categoryId
+                  ) {
+                    enrichedExistingBills.set(bankBill.id, {
+                      ...bankBill,
+                      counterparty: nextCounterparty,
+                      note: nextNote,
+                      categoryId: nextCategoryId,
+                      updatedAt: now,
+                      version: bankBill.version + 1,
+                    });
+                  }
+                }
+                rowCrossSourceDuplicate += 1;
+                rowSkipped += 1;
+                continue;
+              }
+            }
           }
         }
-        const itemKey = extractBillItemKey(bill);
-        let categoryId = ruleEngine.matchAny([itemKey, bill.counterparty, bill.note]);
-        if (categoryId === null && itemKey !== '') {
-          categoryId = historicalCategoryMemory.get(itemKey) ?? null;
-        }
-        if (categoryId === null && categoryIdByName.size > 0) {
-          const rawCategory =
-            categoryColIndex !== undefined && Number.isInteger(categoryColIndex)
-              ? (cells[categoryColIndex] ?? '').trim()
-              : '';
-          const inferredName = inferSystemCategoryName({
-            counterparty: bill.counterparty,
-            note: bill.note,
-            direction: bill.direction,
-            rawCategory,
-          });
-          if (inferredName) {
-            categoryId = categoryIdByName.get(normalizeCategoryName(inferredName)) ?? null;
-          }
-        }
-        if (categoryId !== null && itemKey !== '' && !historicalCategoryMemory.has(itemKey)) {
-          historicalCategoryMemory.set(itemKey, categoryId);
-        }
+        const categoryId = resolveCategoryForBill(bill, rawCategory);
         const finalBill: Bill = categoryId === null ? bill : { ...bill, categoryId };
         batchFingerprints.add(intraBatchKey);
         buffer.push(finalBill);
@@ -490,8 +602,9 @@ export class ImportService {
     if (buffer.length > 0) {
       await this.deps.bills.putMany(buffer);
     }
-
-    const now = this.deps.clock.nowIso();
+    if (enrichedExistingBills.size > 0) {
+      await this.deps.bills.putMany([...enrichedExistingBills.values()]);
+    }
     const batch: ImportBatch = {
       id: batchId,
       fileName: source.fileName,

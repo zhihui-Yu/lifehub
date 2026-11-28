@@ -55,6 +55,57 @@ export function formatIsoUtc(instant: Date): string {
   return instant.toISOString();
 }
 
+/** 缓存各时区的 Intl.DateTimeFormat 实例，避免万级账单导入与渲染时重复构造导致主线程卡顿。 */
+const localDateFormatterCache = new Map<string, Intl.DateTimeFormat>();
+const wallClockFormatterCache = new Map<string, Intl.DateTimeFormat>();
+const wallClockUtcFormatterCache = new Map<string, Intl.DateTimeFormat>();
+
+function getLocalDateFormatter(timeZone: string): Intl.DateTimeFormat {
+  let fmt = localDateFormatterCache.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    localDateFormatterCache.set(timeZone, fmt);
+  }
+  return fmt;
+}
+
+function getWallClockFormatter(timeZone: string): Intl.DateTimeFormat {
+  let fmt = wallClockFormatterCache.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    wallClockFormatterCache.set(timeZone, fmt);
+  }
+  return fmt;
+}
+
+function getWallClockUtcFormatter(timeZone: string): Intl.DateTimeFormat {
+  let fmt = wallClockUtcFormatterCache.get(timeZone);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    wallClockUtcFormatterCache.set(timeZone, fmt);
+  }
+  return fmt;
+}
+
 /**
  * 把时刻换算为指定时区下的日历日。
  *
@@ -67,12 +118,13 @@ export function formatIsoUtc(instant: Date): string {
  * @throws {LifeHubError} `LIFEHUB_E_VALIDATION` —— 时区名不被 Intl 接受
  */
 export function toLocalDate(instant: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(instant);
+  let formatter: Intl.DateTimeFormat;
+  try {
+    formatter = getLocalDateFormatter(timeZone);
+  } catch {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', `无法解析时区 ${timeZone} 下的日历日`);
+  }
+  const parts = formatter.formatToParts(instant);
 
   const year = parts.find((p) => p.type === 'year')?.value ?? '';
   const month = parts.find((p) => p.type === 'month')?.value ?? '';
@@ -91,12 +143,7 @@ export function toLocalDate(instant: Date, timeZone: string): string {
  * @returns 'HH:mm' 形式的墙钟时间
  */
 export function toWallClock(instant: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(instant);
+  const parts = getWallClockFormatter(timeZone).formatToParts(instant);
 
   const hour = parts.find((p) => p.type === 'hour')?.value ?? '00';
   const minute = parts.find((p) => p.type === 'minute')?.value ?? '00';
@@ -160,16 +207,7 @@ export function isIsoUtc(value: string): boolean {
  * @returns 墙钟各分量按 `Date.UTC` 合成的毫秒数
  */
 function getWallClockAsUtcMs(instantMs: number, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(instantMs));
+  const parts = getWallClockUtcFormatter(timeZone).formatToParts(new Date(instantMs));
 
   let year = 1970;
   let month = 1;

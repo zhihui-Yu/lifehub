@@ -26,6 +26,10 @@ export const NAIVE_TZ_MIGRATION_KEY = 'lifehub:migration:naive-tz-fixed:v1';
  * @returns 投影后的本地日历日字符串
  * @throws 无；异常在内部捕获并回退 `bill.localDate`
  */
+/** 投影日期缓存（避免万级账单每次筛选重渲染时重复 new Date + Intl 格式化）。 */
+const projectedLocalDateCache = new Map<string, string>();
+const MAX_PROJECTED_DATE_CACHE_SIZE = 30_000;
+
 function projectBillLocalDate(bill: Bill, effectiveTimeZone: string): string {
   if (!bill.occurredAt) {
     return bill.localDate;
@@ -37,12 +41,22 @@ function projectBillLocalDate(bill: Bill, effectiveTimeZone: string): string {
   ) {
     return bill.localDate;
   }
+  const cacheKey = `${effectiveTimeZone}|${bill.occurredAt}`;
+  const cached = projectedLocalDateCache.get(cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
   const parsed = new Date(bill.occurredAt);
   if (Number.isNaN(parsed.getTime())) {
     return bill.localDate;
   }
   try {
-    return toLocalDate(parsed, effectiveTimeZone);
+    const projected = toLocalDate(parsed, effectiveTimeZone);
+    if (projectedLocalDateCache.size >= MAX_PROJECTED_DATE_CACHE_SIZE) {
+      projectedLocalDateCache.clear();
+    }
+    projectedLocalDateCache.set(cacheKey, projected);
+    return projected;
   } catch {
     return bill.localDate;
   }
@@ -73,6 +87,9 @@ export interface UseBillListResult {
   /** 重新加载。 */
   reload: () => Promise<void>;
 }
+
+/** 记录最近一次已完成全量解密加载的 runtime 引用（避免切换 Tab 时对万级账单重复全表解密）。 */
+let hydratedBillRuntime: unknown = null;
 
 /**
  * 初始化账单列表。
@@ -155,6 +172,7 @@ export function useBillList(): UseBillListResult {
           // localStorage 受限环境忽略
         }
       }
+      hydratedBillRuntime = runtime;
       setBills(list);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '本地数据读写失败');
@@ -164,8 +182,15 @@ export function useBillList(): UseBillListResult {
   }, [runtime, setBills, setError, setLoading, status]);
 
   useEffect(() => {
+    if (!runtime || status !== 'unlocked') {
+      return;
+    }
+    // 内存工作集已针对当前运行时加载过且非空时直接复用，切 Tab 零延迟；为空或运行时变更时拉取最新数据
+    if (hydratedBillRuntime === runtime && useBillStore.getState().bills.length > 0) {
+      return;
+    }
     void reload();
-  }, [reload]);
+  }, [reload, runtime, status]);
 
   const projectedBills = useMemo(() => {
     const effectiveTimeZone =

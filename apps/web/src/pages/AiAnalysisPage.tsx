@@ -410,11 +410,16 @@ export function AiAnalysisPage() {
       setLoadedCompletionEvents(rangedCompletionEvents);
 
       if (runtime && status === 'unlocked') {
+        const currentStoreBills = useBillStore.getState().bills;
         const [repoBills, repoCategories] = await Promise.all([
-          runtime.billRepository.list(),
+          currentStoreBills.length > 0
+            ? Promise.resolve(currentStoreBills)
+            : runtime.billRepository.list(),
           runtime.categoryRepository.list(),
         ]);
-        setLoadedBills(repoBills);
+        if (currentStoreBills.length === 0) {
+          setLoadedBills(repoBills);
+        }
         const map = new Map<string, string>();
         for (const cat of repoCategories) {
           map.set(cat.id, cat.name);

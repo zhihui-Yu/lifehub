@@ -260,6 +260,10 @@ function readSnapshotCache(): string | null {
       if (fromStorage) {
         return fromStorage;
       }
+      if (window.localStorage.length === 0) {
+        memoryOverflowSnapshotRaw = null;
+        return null;
+      }
     }
   } catch {
     // 忽略读取异常
@@ -508,6 +512,8 @@ export function resolveCloudEndpointTarget(
     let trimmedPath = urlObj.pathname.replace(/\/+$/, '');
     if (trimmedPath.endsWith(`/${fileName}`)) {
       trimmedPath = trimmedPath.slice(0, -(fileName.length + 1));
+    } else {
+      trimmedPath = trimmedPath.replace(/\/lifehub-[a-z0-9._-]+\.json\.enc$/i, '');
     }
     const legacyDir = (config.bucket ?? '').trim().replace(/^\/+|\/+$/g, '');
     if (/^\/dav$/i.test(trimmedPath) || trimmedPath === '') {
@@ -551,10 +557,12 @@ export function resolveCloudEndpointTarget(
   // 2. 对象存储（COS / OSS / OBS / S3）：优先识别 Virtual-Hosted 域名中的 Bucket
   const endpointHost = urlObj.host;
   let cleanedUrlPath = urlObj.pathname.replace(/^\/+|\/+$/g, '');
-  if (cleanedUrlPath === fileName) {
+  if (cleanedUrlPath === fileName || /^lifehub-[a-z0-9._-]+\.json\.enc$/i.test(cleanedUrlPath)) {
     cleanedUrlPath = '';
   } else if (cleanedUrlPath.endsWith(`/${fileName}`)) {
     cleanedUrlPath = cleanedUrlPath.slice(0, -(fileName.length + 1));
+  } else {
+    cleanedUrlPath = cleanedUrlPath.replace(/\/lifehub-[a-z0-9._-]+\.json\.enc$/i, '');
   }
 
   const vhost = matchVirtualHostedBucket(endpointHost);
@@ -2019,16 +2027,399 @@ function buildCorrectedBucketEndpointUrl(
   return bucketName ? `https://${bucketName}.${cleanHost}` : `https://${cleanHost}`;
 }
 
+/** 旧版单文件全量加密备份对象名（保留向后兼容读取与离线导出）。 */
+export const LEGACY_CLOUD_BACKUP_FILE = 'lifehub-backup.json.enc';
+
+/** 分片增量同步加密清单对象名。 */
+export const CLOUD_SYNC_MANIFEST_FILE = 'lifehub-sync-manifest.json.enc';
+
+/** 非账单生活模块（分类/课表/习惯/树洞/删除墓碑）加密分片对象名。 */
+export const CLOUD_CORE_SHARD_FILE = 'lifehub-shard-core.json.enc';
+
+/** 单个加密分片的索引描述符。 */
+export interface CloudShardDescriptor {
+  /** 分片逻辑键（`'core'` 或 `'bills-YYYY-MM'`）。 */
+  key: string;
+  /** 远端对象文件名（`lifehub-shard-*.json.enc`）。 */
+  fileName: string;
+  /** 规范化分片明文 JSON 的确定性 128-bit 十六进制摘要（内容未变则恒等）。 */
+  contentHash: string;
+  /** 分片内记录条数。 */
+  itemCount: number;
+  /** 加密后字节体积。 */
+  sizeBytes?: number;
+}
+
+/** 加密存储在 `lifehub-sync-manifest.json.enc` 内的分片清单结构。 */
+interface CloudShardManifestPayload {
+  schema: 'lifehub-sharded-v1';
+  revision: number;
+  syncedAt: string;
+  billCount: number;
+  categoryCount: number;
+  scheduleCount: number;
+  habitCount: number;
+  diaryCount: number;
+  shards: Record<string, CloudShardDescriptor>;
+}
+
+/** 本地计算出的待同步分片。 */
+export interface ComputedCloudShard {
+  key: string;
+  fileName: string;
+  contentHash: string;
+  itemCount: number;
+  canonicalJson: string;
+}
+
+/** 内容寻址已校验分片内存缓存（键含 contentHash，天然无脏读，加速跨次增量对比与恢复）。 */
+const verifiedShardPlainCache = new Map<string, string>();
+const MAX_VERIFIED_SHARD_CACHE_ENTRIES = 240;
+
+function makeVerifiedShardCacheKey(
+  bucketNamespace: string,
+  passwordFingerprint: string,
+  shardKey: string,
+  contentHash: string,
+): string {
+  return `${bucketNamespace}::${passwordFingerprint}::${shardKey}::${contentHash}`;
+}
+
+function getVerifiedShardPlain(
+  bucketNamespace: string,
+  passwordFingerprint: string,
+  shardKey: string,
+  contentHash: string,
+): string | undefined {
+  return verifiedShardPlainCache.get(
+    makeVerifiedShardCacheKey(bucketNamespace, passwordFingerprint, shardKey, contentHash),
+  );
+}
+
+function putVerifiedShardPlain(
+  bucketNamespace: string,
+  passwordFingerprint: string,
+  shardKey: string,
+  contentHash: string,
+  canonicalJson: string,
+): void {
+  if (verifiedShardPlainCache.size >= MAX_VERIFIED_SHARD_CACHE_ENTRIES) {
+    const oldestKey = verifiedShardPlainCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      verifiedShardPlainCache.delete(oldestKey);
+    }
+  }
+  verifiedShardPlainCache.set(
+    makeVerifiedShardCacheKey(bucketNamespace, passwordFingerprint, shardKey, contentHash),
+    canonicalJson,
+  );
+}
+
 /**
- * 拉取远端云存储上的当前备份快照（区分「桶内尚无备份文件 404」与「网络/鉴权/桶不存在异常」）。
+ * 计算确定性 128-bit 内容哈希（用于判断分片是否有实质数据变动）。
  */
-async function fetchRemoteSnapshotStatus(config: CloudStorageConfig): Promise<{
+export function computeShardContentHash(canonicalJson: string): string {
+  return computePasswordAuthTag('lifehub-shard-digest-v1', 'canonical', canonicalJson);
+}
+
+function sortByIdAsc<T extends { id: string }>(items: readonly T[]): T[] {
+  return [...items].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * 将完整生活数据集切分为「1 个核心生活分片 + N 个按月账单分片」，并为每个分片生成确定性内容哈希。
+ *
+ * 说明：按月切分使历史月份账单在后续记账/导入新月份时哈希恒定不变，实现零重传、零重复下载。
+ */
+export function partitionDatasetIntoShards(
+  dataset: CloudFullDataset,
+): Map<string, ComputedCloudShard> {
+  const shards = new Map<string, ComputedCloudShard>();
+
+  const sortedCategories = sortByIdAsc(dataset.categories);
+  const sortedSlots = sortByIdAsc(dataset.scheduleSlots);
+  const sortedEvents = sortByIdAsc(dataset.completionEvents);
+  const sortedHabits = sortByIdAsc(dataset.habits);
+  const sortedCheckIns = sortByIdAsc(dataset.habitCheckIns);
+  const sortedDiaries = sortByIdAsc(dataset.diaryEntries);
+  const sortedTombstones = [...normalizeCloudTombstones(dataset.tombstones)].sort((a, b) => {
+    const ka = `${a.entityType}::${a.id}`;
+    const kb = `${b.entityType}::${b.id}`;
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+
+  // 保留用户展示顺序（如习惯卡片、分类、课表顺序），同时对按 ID 升序的规范化视图计算确定性 contentHash
+  const corePayloadJson = JSON.stringify({
+    format: 'lifehub-cloud-shard-core-v1',
+    categories: [...dataset.categories],
+    scheduleSlots: [...dataset.scheduleSlots],
+    completionEvents: sortedEvents,
+    habits: [...dataset.habits],
+    habitCheckIns: sortedCheckIns,
+    diaryEntries: [...dataset.diaryEntries],
+    tombstones: sortedTombstones,
+  });
+  const coreHashCanonicalJson = JSON.stringify({
+    format: 'lifehub-cloud-shard-core-v1',
+    categories: sortedCategories,
+    scheduleSlots: sortedSlots,
+    completionEvents: sortedEvents,
+    habits: sortedHabits,
+    habitCheckIns: sortedCheckIns,
+    diaryEntries: sortedDiaries,
+    tombstones: sortedTombstones,
+  });
+  const coreItemCount =
+    sortedCategories.length +
+    sortedSlots.length +
+    sortedEvents.length +
+    sortedHabits.length +
+    sortedCheckIns.length +
+    sortedDiaries.length +
+    sortedTombstones.length;
+  shards.set('core', {
+    key: 'core',
+    fileName: CLOUD_CORE_SHARD_FILE,
+    contentHash: computeShardContentHash(coreHashCanonicalJson),
+    itemCount: coreItemCount,
+    canonicalJson: corePayloadJson,
+  });
+
+  const billsByMonth = new Map<string, Bill[]>();
+  for (const bill of dataset.bills) {
+    const month = /^\d{4}-\d{2}/.test(bill.localDate) ? bill.localDate.slice(0, 7) : 'unknown';
+    const bucket = billsByMonth.get(month);
+    if (bucket) {
+      bucket.push(bill);
+    } else {
+      billsByMonth.set(month, [bill]);
+    }
+  }
+
+  const sortedMonths = [...billsByMonth.keys()].sort();
+  for (const month of sortedMonths) {
+    const monthBills = sortByIdAsc(billsByMonth.get(month) ?? []);
+    if (monthBills.length === 0) {
+      continue;
+    }
+    const shardKey = `bills-${month}`;
+    const fileName = `lifehub-shard-bills-${month}.json.enc`;
+    const canonicalJson = JSON.stringify({
+      format: 'lifehub-cloud-shard-bills-v1',
+      month,
+      bills: monthBills,
+    });
+    shards.set(shardKey, {
+      key: shardKey,
+      fileName,
+      contentHash: computeShardContentHash(canonicalJson),
+      itemCount: monthBills.length,
+      canonicalJson,
+    });
+  }
+
+  return shards;
+}
+
+/**
+ * 将单个分片或清单明文 JSON 压缩并加密封装为标准 `StoredCloudSnapshot` 文本。
+ */
+function sealEncryptedCloudObject(
+  plainJson: string,
+  secret: string,
+  meta: CloudSyncRecord,
+  enableCompression = true,
+): { serialized: string; sizeBytes: number } {
+  const payloadToEncrypt = enableCompression
+    ? new TextDecoder().decode(new TextEncoder().encode(compressBackupJson(plainJson)))
+    : plainJson;
+  const salt = `lh-salt-${meta.syncedAt}-${meta.objectKey.slice(-16)}`;
+  const ciphertextBase64 = encodeEncryptedPayload(payloadToEncrypt, secret, salt);
+  const authTag = computePasswordAuthTag(secret, salt, payloadToEncrypt);
+  const snapshot: StoredCloudSnapshot = {
+    meta: {
+      ...meta,
+      payloadPreview: `${enableCompression ? 'LZ77压缩+' : ''}流加密载荷 (${ciphertextBase64.slice(0, 24)}...)`,
+    },
+    ciphertextBase64,
+    salt,
+    authTag,
+    ...(enableCompression ? { compression: 'lh-lz1' as const } : {}),
+  };
+  const serialized = JSON.stringify(snapshot);
+  const sizeBytes = new TextEncoder().encode(serialized).length;
+  snapshot.meta.sizeBytes = sizeBytes;
+  return { serialized: JSON.stringify(snapshot), sizeBytes };
+}
+
+/**
+ * 解密单个远端分片或清单快照，返回还原后的明文 JSON 字符串。
+ */
+function unsealEncryptedCloudObject(snapshot: StoredCloudSnapshot, secret: string): string {
+  const normalizedSecret = secret.trim();
+  if (!normalizedSecret) {
+    throw new LifeHubError(
+      'LIFEHUB_E_VALIDATION',
+      '登录密码错误，无法解密还原云端数据（请先填写加密密码）',
+    );
+  }
+  const { plainText, salvagedLegacySurrogate } = decodeEncryptedPayload(
+    snapshot.ciphertextBase64,
+    normalizedSecret,
+    snapshot.salt ?? '',
+    snapshot.authTag ?? '',
+    snapshot.meta?.passwordFingerprint,
+  );
+  const rawDecompressed =
+    snapshot.compression === 'lh-lz1' ? decompressBackupJson(plainText) : plainText;
+  return salvagedLegacySurrogate ? cleanBrokenSurrogates(rawDecompressed) : rawDecompressed;
+}
+
+/**
+ * 从已解密的分片 JSON 映射表组装完整 `CloudFullDataset`。
+ */
+function assembleDatasetFromShardJsons(shardJsonByKey: ReadonlyMap<string, string>): CloudFullDataset {
+  const bills: Bill[] = [];
+  let categories: Category[] = [];
+  let scheduleSlots: StoredScheduleSlot[] = [];
+  let completionEvents: CompletionEvent[] = [];
+  let habits: StoredHabit[] = [];
+  let habitCheckIns: StoredHabitCheckIn[] = [];
+  let diaryEntries: DecryptedDiaryEntry[] = [];
+  let tombstones: DeletedEntityTombstone[] = [];
+
+  for (const [key, rawJson] of shardJsonByKey.entries()) {
+    const parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    if (key === 'core' || parsed.format === 'lifehub-cloud-shard-core-v1') {
+      categories = Array.isArray(parsed.categories) ? (parsed.categories as Category[]) : [];
+      scheduleSlots = Array.isArray(parsed.scheduleSlots)
+        ? (parsed.scheduleSlots as StoredScheduleSlot[])
+        : [];
+      completionEvents = Array.isArray(parsed.completionEvents)
+        ? (parsed.completionEvents as CompletionEvent[])
+        : [];
+      habits = Array.isArray(parsed.habits) ? (parsed.habits as StoredHabit[]) : [];
+      habitCheckIns = Array.isArray(parsed.habitCheckIns)
+        ? (parsed.habitCheckIns as StoredHabitCheckIn[])
+        : [];
+      diaryEntries = Array.isArray(parsed.diaryEntries)
+        ? (parsed.diaryEntries as DecryptedDiaryEntry[])
+        : [];
+      tombstones = Array.isArray(parsed.tombstones)
+        ? normalizeCloudTombstones(parsed.tombstones as DeletedEntityTombstone[])
+        : [];
+    } else if (key.startsWith('bills-') || parsed.format === 'lifehub-cloud-shard-bills-v1') {
+      if (Array.isArray(parsed.bills)) {
+        for (const b of parsed.bills as Bill[]) {
+          bills.push(b);
+        }
+      }
+    }
+  }
+
+  bills.sort((a, b) => (a.occurredAt > b.occurredAt ? -1 : a.occurredAt < b.occurredAt ? 1 : 0));
+  return {
+    bills,
+    categories,
+    scheduleSlots,
+    completionEvents,
+    habits,
+    habitCheckIns,
+    diaryEntries,
+    tombstones,
+  };
+}
+
+/**
+ * 将合并或拉取后的完整数据集快速写入本机快照缓存（账单量大时跳过高耗时全量 LZ77 压缩，保持主线程丝滑）。
+ */
+function writeLocalDatasetSnapshotCache(
+  config: CloudStorageConfig,
+  dataset: CloudFullDataset,
+  secret: string,
+  revision: number,
+  syncedAt: string,
+  totalRemoteSizeBytes?: number,
+): CloudSyncRecord {
+  const resolved = resolveCloudEndpointTarget(config);
+  const preset = getCloudProviderPreset(resolved.effectiveProvider);
+  const normalizedSecret = secret.trim();
+  const currentFingerprint = computePasswordFingerprint(normalizedSecret);
+  const rememberPassword = config.rememberPassword !== false;
+  saveCloudConfig({
+    ...config,
+    encryptUpload: true,
+    rememberPassword,
+    savedPassword: rememberPassword ? normalizedSecret : '',
+  });
+
+  const compactSourceJson = JSON.stringify({
+    format: 'lifehub-cloud-backup-v1',
+    encrypted: true,
+    revision,
+    syncedAt,
+    billCount: dataset.bills.length,
+    categoryCount: dataset.categories.length,
+    scheduleCount: dataset.scheduleSlots.length,
+    habitCount: dataset.habits.length,
+    diaryCount: dataset.diaryEntries.length,
+    bills: dataset.bills,
+    ...(dataset.categories.length > 0 ? { categories: dataset.categories } : {}),
+    ...(dataset.scheduleSlots.length > 0 ? { scheduleSlots: dataset.scheduleSlots } : {}),
+    ...(dataset.completionEvents.length > 0 ? { completionEvents: dataset.completionEvents } : {}),
+    ...(dataset.habits.length > 0 ? { habits: dataset.habits } : {}),
+    ...(dataset.habitCheckIns.length > 0 ? { habitCheckIns: dataset.habitCheckIns } : {}),
+    ...(dataset.diaryEntries.length > 0 ? { diaryEntries: dataset.diaryEntries } : {}),
+    ...(dataset.tombstones.length > 0 ? { tombstones: dataset.tombstones } : {}),
+  });
+
+  const baseMeta: CloudSyncRecord = {
+    provider: resolved.effectiveProvider,
+    providerName: preset.name,
+    endpoint: config.endpoint.trim(),
+    bucket: resolved.bucketName,
+    encrypted: true,
+    billCount: dataset.bills.length,
+    categoryCount: dataset.categories.length,
+    scheduleCount: dataset.scheduleSlots.length,
+    habitCount: dataset.habits.length,
+    diaryCount: dataset.diaryEntries.length,
+    syncedAt,
+    objectKey: resolved.objectKey,
+    payloadPreview: '',
+    passwordFingerprint: currentFingerprint,
+    revision,
+  };
+
+  // 本地缓存仅用于本机还原/预览：当账单 > 300 条时跳过 O(N*W) LZ77 全量压缩，消除主线程卡顿
+  const shouldCompressLocal = dataset.bills.length <= 300;
+  const sealed = sealEncryptedCloudObject(
+    compactSourceJson,
+    normalizedSecret,
+    baseMeta,
+    shouldCompressLocal,
+  );
+  const parsedSnap = JSON.parse(sealed.serialized) as StoredCloudSnapshot;
+  if (typeof totalRemoteSizeBytes === 'number' && totalRemoteSizeBytes > 0) {
+    parsedSnap.meta.sizeBytes = totalRemoteSizeBytes;
+  }
+  writeSnapshotCache(JSON.stringify(parsedSnap));
+  return parsedSnap.meta;
+}
+
+/**
+ * 拉取远端指定对象文件并解析为 `StoredCloudSnapshot`（区分「对象不存在 404」与「网络/鉴权/桶不存在异常」）。
+ */
+async function fetchRemoteObjectSnapshot(
+  config: CloudStorageConfig,
+  fileName: string,
+): Promise<{
   exists: boolean;
   snapshot?: StoredCloudSnapshot;
   rawBody?: string;
   correctedEndpoint?: string;
 }> {
-  const signed = await buildSignedCloudHttpRequest(config, 'GET', 'lifehub-backup.json.enc');
+  const signed = await buildSignedCloudHttpRequest(config, 'GET', fileName);
   let result = await executeCloudHttpRequest(signed.url, 'GET', signed.headers);
   let correctedEndpoint: string | undefined;
 
@@ -2042,7 +2433,7 @@ async function fetchRemoteSnapshotStatus(config: CloudStorageConfig): Promise<{
       const retrySigned = await buildSignedCloudHttpRequest(
         config,
         'GET',
-        'lifehub-backup.json.enc',
+        fileName,
         correctedEndpoint,
       );
       result = await executeCloudHttpRequest(retrySigned.url, 'GET', retrySigned.headers);
@@ -2094,55 +2485,13 @@ async function fetchRemoteSnapshotStatus(config: CloudStorageConfig): Promise<{
 }
 
 /**
- * 发起真实网络请求探测云存储连通性与密钥鉴权（若未填密钥则仅做本地地址校验）。
+ * 将单个序列化加密对象通过 HTTP PUT 写入远端指定 `fileName`。
  */
-export async function probeRemoteCloudConnection(config: CloudStorageConfig): Promise<{
-  ok: boolean;
-  message: string;
-  correctedEndpoint?: string;
-  remoteRecord?: CloudSyncRecord;
-}> {
-  const localCheck = testCloudConnection(config);
-  if (!localCheck.ok) {
-    return localCheck;
-  }
-  const hasCredentials =
-    config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0;
-  if (!hasCredentials) {
-    return localCheck;
-  }
-
-  try {
-    const resolved = resolveCloudEndpointTarget(config);
-    const preset = getCloudProviderPreset(resolved.effectiveProvider);
-    const remote = await fetchRemoteSnapshotStatus(config);
-    if (remote.exists && remote.snapshot) {
-      const rev = remote.snapshot.meta.revision ?? 1;
-      return {
-        ok: true,
-        message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} · 云端已有备份 v${rev}，含 ${remote.snapshot.meta.billCount} 条账单）`,
-        remoteRecord: remote.snapshot.meta,
-        ...(remote.correctedEndpoint ? { correctedEndpoint: remote.correctedEndpoint } : {}),
-      };
-    }
-    return {
-      ok: true,
-      message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} 可达，云端暂未上传过备份文件）`,
-      ...(remote.correctedEndpoint ? { correctedEndpoint: remote.correctedEndpoint } : {}),
-    };
-  } catch (err) {
-    return {
-      ok: false,
-      message: err instanceof Error ? `连接失败：${err.message}` : '连接失败：远程对象存储不可达',
-    };
-  }
-}
-
-/**
- * 将本地已生成的加密备份快照真正通过 HTTP PUT 上传至远程 OSS / COS / OBS / WebDAV / S3 存储桶。
- */
-export async function pushSnapshotToRemoteCloud(
+async function putRemoteObjectSnapshot(
   config: CloudStorageConfig,
+  fileName: string,
+  serializedBody: string,
+  skipWebdavMkcol = false,
 ): Promise<{
   remoteUrl: string;
   correctedEndpoint?: string;
@@ -2156,15 +2505,8 @@ export async function pushSnapshotToRemoteCloud(
     );
   }
 
-  const rawSnapshot = readSnapshotCache();
-  if (!rawSnapshot) {
-    throw new LifeHubError('LIFEHUB_E_VALIDATION', '本地尚无待上传的加密备份快照');
-  }
-
-  const signed = await buildSignedCloudHttpRequest(config, 'PUT', 'lifehub-backup.json.enc');
-
-  // 若为 WebDAV，先尝试创建目录（MKCOL）
-  if (signed.effectiveProvider === 'jianguoyun-webdav' && signed.webdavDirUrl) {
+  const signed = await buildSignedCloudHttpRequest(config, 'PUT', fileName);
+  if (!skipWebdavMkcol && signed.effectiveProvider === 'jianguoyun-webdav' && signed.webdavDirUrl) {
     try {
       await executeCloudHttpRequest(signed.webdavDirUrl, 'MKCOL', signed.headers);
     } catch {
@@ -2172,7 +2514,7 @@ export async function pushSnapshotToRemoteCloud(
     }
   }
 
-  let result = await executeCloudHttpRequest(signed.url, 'PUT', signed.headers, rawSnapshot);
+  let result = await executeCloudHttpRequest(signed.url, 'PUT', signed.headers, serializedBody);
   let correctedEndpoint: string | undefined;
 
   if (result.status >= 300) {
@@ -2185,14 +2527,14 @@ export async function pushSnapshotToRemoteCloud(
       const retrySigned = await buildSignedCloudHttpRequest(
         config,
         'PUT',
-        'lifehub-backup.json.enc',
+        fileName,
         correctedEndpoint,
       );
       result = await executeCloudHttpRequest(
         retrySigned.url,
         'PUT',
         retrySigned.headers,
-        rawSnapshot,
+        serializedBody,
       );
       if (result.status >= 200 && result.status < 300) {
         saveCloudConfig({ ...config, endpoint: correctedEndpoint });
@@ -2222,12 +2564,162 @@ export async function pushSnapshotToRemoteCloud(
 }
 
 /**
- * 上传前强制执行「先拉取远端 → 按 ID + 更新时间与删除墓碑合并 → 加密上传新版本」（Pull-Merge-Push）。
- *
- * 说明：
- * - 不在启动或关闭时轮询远端，仅在执行远程上传前强制拉取检查；
- * - 若远端已存在快照，自动使用登录密码解密并与本机数据取最新并集（同时应用删除墓碑），
- *   返回合并后的数据集供调用方写回本机数据库，保证两端数据 100% 一致、绝不误覆盖。
+ * 按分片清单增量拉取远端数据集：本机已有相同 `contentHash` 的分片直接复用，仅网络下载有变动的分片。
+ */
+async function resolveShardedRemoteDataset(
+  config: CloudStorageConfig,
+  manifest: CloudShardManifestPayload,
+  secret: string,
+  localShards?: ReadonlyMap<string, ComputedCloudShard>,
+): Promise<{ dataset: CloudFullDataset; downloadedShardCount: number }> {
+  const resolvedTarget = resolveCloudEndpointTarget(config, CLOUD_SYNC_MANIFEST_FILE);
+  const bucketNamespace = `${resolvedTarget.host}/${resolvedTarget.bucketName}`;
+  const passwordFp = computePasswordFingerprint(secret);
+  const shardJsonByKey = new Map<string, string>();
+  const toDownload: CloudShardDescriptor[] = [];
+
+  for (const [shardKey, desc] of Object.entries(manifest.shards ?? {})) {
+    const localMatch = localShards?.get(shardKey);
+    if (localMatch && localMatch.contentHash === desc.contentHash) {
+      // 本机内存分片内容哈希与云端完全一致：零下载、零解密直接复用
+      shardJsonByKey.set(shardKey, localMatch.canonicalJson);
+      putVerifiedShardPlain(
+        bucketNamespace,
+        passwordFp,
+        shardKey,
+        desc.contentHash,
+        localMatch.canonicalJson,
+      );
+      continue;
+    }
+    const cachedPlain = getVerifiedShardPlain(
+      bucketNamespace,
+      passwordFp,
+      shardKey,
+      desc.contentHash,
+    );
+    if (cachedPlain !== undefined) {
+      shardJsonByKey.set(shardKey, cachedPlain);
+      continue;
+    }
+    toDownload.push(desc);
+  }
+
+  const DOWNLOAD_CONCURRENCY = 4;
+  for (let i = 0; i < toDownload.length; i += DOWNLOAD_CONCURRENCY) {
+    const batch = toDownload.slice(i, i + DOWNLOAD_CONCURRENCY);
+    const fetched = await Promise.all(
+      batch.map(async (desc) => {
+        const res = await fetchRemoteObjectSnapshot(config, desc.fileName);
+        if (!res.exists || !res.snapshot) {
+          throw new LifeHubError(
+            'LIFEHUB_E_STORAGE',
+            `云端分片文件缺失（${desc.fileName}），请重新完整上传一次云端备份`,
+          );
+        }
+        const plainJson = unsealEncryptedCloudObject(res.snapshot, secret);
+        putVerifiedShardPlain(bucketNamespace, passwordFp, desc.key, desc.contentHash, plainJson);
+        return { key: desc.key, plainJson };
+      }),
+    );
+    for (const item of fetched) {
+      shardJsonByKey.set(item.key, item.plainJson);
+    }
+  }
+
+  return {
+    dataset: assembleDatasetFromShardJsons(shardJsonByKey),
+    downloadedShardCount: toDownload.length,
+  };
+}
+
+/**
+ * 发起真实网络请求探测云存储连通性与密钥鉴权（优先检查约 1KB 的分片清单，向后兼容旧版单文件备份）。
+ */
+export async function probeRemoteCloudConnection(config: CloudStorageConfig): Promise<{
+  ok: boolean;
+  message: string;
+  correctedEndpoint?: string;
+  remoteRecord?: CloudSyncRecord;
+}> {
+  const localCheck = testCloudConnection(config);
+  if (!localCheck.ok) {
+    return localCheck;
+  }
+  const hasCredentials =
+    config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0;
+  if (!hasCredentials) {
+    return localCheck;
+  }
+
+  try {
+    const resolved = resolveCloudEndpointTarget(config);
+    const preset = getCloudProviderPreset(resolved.effectiveProvider);
+    const manifestRemote = await fetchRemoteObjectSnapshot(config, CLOUD_SYNC_MANIFEST_FILE);
+    const effectiveCfg = manifestRemote.correctedEndpoint
+      ? { ...config, endpoint: manifestRemote.correctedEndpoint }
+      : config;
+
+    if (manifestRemote.exists && manifestRemote.snapshot) {
+      const rev = manifestRemote.snapshot.meta.revision ?? 1;
+      return {
+        ok: true,
+        message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} · 云端已有分片备份 v${rev}，含 ${manifestRemote.snapshot.meta.billCount} 条账单）`,
+        remoteRecord: manifestRemote.snapshot.meta,
+        ...(manifestRemote.correctedEndpoint
+          ? { correctedEndpoint: manifestRemote.correctedEndpoint }
+          : {}),
+      };
+    }
+
+    const legacyRemote = await fetchRemoteObjectSnapshot(effectiveCfg, LEGACY_CLOUD_BACKUP_FILE);
+    const finalCorrected = legacyRemote.correctedEndpoint ?? manifestRemote.correctedEndpoint;
+    if (legacyRemote.exists && legacyRemote.snapshot) {
+      const rev = legacyRemote.snapshot.meta.revision ?? 1;
+      return {
+        ok: true,
+        message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} · 云端已有备份 v${rev}，含 ${legacyRemote.snapshot.meta.billCount} 条账单）`,
+        remoteRecord: legacyRemote.snapshot.meta,
+        ...(finalCorrected ? { correctedEndpoint: finalCorrected } : {}),
+      };
+    }
+
+    return {
+      ok: true,
+      message: `已成功连接「${preset.name}」并通过密钥鉴权校验（存储桶：${resolved.bucketName} 可达，云端暂未上传过备份文件）`,
+      ...(finalCorrected ? { correctedEndpoint: finalCorrected } : {}),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? `连接失败：${err.message}` : '连接失败：远程对象存储不可达',
+    };
+  }
+}
+
+/**
+ * 将本地已生成的加密备份快照真正通过 HTTP PUT 上传至远程存储桶（单文件兼容入口）。
+ */
+export async function pushSnapshotToRemoteCloud(
+  config: CloudStorageConfig,
+): Promise<{
+  remoteUrl: string;
+  correctedEndpoint?: string;
+}> {
+  const rawSnapshot = readSnapshotCache();
+  if (!rawSnapshot) {
+    throw new LifeHubError('LIFEHUB_E_VALIDATION', '本地尚无待上传的加密备份快照');
+  }
+  return putRemoteObjectSnapshot(config, LEGACY_CLOUD_BACKUP_FILE, rawSnapshot);
+}
+
+/**
+ * 分片按哈希增量同步上传（Incremental Sharded Pull-Merge-Diff-Push）：
+ * 1. 先拉取轻量加密清单 `lifehub-sync-manifest.json.enc`（若尚不存在则兼容拉取旧版 `lifehub-backup.json.enc` 并平滑升级）；
+ * 2. 对比每个分片（核心模块 + 按月账单 `YYYY-MM`）的内容哈希，仅下载哈希有变动的远端分片参与合并；
+ * 3. 合并后再次对比分片内容哈希：
+ *    - 若所有分片哈希与云端完全一致，则 **跳过全部上传（0 次 PUT）**；
+ *    - 若仅部分月份/模块有变动，则 **仅压缩加密并重传变动的分片 + 清单**，历史未改动月份分片原封不动。
  */
 export async function syncUploadWithRemoteMerge(
   config: CloudStorageConfig,
@@ -2241,6 +2733,10 @@ export async function syncUploadWithRemoteMerge(
   mergedDataset: CloudFullDataset;
   purged: PurgedEntityIds;
   mergedFromRemote: boolean;
+  uploadedShardCount: number;
+  totalShardCount: number;
+  downloadedShardCount: number;
+  skippedUnchangedUpload: boolean;
 }> {
   const normalizedSecret = (password || config.savedPassword || '').trim();
   if (!normalizedSecret) {
@@ -2250,19 +2746,24 @@ export async function syncUploadWithRemoteMerge(
     );
   }
 
+  const currentFp = computePasswordFingerprint(normalizedSecret);
   const localPrevRecord = loadLatestCloudSyncRecord();
   const localRevision = localPrevRecord?.revision ?? 0;
 
-  // 第一步：强制先从远端拉取当前最新快照
-  const remoteStatus = await fetchRemoteSnapshotStatus(config);
-  const effectiveConfig = remoteStatus.correctedEndpoint
-    ? { ...config, endpoint: remoteStatus.correctedEndpoint }
-    : config;
-
-  let finalDataset: CloudFullDataset = {
+  const normalizedLocal: CloudFullDataset = {
     ...localDataset,
     tombstones: normalizeCloudTombstones(localDataset.tombstones),
   };
+  const localShards = partitionDatasetIntoShards(normalizedLocal);
+
+  // 第一步：优先拉取远端分片清单（~1KB），若无清单则回退检查旧版单文件快照
+  const manifestStatus = await fetchRemoteObjectSnapshot(config, CLOUD_SYNC_MANIFEST_FILE);
+  let effectiveConfig = manifestStatus.correctedEndpoint
+    ? { ...config, endpoint: manifestStatus.correctedEndpoint }
+    : config;
+  let initialCorrectedEndpoint = manifestStatus.correctedEndpoint;
+
+  let finalDataset: CloudFullDataset = normalizedLocal;
   let purged: PurgedEntityIds = {
     billIds: [],
     categoryIds: [],
@@ -2274,97 +2775,409 @@ export async function syncUploadWithRemoteMerge(
   };
   let mergedFromRemote = false;
   let nextRevision = localRevision + 1;
+  let remoteManifest: CloudShardManifestPayload | null = null;
+  let remoteManifestMeta: CloudSyncRecord | null = null;
+  let passwordChanged = false;
+  let downloadedShardCount = 0;
 
-  if (remoteStatus.exists && remoteStatus.snapshot) {
-    const remoteSnap = remoteStatus.snapshot;
+  if (manifestStatus.exists && manifestStatus.snapshot) {
+    const remoteSnap = manifestStatus.snapshot;
+    remoteManifestMeta = remoteSnap.meta;
     const remoteRev = remoteSnap.meta.revision ?? 1;
-    const currentFp = computePasswordFingerprint(normalizedSecret);
     const remoteFp = remoteSnap.meta.passwordFingerprint;
 
     if (remoteFp && remoteFp !== currentFp && !options?.allowPasswordChange) {
-      if (remoteStatus.rawBody) {
-        writeSnapshotCache(remoteStatus.rawBody);
-      }
       throw new LifeHubError(
         'LIFEHUB_E_VALIDATION',
         '云端已有备份且加密密码与当前输入不一致！为防止覆盖另一端数据，请输入正确的云端备份密码以合并数据，或勾选「允许用新密码覆盖云端备份」。',
       );
     }
 
-    // 密码一致（或未记录指纹但可解密）时，强制解密远端快照并与本地增量合并
     if (!remoteFp || remoteFp === currentFp) {
       try {
-        const { dataset: remoteDataset } = decryptSnapshotToDataset(remoteSnap, normalizedSecret);
-        const mergeRes = mergeCloudDatasets(finalDataset, remoteDataset, localRevision, remoteRev);
-        finalDataset = mergeRes.merged;
-        purged = mergeRes.purged;
-        mergedFromRemote = true;
-        nextRevision = mergeRes.nextRevision;
+        const manifestJson = unsealEncryptedCloudObject(remoteSnap, normalizedSecret);
+        const parsedManifest = JSON.parse(manifestJson) as CloudShardManifestPayload;
+        if (parsedManifest && parsedManifest.schema === 'lifehub-sharded-v1') {
+          remoteManifest = parsedManifest;
+          const resolvedRemote = await resolveShardedRemoteDataset(
+            effectiveConfig,
+            parsedManifest,
+            normalizedSecret,
+            localShards,
+          );
+          downloadedShardCount = resolvedRemote.downloadedShardCount;
+          const mergeRes = mergeCloudDatasets(
+            normalizedLocal,
+            resolvedRemote.dataset,
+            localRevision,
+            remoteRev,
+          );
+          finalDataset = mergeRes.merged;
+          purged = mergeRes.purged;
+          mergedFromRemote = true;
+          nextRevision = mergeRes.nextRevision;
+        }
       } catch (err) {
         if (!remoteFp && options?.allowPasswordChange) {
+          passwordChanged = true;
           nextRevision = Math.max(localRevision, remoteRev) + 1;
         } else {
           throw err;
         }
       }
     } else {
-      // 用户显式勾选 allowPasswordChange 更换新密码覆盖：仍保持版本号单调递增
+      passwordChanged = true;
       nextRevision = Math.max(localRevision, remoteRev) + 1;
+    }
+  } else {
+    // 远端尚无分片清单：向后兼容检查旧版单文件 `lifehub-backup.json.enc`
+    const legacyStatus = await fetchRemoteObjectSnapshot(effectiveConfig, LEGACY_CLOUD_BACKUP_FILE);
+    if (legacyStatus.correctedEndpoint) {
+      effectiveConfig = { ...effectiveConfig, endpoint: legacyStatus.correctedEndpoint };
+      initialCorrectedEndpoint = legacyStatus.correctedEndpoint;
+    }
+    if (legacyStatus.exists && legacyStatus.snapshot) {
+      const remoteSnap = legacyStatus.snapshot;
+      const remoteRev = remoteSnap.meta.revision ?? 1;
+      const remoteFp = remoteSnap.meta.passwordFingerprint;
+
+      if (remoteFp && remoteFp !== currentFp && !options?.allowPasswordChange) {
+        if (legacyStatus.rawBody) {
+          writeSnapshotCache(legacyStatus.rawBody);
+        }
+        throw new LifeHubError(
+          'LIFEHUB_E_VALIDATION',
+          '云端已有备份且加密密码与当前输入不一致！为防止覆盖另一端数据，请输入正确的云端备份密码以合并数据，或勾选「允许用新密码覆盖云端备份」。',
+        );
+      }
+
+      if (!remoteFp || remoteFp === currentFp) {
+        try {
+          const { dataset: remoteDataset } = decryptSnapshotToDataset(remoteSnap, normalizedSecret);
+          downloadedShardCount = 1;
+          const mergeRes = mergeCloudDatasets(
+            normalizedLocal,
+            remoteDataset,
+            localRevision,
+            remoteRev,
+          );
+          finalDataset = mergeRes.merged;
+          purged = mergeRes.purged;
+          mergedFromRemote = true;
+          nextRevision = mergeRes.nextRevision;
+        } catch (err) {
+          if (!remoteFp && options?.allowPasswordChange) {
+            passwordChanged = true;
+            nextRevision = Math.max(localRevision, remoteRev) + 1;
+          } else {
+            throw err;
+          }
+        }
+      } else {
+        passwordChanged = true;
+        nextRevision = Math.max(localRevision, remoteRev) + 1;
+      }
     }
   }
 
-  // 第二步：将合并后的完整数据与删除墓碑加密写入本地快照缓存
+  // 第二步：切分合并后的最终数据集，并与远端分片清单逐一比对内容哈希
   saveLocalCloudTombstones(finalDataset.tombstones);
-  const record = uploadBillsToCloud(
+  const mergedShards = partitionDatasetIntoShards(finalDataset);
+  const resolvedManifestTarget = resolveCloudEndpointTarget(
     effectiveConfig,
-    finalDataset.bills,
-    normalizedSecret,
-    {
-      categories: finalDataset.categories,
-      scheduleSlots: finalDataset.scheduleSlots,
-      completionEvents: finalDataset.completionEvents,
-      habits: finalDataset.habits,
-      habitCheckIns: finalDataset.habitCheckIns,
-      diaryEntries: finalDataset.diaryEntries,
-      tombstones: finalDataset.tombstones,
-    },
-    {
-      allowPasswordChange: true,
-      revision: nextRevision,
-    },
+    CLOUD_SYNC_MANIFEST_FILE,
   );
+  const preset = getCloudProviderPreset(resolvedManifestTarget.effectiveProvider);
+  const bucketNamespace = `${resolvedManifestTarget.host}/${resolvedManifestTarget.bucketName}`;
 
-  // 第三步：将新版本快照推送至远程对象存储
-  const pushRes = await pushSnapshotToRemoteCloud(effectiveConfig);
-  const finalCorrected = pushRes.correctedEndpoint ?? remoteStatus.correctedEndpoint;
+  const canDiffAgainstRemote = Boolean(remoteManifest) && !passwordChanged;
+  const shardsToUpload: ComputedCloudShard[] = [];
+  for (const shard of mergedShards.values()) {
+    const remoteDesc = canDiffAgainstRemote ? remoteManifest?.shards[shard.key] : undefined;
+    if (!remoteDesc || remoteDesc.contentHash !== shard.contentHash) {
+      shardsToUpload.push(shard);
+    }
+  }
+  const removedShardKeys = canDiffAgainstRemote
+    ? Object.keys(remoteManifest?.shards ?? {}).filter((k) => !mergedShards.has(k))
+    : [];
+
+  // 快速短路：所有分片哈希均未变化且无删除分片 -> 0 次 PUT 网络请求！
+  if (canDiffAgainstRemote && shardsToUpload.length === 0 && removedShardKeys.length === 0) {
+    const unchangedRev = remoteManifest?.revision ?? remoteManifestMeta?.revision ?? localRevision;
+    const unchangedSyncedAt =
+      remoteManifest?.syncedAt ?? remoteManifestMeta?.syncedAt ?? new Date().toISOString();
+    const totalExistingBytes = Object.values(remoteManifest?.shards ?? {}).reduce(
+      (acc, d) => acc + (d.sizeBytes ?? 0),
+      remoteManifestMeta?.sizeBytes ?? 0,
+    );
+    const localRecord = writeLocalDatasetSnapshotCache(
+      effectiveConfig,
+      finalDataset,
+      normalizedSecret,
+      unchangedRev,
+      unchangedSyncedAt,
+      totalExistingBytes,
+    );
+    for (const shard of mergedShards.values()) {
+      putVerifiedShardPlain(
+        bucketNamespace,
+        currentFp,
+        shard.key,
+        shard.contentHash,
+        shard.canonicalJson,
+      );
+    }
+    return {
+      record: localRecord,
+      remoteUrl: resolvedManifestTarget.objectUrl,
+      ...(initialCorrectedEndpoint ? { correctedEndpoint: initialCorrectedEndpoint } : {}),
+      mergedDataset: finalDataset,
+      purged,
+      mergedFromRemote,
+      uploadedShardCount: 0,
+      totalShardCount: mergedShards.size,
+      downloadedShardCount,
+      skippedUnchangedUpload: true,
+    };
+  }
+
+  // 第三步：仅压缩加密并上传有变动的分片（未变动的历史月份分片直接复用远端描述符，不重传）
+  const syncedAt = new Date().toISOString();
+  if (
+    resolvedManifestTarget.effectiveProvider === 'jianguoyun-webdav' &&
+    resolvedManifestTarget.webdavDirUrl
+  ) {
+    try {
+      const signedDir = await buildSignedCloudHttpRequest(
+        effectiveConfig,
+        'PUT',
+        CLOUD_SYNC_MANIFEST_FILE,
+      );
+      if (signedDir.webdavDirUrl) {
+        await executeCloudHttpRequest(signedDir.webdavDirUrl, 'MKCOL', signedDir.headers);
+      }
+    } catch {
+      // 忽略目录已存在
+    }
+  }
+
+  const uploadedSizeByKey = new Map<string, number>();
+  let latestCorrectedEndpoint = initialCorrectedEndpoint;
+  const UPLOAD_CONCURRENCY = 4;
+
+  for (let i = 0; i < shardsToUpload.length; i += UPLOAD_CONCURRENCY) {
+    const batch = shardsToUpload.slice(i, i + UPLOAD_CONCURRENCY);
+    const results = await Promise.all(
+      batch.map(async (shard) => {
+        const shardTarget = resolveCloudEndpointTarget(effectiveConfig, shard.fileName);
+        const shardMeta: CloudSyncRecord = {
+          provider: shardTarget.effectiveProvider,
+          providerName: preset.name,
+          endpoint: effectiveConfig.endpoint.trim(),
+          bucket: shardTarget.bucketName,
+          encrypted: true,
+          billCount: shard.key.startsWith('bills-') ? shard.itemCount : 0,
+          syncedAt,
+          objectKey: shardTarget.objectKey,
+          payloadPreview: '',
+          passwordFingerprint: currentFp,
+          revision: nextRevision,
+        };
+        const sealed = sealEncryptedCloudObject(
+          shard.canonicalJson,
+          normalizedSecret,
+          shardMeta,
+          true,
+        );
+        const putRes = await putRemoteObjectSnapshot(
+          effectiveConfig,
+          shard.fileName,
+          sealed.serialized,
+          true,
+        );
+        putVerifiedShardPlain(
+          bucketNamespace,
+          currentFp,
+          shard.key,
+          shard.contentHash,
+          shard.canonicalJson,
+        );
+        return { key: shard.key, sizeBytes: sealed.sizeBytes, corrected: putRes.correctedEndpoint };
+      }),
+    );
+    for (const r of results) {
+      uploadedSizeByKey.set(r.key, r.sizeBytes);
+      if (r.corrected) {
+        latestCorrectedEndpoint = r.corrected;
+        effectiveConfig = { ...effectiveConfig, endpoint: r.corrected };
+      }
+    }
+  }
+
+  // 第四步：构建最新分片清单并原子提交写入 `lifehub-sync-manifest.json.enc`
+  const nextShardDescriptors: Record<string, CloudShardDescriptor> = {};
+  let totalShardsBytes = 0;
+  for (const shard of mergedShards.values()) {
+    const sizeBytes =
+      uploadedSizeByKey.get(shard.key) ?? remoteManifest?.shards[shard.key]?.sizeBytes;
+    if (typeof sizeBytes === 'number') {
+      totalShardsBytes += sizeBytes;
+    }
+    nextShardDescriptors[shard.key] = {
+      key: shard.key,
+      fileName: shard.fileName,
+      contentHash: shard.contentHash,
+      itemCount: shard.itemCount,
+      ...(typeof sizeBytes === 'number' ? { sizeBytes } : {}),
+    };
+    putVerifiedShardPlain(
+      bucketNamespace,
+      currentFp,
+      shard.key,
+      shard.contentHash,
+      shard.canonicalJson,
+    );
+  }
+
+  const manifestPayload: CloudShardManifestPayload = {
+    schema: 'lifehub-sharded-v1',
+    revision: nextRevision,
+    syncedAt,
+    billCount: finalDataset.bills.length,
+    categoryCount: finalDataset.categories.length,
+    scheduleCount: finalDataset.scheduleSlots.length,
+    habitCount: finalDataset.habits.length,
+    diaryCount: finalDataset.diaryEntries.length,
+    shards: nextShardDescriptors,
+  };
+
+  const manifestMeta: CloudSyncRecord = {
+    provider: resolvedManifestTarget.effectiveProvider,
+    providerName: preset.name,
+    endpoint: effectiveConfig.endpoint.trim(),
+    bucket: resolvedManifestTarget.bucketName,
+    encrypted: true,
+    billCount: finalDataset.bills.length,
+    categoryCount: finalDataset.categories.length,
+    scheduleCount: finalDataset.scheduleSlots.length,
+    habitCount: finalDataset.habits.length,
+    diaryCount: finalDataset.diaryEntries.length,
+    syncedAt,
+    objectKey: resolvedManifestTarget.objectKey,
+    payloadPreview: '',
+    passwordFingerprint: currentFp,
+    revision: nextRevision,
+  };
+
+  const sealedManifest = sealEncryptedCloudObject(
+    JSON.stringify(manifestPayload),
+    normalizedSecret,
+    manifestMeta,
+    true,
+  );
+  const manifestPutRes = await putRemoteObjectSnapshot(
+    effectiveConfig,
+    CLOUD_SYNC_MANIFEST_FILE,
+    sealedManifest.serialized,
+    true,
+  );
+  if (manifestPutRes.correctedEndpoint) {
+    latestCorrectedEndpoint = manifestPutRes.correctedEndpoint;
+    effectiveConfig = { ...effectiveConfig, endpoint: manifestPutRes.correctedEndpoint };
+  }
+
+  const totalRemoteSizeBytes = totalShardsBytes + sealedManifest.sizeBytes;
+  const record = writeLocalDatasetSnapshotCache(
+    effectiveConfig,
+    finalDataset,
+    normalizedSecret,
+    nextRevision,
+    syncedAt,
+    totalRemoteSizeBytes,
+  );
 
   return {
     record,
-    remoteUrl: pushRes.remoteUrl,
-    ...(finalCorrected ? { correctedEndpoint: finalCorrected } : {}),
+    remoteUrl: manifestPutRes.remoteUrl,
+    ...(latestCorrectedEndpoint ? { correctedEndpoint: latestCorrectedEndpoint } : {}),
     mergedDataset: finalDataset,
     purged,
     mergedFromRemote,
+    uploadedShardCount: shardsToUpload.length,
+    totalShardCount: mergedShards.size,
+    downloadedShardCount,
+    skippedUnchangedUpload: false,
   };
 }
 
 /**
- * 从远程 OSS / COS / OBS / WebDAV / S3 存储桶拉取最新的加密备份快照并写入本地缓存。
+ * 从远程存储桶按需增量拉取最新的分片备份（或兼容拉取旧版单文件备份）并写入本机快照缓存。
  */
-export async function pullSnapshotFromRemoteCloud(config: CloudStorageConfig): Promise<void> {
+export async function pullSnapshotFromRemoteCloud(
+  config: CloudStorageConfig,
+  password?: string,
+  localDatasetHint?: CloudFullDataset,
+): Promise<{ downloadedShardCount: number; totalShardCount: number }> {
   const accessKey = config.accessKey.trim();
   const secretKey = config.secretKey.trim();
   if (!accessKey || !secretKey) {
-    return;
+    return { downloadedShardCount: 0, totalShardCount: 0 };
   }
 
-  const remote = await fetchRemoteSnapshotStatus(config);
-  if (remote.exists && remote.rawBody) {
-    writeSnapshotCache(remote.rawBody);
-  } else if (!remote.exists) {
-    throw new LifeHubError(
-      'LIFEHUB_E_STORAGE',
-      '远程存储桶中暂无备份文件（lifehub-backup.json.enc），请先在有数据的设备上执行一次上传',
+  const manifestStatus = await fetchRemoteObjectSnapshot(config, CLOUD_SYNC_MANIFEST_FILE);
+  const effectiveConfig = manifestStatus.correctedEndpoint
+    ? { ...config, endpoint: manifestStatus.correctedEndpoint }
+    : config;
+
+  if (manifestStatus.exists && manifestStatus.snapshot) {
+    const secret = (password ?? effectiveConfig.savedPassword ?? '').trim();
+    if (!secret) {
+      throw new LifeHubError(
+        'LIFEHUB_E_VALIDATION',
+        '登录密码错误，无法解密还原云端数据（请先填写加密密码）',
+      );
+    }
+    const manifestJson = unsealEncryptedCloudObject(manifestStatus.snapshot, secret);
+    const parsedManifest = JSON.parse(manifestJson) as CloudShardManifestPayload;
+    const localShards = localDatasetHint
+      ? partitionDatasetIntoShards({
+          ...localDatasetHint,
+          tombstones: normalizeCloudTombstones(localDatasetHint.tombstones),
+        })
+      : undefined;
+    const resolvedRemote = await resolveShardedRemoteDataset(
+      effectiveConfig,
+      parsedManifest,
+      secret,
+      localShards,
     );
+    const totalRemoteSizeBytes = Object.values(parsedManifest.shards ?? {}).reduce(
+      (acc, d) => acc + (d.sizeBytes ?? 0),
+      manifestStatus.snapshot.meta.sizeBytes ?? 0,
+    );
+    writeLocalDatasetSnapshotCache(
+      effectiveConfig,
+      resolvedRemote.dataset,
+      secret,
+      parsedManifest.revision ?? manifestStatus.snapshot.meta.revision ?? 1,
+      parsedManifest.syncedAt ?? manifestStatus.snapshot.meta.syncedAt,
+      totalRemoteSizeBytes,
+    );
+    return {
+      downloadedShardCount: resolvedRemote.downloadedShardCount,
+      totalShardCount: Object.keys(parsedManifest.shards ?? {}).length,
+    };
   }
+
+  const legacyRemote = await fetchRemoteObjectSnapshot(effectiveConfig, LEGACY_CLOUD_BACKUP_FILE);
+  if (legacyRemote.exists && legacyRemote.rawBody) {
+    writeSnapshotCache(legacyRemote.rawBody);
+    return { downloadedShardCount: 1, totalShardCount: 1 };
+  }
+
+  throw new LifeHubError(
+    'LIFEHUB_E_STORAGE',
+    '远程存储桶中暂无备份文件，请先在有数据的设备上执行一次上传',
+  );
 }

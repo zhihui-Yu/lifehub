@@ -14,6 +14,8 @@ export interface DirectionRulePickerProps {
   rule: DirectionRule;
   /** 规则变更回调。 */
   onChange: (rule: DirectionRule) => void;
+  /** 是否隐藏内部标题（外层卡片已渲染可折叠标题时传 true）。 */
+  hideTitle?: boolean;
 }
 
 /** 各模式的说明文案。 */
@@ -30,15 +32,18 @@ const MODE_HINTS: Record<DirectionRuleMode, string> = {
  * @param props 组件属性
  * @returns React 节点
  */
-export function DirectionRulePicker({ rule, onChange }: DirectionRulePickerProps) {
+export function DirectionRulePicker({ rule, onChange, hideTitle = false }: DirectionRulePickerProps) {
   return (
     <Box>
       <FormControl>
-        <FormLabel id="direction-rule-label" sx={{ color: 'var(--lifehub-text)', fontWeight: 600, mb: 0.5 }}>
-          收支方向判定方式
-        </FormLabel>
+        {!hideTitle ? (
+          <FormLabel id="direction-rule-label" sx={{ color: 'var(--lifehub-text)', fontWeight: 600, mb: 0.5 }}>
+            收支方向判定方式
+          </FormLabel>
+        ) : null}
         <RadioGroup
-          aria-labelledby="direction-rule-label"
+          aria-label={hideTitle ? '收支方向判定方式' : undefined}
+          aria-labelledby={hideTitle ? undefined : 'direction-rule-label'}
           value={rule.mode}
           onChange={(event) => onChange({ ...rule, mode: event.target.value as DirectionRuleMode })}
         >

@@ -4,10 +4,18 @@
  * 架构位置：apps/web 的「账单组件」层。
  *
  * 说明：按 `localDate` 分组，组头显示日期 + 星期 + 笔数 + 合计（收入绿 / 支出红），对应 PRD A-09 ③。
+ * 针对跨数月、上万条账单的长列表场景，采用渐进分批挂载（首屏挂载前 12 个日期分组，滚动到底部前自动续载），
+ * 消除一次性挂载上百张表格与数千个行节点导致的切 Tab 卡顿。
  */
-import { Box, Chip, Paper, Typography } from '@mui/material';
+import { useEffect, useRef, useState } from 'react';
+import { Box, Button, Chip, Paper, Typography } from '@mui/material';
 import type { BillGroup } from '@/hooks/useBillList';
 import { formatAmount, formatLocalDate, formatWeekday } from '@/utils/format';
+
+/** 首屏默认挂载的日期分组数（覆盖 2~4 屏高度，兼顾秒开与顺滑浏览）。 */
+const INITIAL_VISIBLE_GROUPS = 12;
+/** 每次触底增量追加挂载的日期分组数。 */
+const GROUP_LOAD_STEP = 15;
 
 /** 账单分组列表的属性。 */
 export interface BillGroupListProps {
@@ -22,17 +30,47 @@ export interface BillGroupListProps {
 /**
  * 渲染账单分组列表。
  *
- * 顶部汇总栏右侧的当日收入与当日支出采用等宽数字与固定最小宽度对齐，确保跨分组卡片汇总列垂直对齐。
- * 手机端点击每日汇总栏可打开当日记录明细抽屉/弹窗；Web 端因空间充裕无需弹窗。
- *
  * @param props 组件属性
  * @returns React 节点
- * @throws 无显式抛出
  */
 export function BillGroupList({ groups, renderBills, onSelectGroup }: BillGroupListProps) {
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_GROUPS);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  const firstDate = groups[0]?.localDate ?? '';
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE_GROUPS);
+  }, [groups.length, firstDate]);
+
+  const hasMore = visibleCount < groups.length;
+
+  useEffect(() => {
+    if (!hasMore || typeof IntersectionObserver === 'undefined') {
+      return;
+    }
+    const target = sentinelRef.current;
+    if (!target) {
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleCount((prev) => Math.min(groups.length, prev + GROUP_LOAD_STEP));
+        }
+      },
+      { rootMargin: '420px 0px' },
+    );
+    observer.observe(target);
+    return () => {
+      observer.disconnect();
+    };
+  }, [groups.length, hasMore]);
+
+  const visibleGroups = hasMore ? groups.slice(0, visibleCount) : groups;
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {groups.map((group) => (
+      {visibleGroups.map((group) => (
         <Paper
           key={group.localDate}
           variant="outlined"
@@ -122,6 +160,20 @@ export function BillGroupList({ groups, renderBills, onSelectGroup }: BillGroupL
           {renderBills(group)}
         </Paper>
       ))}
+      {hasMore ? (
+        <Box ref={sentinelRef} sx={{ py: 1, textAlign: 'center' }}>
+          <Button
+            size="small"
+            variant="outlined"
+            onClick={() =>
+              setVisibleCount((prev) => Math.min(groups.length, prev + GROUP_LOAD_STEP))
+            }
+            data-testid="load-more-groups-button"
+          >
+            加载更多（剩余 {groups.length - visibleCount} 天）
+          </Button>
+        </Box>
+      ) : null}
     </Box>
   );
 }

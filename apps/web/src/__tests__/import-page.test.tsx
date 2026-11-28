@@ -108,10 +108,9 @@ describe('ImportPage（A-08）', () => {
     expect(screen.getByText('把账单文件拖到这里（CSV / Excel / PDF / JSON）')).toBeInTheDocument();
     expect(screen.getByText(/文件只在本机解析，不会上传/)).toBeInTheDocument();
 
-    // 「选择文件」按钮与隐藏的 file input 是同一个入口。
+    // 「选择文件」按钮与「选择文件夹」按钮同处一处，无多余全局单密码框干扰。
     expect(screen.getByRole('button', { name: '选择账单文件' })).toBeInTheDocument();
     expect(screen.getByTestId('select-folder-button')).toBeInTheDocument();
-    expect(screen.getByTestId('import-password-input')).toBeInTheDocument();
     expect(fileInput()).toHaveAttribute(
       'accept',
       '.csv,.tsv,.txt,.xlsx,.xls,.pdf,.json,.zip,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/pdf,application/json,application/zip,application/x-zip-compressed',
@@ -620,7 +619,82 @@ describe('ImportPage（A-08）', () => {
     });
   });
 
-  it('支持通过文件夹/多文件选择器批量上传多个账单文件并展示批量导入汇总横幅（T-Encrypted-And-Batch-Import-1）', async () => {
+  it('支持分次混合叠加文件夹与多个文件，且无密码文件与不同密码的多个加密文件互不冲突（T-Encrypted-And-Batch-Import-1）', async () => {
+    const { computeCrc32 } = await import('@/lib/import/zip');
+
+    // 构造使用任意给定密码加密的测试 ZIP 文件辅助函数
+    const makeEncryptedZip = (zipName: string, innerFileName: string, password: string): File => {
+      const innerName = new TextEncoder().encode(innerFileName);
+      const plainCsv = new TextEncoder().encode('交易时间,金额(元),交易对方\n2026-02-01,20.00,示例店铺\n');
+      const crc = computeCrc32(plainCsv);
+      const pwdBytes = new TextEncoder().encode(password);
+      const crcTable = new Uint32Array(256);
+      for (let i = 0; i < 256; i += 1) {
+        let c = i;
+        for (let k = 0; k < 8; k += 1) {
+          c = (c & 1) !== 0 ? (0xedb88320 ^ (c >>> 1)) >>> 0 : (c >>> 1) >>> 0;
+        }
+        crcTable[i] = c >>> 0;
+      }
+      let k0 = 0x12345678;
+      let k1 = 0x23456789;
+      let k2 = 0x34567890;
+      const updateKeys = (b: number) => {
+        k0 = ((k0 >>> 8) ^ (crcTable[(k0 ^ b) & 0xff] ?? 0)) >>> 0;
+        k1 = (Math.imul((k1 + (k0 & 0xff)) >>> 0, 134775813) + 1) >>> 0;
+        k2 = ((k2 >>> 8) ^ (crcTable[(k2 ^ ((k1 >>> 24) & 0xff)) & 0xff] ?? 0)) >>> 0;
+      };
+      const streamByte = () => {
+        const temp = (k2 | 2) & 0xffff;
+        return (Math.imul(temp, temp ^ 1) >>> 8) & 0xff;
+      };
+      for (const b of pwdBytes) updateKeys(b);
+      const headerPlain = new Uint8Array(12);
+      headerPlain[11] = (crc >>> 24) & 0xff;
+      const toEncrypt = new Uint8Array(12 + plainCsv.length);
+      toEncrypt.set(headerPlain, 0);
+      toEncrypt.set(plainCsv, 12);
+      const encryptedData = new Uint8Array(toEncrypt.length);
+      for (let i = 0; i < toEncrypt.length; i += 1) {
+        const p = toEncrypt[i] ?? 0;
+        encryptedData[i] = (p ^ streamByte()) & 0xff;
+        updateKeys(p);
+      }
+      const localLen = 30 + innerName.length;
+      const cdOffset = localLen + encryptedData.length;
+      const cdLen = 46 + innerName.length;
+      const zipBytes = new Uint8Array(cdOffset + cdLen + 22);
+      const view = new DataView(zipBytes.buffer);
+      view.setUint32(0, 0x04034b50, true);
+      view.setUint16(4, 20, true);
+      view.setUint16(6, 0x0001, true);
+      view.setUint16(8, 0, true);
+      view.setUint32(14, crc, true);
+      view.setUint32(18, encryptedData.length, true);
+      view.setUint32(22, plainCsv.length, true);
+      view.setUint16(26, innerName.length, true);
+      zipBytes.set(innerName, 30);
+      zipBytes.set(encryptedData, localLen);
+      view.setUint32(cdOffset, 0x02014b50, true);
+      view.setUint16(cdOffset + 4, 20, true);
+      view.setUint16(cdOffset + 6, 20, true);
+      view.setUint16(cdOffset + 8, 0x0001, true);
+      view.setUint16(cdOffset + 10, 0, true);
+      view.setUint32(cdOffset + 16, crc, true);
+      view.setUint32(cdOffset + 20, encryptedData.length, true);
+      view.setUint32(cdOffset + 24, plainCsv.length, true);
+      view.setUint16(cdOffset + 28, innerName.length, true);
+      view.setUint32(cdOffset + 42, 0, true);
+      zipBytes.set(innerName, cdOffset + 46);
+      const eocdOffset = cdOffset + cdLen;
+      view.setUint32(eocdOffset, 0x06054b50, true);
+      view.setUint16(eocdOffset + 8, 1, true);
+      view.setUint16(eocdOffset + 10, 1, true);
+      view.setUint32(eocdOffset + 12, cdLen, true);
+      view.setUint32(eocdOffset + 16, cdOffset, true);
+      return new File([zipBytes], zipName, { type: 'application/zip' });
+    };
+
     const validPlan = makePlan({
       headers: ['交易时间', '金额(元)', '交易对方'],
       suggestedMapping: { 0: 'occurredAt', 1: 'amount', 2: 'counterparty' },
@@ -641,22 +715,58 @@ describe('ImportPage（A-08）', () => {
     renderWithRouter(<ImportPage />, { route: '/import' });
 
     const folderInput = screen.getByTestId('folder-file-input');
-    const fileA = makeFile('账单A.csv', 'text/csv');
-    const fileB = makeFile('账单B.csv', 'text/csv');
+    const plainCsvFile = makeFile('无密码账单.csv', 'text/csv');
     const unsupportedFile = makeFile('说明.png', 'image/png');
+    const zipA = makeEncryptedZip('加密包A.zip', 'inner-a.csv', '111111');
+    const zipB = makeEncryptedZip('加密包B.zip', 'inner-b.csv', '222222');
 
+    // 1. 先选择文件夹（含无密码 CSV 与非账单图片）-> 进入待导入清单
     await act(async () => {
       fireEvent.change(folderInput, {
-        target: { files: [fileA, fileB, unsupportedFile] },
+        target: { files: [plainCsvFile, unsupportedFile] },
+      });
+    });
+    expect(screen.getByTestId('pending-batch-list')).toBeInTheDocument();
+
+    // 2. 再通过「选择文件」叠加两个不同密码的加密包（演示第 1 个预先填密码，第 2 个留空由弹窗按文件名提示）
+    await act(async () => {
+      fireEvent.change(fileInput(), {
+        target: { files: [zipA, zipB] },
       });
     });
 
+    // 为加密包A（索引 1）填写密码 111111，加密包B（索引 2）留空
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('queued-file-password-1'), {
+        target: { value: '111111' },
+      });
+    });
+
+    // 3. 点击「开始导入」：无密码 CSV 与 加密包A 直接通过，仅对未填密码的「加密包B.zip」弹窗索取密码！
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('start-batch-import-button'));
+    });
+
+    expect(await screen.findByTestId('password-prompt-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('password-dialog-filename')).toHaveTextContent('加密包B.zip');
+
+    // 4. 输入加密包B 的专属密码 222222 并提交 -> 断点续跑完成全部 3 个文件导入，且步骤 3 变为 completed！
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('password-dialog-input'), {
+        target: { value: '222222' },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('password-prompt-submit'));
+    });
+
     await waitFor(() => {
-      expect(plan).toHaveBeenCalledTimes(2);
-      expect(run).toHaveBeenCalledTimes(2);
+      expect(plan).toHaveBeenCalledTimes(3);
+      expect(run).toHaveBeenCalledTimes(3);
     });
 
     const banner = await screen.findByTestId('batch-import-banner');
-    expect(banner).toHaveTextContent('成功处理 2 个文件，导入 20 条账单');
+    expect(banner).toHaveTextContent('成功处理 3 个文件，导入 30 条账单');
+    expect(screen.getByTestId('import-step-3')).toHaveAttribute('data-step-state', 'completed');
   });
 });

@@ -112,21 +112,28 @@ export class EncryptedStore {
     const records: StoredRecord[] = [];
     const dek = this.dek.getDek(entityType);
     const keyVersion = this.dek.getKeyVersion();
-    for (const entity of entities) {
-      const meta = this.extractMeta(entity);
-      const payload = await this.crypto.encryptRecord(dek, entityType, meta.id, keyVersion, entity);
-      const index = indexOf?.(entity) ?? {};
-      records.push({
-        id: meta.id,
-        entityType,
-        version: meta.version,
-        createdAt: meta.createdAt,
-        updatedAt: meta.updatedAt,
-        deviceId: meta.deviceId,
-        localDate: index.localDate ?? null,
-        occurredAt: index.occurredAt ?? null,
-        payload,
-      });
+    const CHUNK = 256;
+    for (let offset = 0; offset < entities.length; offset += CHUNK) {
+      const slice = entities.slice(offset, offset + CHUNK);
+      const batch = await Promise.all(
+        slice.map(async (entity) => {
+          const meta = this.extractMeta(entity);
+          const payload = await this.crypto.encryptRecord(dek, entityType, meta.id, keyVersion, entity);
+          const index = indexOf?.(entity) ?? {};
+          return {
+            id: meta.id,
+            entityType,
+            version: meta.version,
+            createdAt: meta.createdAt,
+            updatedAt: meta.updatedAt,
+            deviceId: meta.deviceId,
+            localDate: index.localDate ?? null,
+            occurredAt: index.occurredAt ?? null,
+            payload,
+          } satisfies StoredRecord;
+        }),
+      );
+      records.push(...batch);
     }
     if (records.length > 0) {
       await this.adapter.putMany(entityType, records);
@@ -162,18 +169,7 @@ export class EncryptedStore {
   async getMany<T>(entityType: EntityType, ids: readonly string[]): Promise<T[]> {
     this.assertUnlocked();
     const records = await this.adapter.getMany(entityType, ids);
-    const out: T[] = [];
-    for (const record of records) {
-      try {
-        out.push(await this.decryptRecord<T>(entityType, record));
-      } catch (err) {
-        if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
-          continue;
-        }
-        throw err;
-      }
-    }
-    return out;
+    return this.decryptRecordsBatch<T>(entityType, records);
   }
 
   /**
@@ -191,15 +187,35 @@ export class EncryptedStore {
   async query<T>(entityType: EntityType, filter?: StorageQueryLike): Promise<T[]> {
     this.assertUnlocked();
     const records = await this.adapter.query(entityType, filter);
+    return this.decryptRecordsBatch<T>(entityType, records);
+  }
+
+  /** 分块并发解密记录列表，大幅降低万级账单读取时的微任务串行等待耗时。 */
+  private async decryptRecordsBatch<T>(
+    entityType: EntityType,
+    records: readonly StoredRecord[],
+  ): Promise<T[]> {
     const out: T[] = [];
-    for (const record of records) {
-      try {
-        out.push(await this.decryptRecord<T>(entityType, record));
-      } catch (err) {
-        if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
-          continue;
+    const CHUNK = 256;
+    for (let offset = 0; offset < records.length; offset += CHUNK) {
+      const slice = records.slice(offset, offset + CHUNK);
+      const settled = await Promise.all(
+        slice.map(async (record) => {
+          try {
+            const value = await this.decryptRecord<T>(entityType, record);
+            return { ok: true as const, value };
+          } catch (err) {
+            if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
+              return { ok: false as const };
+            }
+            throw err;
+          }
+        }),
+      );
+      for (const item of settled) {
+        if (item.ok) {
+          out.push(item.value);
         }
-        throw err;
       }
     }
     return out;

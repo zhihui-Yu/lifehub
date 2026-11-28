@@ -672,10 +672,12 @@ export function BillsPage() {
           ），建议标记为「内部转账」以免虚增收支。
         </Alert>
       ) : null}
-      {/* 账单可视化分析已独立至 #/stats 页面，此处通过样式类隐藏内联面板以保持首页整洁 */}
-      <Box className="lifehub-bills-inline-dashboard" data-testid="bills-inline-dashboard-hidden">
-        <BillVisualDashboard bills={bills} categories={effectiveCategories} />
-      </Box>
+      {/* 账单可视化分析已独立至 #/stats 页面；海量账单（>500 条）时跳过隐藏面板计算与挂载以避免主线程额外开销 */}
+      {bills.length <= 500 ? (
+        <Box className="lifehub-bills-inline-dashboard" data-testid="bills-inline-dashboard-hidden">
+          <BillVisualDashboard bills={bills} categories={effectiveCategories} />
+        </Box>
+      ) : null}
       <BillFilterBar
         filters={filters}
         onChange={setFilters}

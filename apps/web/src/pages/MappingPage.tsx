@@ -55,10 +55,11 @@ export function MappingPage() {
     incomeKeywords: [],
     expenseKeywords: [],
   });
-  const [ busy, setBusy ] = useState(false);
-  const [ notice, setNotice ] = useState<string | null>(null);
-  const [ showMappingDetails, setShowMappingDetails ] = useState(true);
-  const [ allowReimport, setAllowReimport ] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [showMappingDetails, setShowMappingDetails] = useState(false);
+  const [showDirectionDetails, setShowDirectionDetails] = useState(false);
+  const [allowReimport, setAllowReimport] = useState(true);
 
   // 计划就绪后用默认关键词表初始化一次方向规则。
   useEffect(() => {
@@ -136,9 +137,11 @@ export function MappingPage() {
       return { key: `${colIdx}-${field}`, text: `${label} ← ${headerName}` };
     });
 
+  const activeStep = summary ? 3 : busy ? 2 : 1;
+
   return (
     <div data-testid="mapping-page">
-      <StepIndicator activeStep={1} />
+      <StepIndicator activeStep={activeStep} />
       {error ? (
         <Alert severity="error" sx={{ mb: 2 }}>
           {error}
@@ -226,11 +229,24 @@ export function MappingPage() {
 
       <Paper
         variant="outlined"
-        sx={{ p: 2.5, mb: 2, backgroundColor: 'var(--lifehub-surface)', borderColor: 'var(--lifehub-border)' }}
+        sx={{
+          px: 2.5,
+          py: showMappingDetails ? 2.5 : 1.5,
+          mb: 2,
+          backgroundColor: 'var(--lifehub-surface)',
+          borderColor: 'var(--lifehub-border)',
+        }}
       >
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            mb: showMappingDetails ? 1.5 : 0,
+          }}
+        >
           <Typography variant="subtitle1" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
-            列头映射（系统已自动选完，仅在需要时手工微调）
+            列头映射
           </Typography>
           <Button
             size="small"
@@ -251,7 +267,7 @@ export function MappingPage() {
           />
         </Box>
         {validation && !validation.ok ? (
-          <Alert severity="error" sx={{ mt: 2 }} data-testid="mapping-validation">
+          <Alert severity="error" sx={{ mt: 1.5 }} data-testid="mapping-validation">
             {validation.message}
           </Alert>
         ) : null}
@@ -259,9 +275,39 @@ export function MappingPage() {
 
       <Paper
         variant="outlined"
-        sx={{ p: 2.5, mb: 2, backgroundColor: 'var(--lifehub-surface)', borderColor: 'var(--lifehub-border)' }}
+        sx={{
+          px: 2.5,
+          py: showDirectionDetails ? 2.5 : 1.5,
+          mb: 2,
+          backgroundColor: 'var(--lifehub-surface)',
+          borderColor: 'var(--lifehub-border)',
+        }}
       >
-        <DirectionRulePicker rule={directionRule} onChange={setDirectionRule} />
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            mb: showDirectionDetails ? 1 : 0,
+          }}
+        >
+          <Typography variant="subtitle1" sx={{ fontWeight: 600, color: 'var(--lifehub-text)' }}>
+            收支方向判定方式
+          </Typography>
+          <Button
+            size="small"
+            variant="text"
+            aria-expanded={showDirectionDetails}
+            aria-controls="direction-rule-details"
+            onClick={() => setShowDirectionDetails((prev) => !prev)}
+            data-testid="toggle-direction-details"
+          >
+            {showDirectionDetails ? '收起' : '展开'}
+          </Button>
+        </Box>
+        <Box id="direction-rule-details" sx={{ display: showDirectionDetails ? 'block' : 'none' }}>
+          <DirectionRulePicker rule={directionRule} onChange={setDirectionRule} hideTitle />
+        </Box>
       </Paper>
 
       <Paper

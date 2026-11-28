@@ -30,7 +30,7 @@ import DownloadOutlined from '@mui/icons-material/DownloadOutlined';
 import ExpandLessOutlined from '@mui/icons-material/ExpandLessOutlined';
 import ExpandMoreOutlined from '@mui/icons-material/ExpandMoreOutlined';
 import KeyOutlined from '@mui/icons-material/KeyOutlined';
-import type { Category } from '@lifehub/core';
+import type { Bill, Category } from '@lifehub/core';
 import {
   CLOUD_PROVIDERS,
   computePasswordFingerprint,
@@ -175,15 +175,55 @@ export function CloudStoragePanel() {
 
       const activeRuntime = runtimeRef.current;
       if (activeRuntime) {
-        for (const delId of purged.billIds) {
-          try {
-            await activeRuntime.billRepository.delete(delId);
-          } catch {
-            // 忽略不存在异常
+        const billRepo = activeRuntime.billRepository as {
+          put: (bill: Bill) => Promise<void>;
+          putMany?: (items: readonly Bill[]) => Promise<void>;
+          delete: (id: string) => Promise<void>;
+          deleteMany?: (ids: readonly string[]) => Promise<void>;
+        };
+
+        if (purged.billIds.length > 0) {
+          if (typeof billRepo.deleteMany === 'function') {
+            try {
+              await billRepo.deleteMany(purged.billIds);
+            } catch {
+              // 忽略部分不存在异常
+            }
+          } else {
+            for (const delId of purged.billIds) {
+              try {
+                await billRepo.delete(delId);
+              } catch {
+                // 忽略不存在异常
+              }
+            }
           }
         }
-        for (const bill of merged.bills) {
-          await activeRuntime.billRepository.put(bill);
+
+        // 仅对新增或内容发生变动的账单落盘，避免万级未变动账单逐条重复加密写入 IndexedDB
+        const currentBillMap = new Map(useBillStore.getState().bills.map((b) => [b.id, b] as const));
+        const changedBills = merged.bills.filter((bill) => {
+          const prev = currentBillMap.get(bill.id);
+          if (!prev) return true;
+          return (
+            prev.updatedAt !== bill.updatedAt ||
+            prev.version !== bill.version ||
+            prev.categoryId !== bill.categoryId ||
+            prev.note !== bill.note ||
+            prev.counterparty !== bill.counterparty ||
+            prev.amountMinor !== bill.amountMinor ||
+            prev.localDate !== bill.localDate
+          );
+        });
+
+        if (changedBills.length > 0) {
+          if (changedBills.length > 1 && typeof billRepo.putMany === 'function') {
+            await billRepo.putMany(changedBills);
+          } else {
+            for (const bill of changedBills) {
+              await billRepo.put(bill);
+            }
+          }
         }
 
         const catRepo = (
@@ -439,14 +479,16 @@ export function CloudStoragePanel() {
 
           const refreshedSizeKb =
             typeof syncRes.record.sizeBytes === 'number'
-              ? ` · 压缩后体积 ${(syncRes.record.sizeBytes / 1024).toFixed(1)} KB`
+              ? ` · 总体积 ${(syncRes.record.sizeBytes / 1024).toFixed(1)} KB`
               : '';
-          const revLabel = syncRes.record.revision ? ` · 版本 v${syncRes.record.revision}` : '';
-          const mergeHint = syncRes.mergedFromRemote ? '（已自动合并云端多端数据并同步至本机）' : '';
+          const revLabel = syncRes.record.revision ? ` · v${syncRes.record.revision}` : '';
+          const shardHint = syncRes.skippedUnchangedUpload
+            ? '（分片哈希无变动，已跳过重复上传）'
+            : `（按哈希增量上传 ${syncRes.uploadedShardCount}/${syncRes.totalShardCount} 个分片）`;
 
           setBanner({
             severity: 'success',
-            text: `已使用登录密码压缩加密并将 ${syncRes.record.billCount} 条账单及全量生活数据上传至「${syncRes.record.providerName}」${mergeHint}（远程地址：${syncRes.remoteUrl}${revLabel}${refreshedSizeKb}）`,
+            text: `已同步 ${syncRes.record.billCount} 条账单及生活数据至「${syncRes.record.providerName}」${shardHint}${revLabel}${refreshedSizeKb}`,
           });
         } catch (remoteErr) {
           const latestMeta = loadLatestCloudSyncRecord();
@@ -472,10 +514,6 @@ export function CloudStoragePanel() {
 
   const handleRestore = async (): Promise<void> => {
     try {
-      if (config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0) {
-        await pullSnapshotFromRemoteCloud(config);
-      }
-      const restored = restoreBillsFromCloud(config, encryptionPassword);
       const freshLocal = await loadLocalExtraModules();
       const localDataset: CloudFullDataset = {
         bills: [...bills],
@@ -487,6 +525,10 @@ export function CloudStoragePanel() {
         diaryEntries: [...(freshLocal.diaryEntries ?? [])],
         tombstones: [...(freshLocal.tombstones ?? [])],
       };
+      if (config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0) {
+        await pullSnapshotFromRemoteCloud(config, encryptionPassword, localDataset);
+      }
+      const restored = restoreBillsFromCloud(config, encryptionPassword);
       const remoteDataset: CloudFullDataset = {
         bills: restored.bills,
         categories: restored.categories,

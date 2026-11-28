@@ -36,11 +36,6 @@ export interface UseImportFlowResult {
  */
 export function useImportFlow(): UseImportFlowResult {
   const { runtime } = useVault();
-  const bytes = useImportStore((state) => state.bytes);
-  const fileName = useImportStore((state) => state.fileName);
-  const format = useImportStore((state) => state.format);
-  const table = useImportStore((state) => state.table);
-  const text = useImportStore((state) => state.text);
   const skipCrossSourceDuplicates = useImportStore((state) => state.skipCrossSourceDuplicates);
   const setSource = useImportStore((state) => state.setSource);
   const setPlan = useImportStore((state) => state.setPlan);
@@ -74,13 +69,21 @@ export function useImportFlow(): UseImportFlowResult {
     };
   }, [runtime]);
 
-  /** 从 store 里拼出核心层统一的导入源。 */
+  /** 从 store 最新快照拼出核心层统一的导入源（避免批量循环或异步回调中闭包捕获旧文件字节）。 */
   const buildSource = useCallback((): ImportSource | null => {
-    if (!bytes) {
+    const state = useImportStore.getState();
+    if (!state.bytes) {
       return null;
     }
-    return { fileName, sizeBytes: bytes.length, bytes, format, table, text };
-  }, [bytes, fileName, format, table, text]);
+    return {
+      fileName: state.fileName,
+      sizeBytes: state.bytes.length,
+      bytes: state.bytes,
+      format: state.format,
+      table: state.table,
+      text: state.text,
+    };
+  }, []);
 
   const plan = useCallback(
     async (source: ImportSource): Promise<ImportPlan | null> => {

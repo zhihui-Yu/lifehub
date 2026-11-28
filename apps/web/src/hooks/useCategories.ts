@@ -35,6 +35,11 @@ export interface UseCategoriesResult {
   deleteCategory: (id: string) => Promise<void>;
 }
 
+/** 模块级分类内存缓存（首屏零闪烁直出，且仅在分类内容实际变化时触发落盘快照，消除切 Tab 重复写盘）。 */
+let cachedCategoryRuntime: unknown = null;
+let cachedCategories: Category[] = [];
+let lastPersistedSignature = '';
+
 /**
  * 初始化分类列表与写操作。
  *
@@ -42,47 +47,58 @@ export interface UseCategoriesResult {
  */
 export function useCategories(): UseCategoriesResult {
   const { runtime, status } = useVault();
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [categories, setCategories] = useState<Category[]>(() =>
+    runtime && cachedCategoryRuntime === runtime ? cachedCategories : [],
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    if (!runtime || status !== 'unlocked') {
-      return;
-    }
-    setLoading(true);
-    try {
-      const list =
-        typeof runtime.categoryRepository.ensureSystemCategories === 'function' && runtime.clock
-          ? await runtime.categoryRepository.ensureSystemCategories(
-              runtime.clock,
-              CATEGORY_LOCAL_DEVICE_ID,
-            )
-          : await runtime.categoryRepository.list();
-      setCategories(list);
-      setError(null);
-      syncAutoSnapshotToStorageDir(
-        JSON.stringify(
-          {
-            schema: 'lifehub-categories-v1',
-            updatedAt: new Date().toISOString(),
-            categoryCount: list.length,
-            categories: list,
-          },
-          null,
-          2,
-        ),
-        'lifehub-categories.json',
-      );
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '本地数据读写失败');
-    } finally {
-      setLoading(false);
-    }
-  }, [runtime, status]);
+  const reload = useCallback(
+    async (forcePersist = false) => {
+      if (!runtime || status !== 'unlocked') {
+        return;
+      }
+      setLoading(true);
+      try {
+        const list =
+          typeof runtime.categoryRepository.ensureSystemCategories === 'function' && runtime.clock
+            ? await runtime.categoryRepository.ensureSystemCategories(
+                runtime.clock,
+                CATEGORY_LOCAL_DEVICE_ID,
+              )
+            : await runtime.categoryRepository.list();
+        cachedCategoryRuntime = runtime;
+        cachedCategories = list;
+        setCategories(list);
+        setError(null);
+        const signature = list.map((c) => `${c.id}:${c.name}:${c.version}`).join('|');
+        if (forcePersist || signature !== lastPersistedSignature) {
+          lastPersistedSignature = signature;
+          syncAutoSnapshotToStorageDir(
+            JSON.stringify(
+              {
+                schema: 'lifehub-categories-v1',
+                updatedAt: new Date().toISOString(),
+                categoryCount: list.length,
+                categories: list,
+              },
+              null,
+              2,
+            ),
+            'lifehub-categories.json',
+          );
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : '本地数据读写失败');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [runtime, status],
+  );
 
   useEffect(() => {
-    void reload();
+    void reload(false);
   }, [reload]);
 
   const addCategory = useCallback(
@@ -95,7 +111,7 @@ export function useCategories(): UseCategoriesResult {
         deviceId: CATEGORY_LOCAL_DEVICE_ID,
       });
       await runtime.categoryRepository.save(category);
-      await reload();
+      await reload(true);
       return category;
     },
     [runtime, reload],
@@ -108,7 +124,7 @@ export function useCategories(): UseCategoriesResult {
       }
       const category = buildCategory(input, { clock: runtime.clock, deviceId: CATEGORY_LOCAL_DEVICE_ID }, existing);
       await runtime.categoryRepository.save(category);
-      await reload();
+      await reload(true);
     },
     [runtime, reload],
   );
@@ -120,10 +136,10 @@ export function useCategories(): UseCategoriesResult {
       }
       await runtime.categoryRepository.delete(id);
       recordCloudTombstone('category', id);
-      await reload();
+      await reload(true);
     },
     [runtime, reload],
   );
 
-  return { categories, loading, error, reload, addCategory, updateCategory, deleteCategory };
+  return { categories, loading, error, reload: () => reload(true), addCategory, updateCategory, deleteCategory };
 }
