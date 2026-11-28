@@ -716,30 +716,44 @@ describe('ImportPage（A-08）', () => {
 
     const folderInput = screen.getByTestId('folder-file-input');
     const plainCsvFile = makeFile('无密码账单.csv', 'text/csv');
+    const plainPdfFile = makeFile(
+      '无密码银行流水.pdf',
+      'application/pdf',
+      '%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n',
+    );
     const unsupportedFile = makeFile('说明.png', 'image/png');
     const zipA = makeEncryptedZip('加密包A.zip', 'inner-a.csv', '111111');
     const zipB = makeEncryptedZip('加密包B.zip', 'inner-b.csv', '222222');
 
-    // 1. 先选择文件夹（含无密码 CSV 与非账单图片）-> 进入待导入清单
+    // 1. 先选择文件夹（含无密码 CSV、无密码 PDF 与非账单图片）-> 进入待导入清单，且无密码 CSV 与无密码 PDF 均不渲染密码框！
     await act(async () => {
       fireEvent.change(folderInput, {
-        target: { files: [plainCsvFile, unsupportedFile] },
+        target: { files: [plainCsvFile, plainPdfFile, unsupportedFile] },
       });
     });
-    expect(screen.getByTestId('pending-batch-list')).toBeInTheDocument();
+    expect(await screen.findByTestId('pending-batch-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('queued-file-password-0')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('queued-file-password-1')).not.toBeInTheDocument();
 
-    // 2. 再通过「选择文件」叠加两个不同密码的加密包（演示第 1 个预先填密码，第 2 个留空由弹窗按文件名提示）
+    // 2. 再通过「选择文件」叠加两个不同密码的加密包 -> 仅索引 2、3（真正加密的文件）一一对应渲染密码输入框！
     await act(async () => {
       fireEvent.change(fileInput(), {
         target: { files: [zipA, zipB] },
       });
     });
+    expect(await screen.findByTestId('queued-file-password-2')).toBeInTheDocument();
+    expect(screen.getByTestId('queued-file-password-3')).toBeInTheDocument();
+    expect(screen.queryByTestId('queued-file-password-0')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('queued-file-password-1')).not.toBeInTheDocument();
 
-    // 为加密包A（索引 1）填写密码 111111，加密包B（索引 2）留空
+    // 为加密包A（索引 2）填写密码 111111，加密包B（索引 3）留空，同时移除无密码 PDF（索引 1）验证行删除
     await act(async () => {
-      fireEvent.change(screen.getByTestId('queued-file-password-1'), {
+      fireEvent.change(screen.getByTestId('queued-file-password-2'), {
         target: { value: '111111' },
       });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getAllByLabelText('移除 无密码银行流水.pdf')[0] as HTMLElement);
     });
 
     // 3. 点击「开始导入」：无密码 CSV 与 加密包A 直接通过，仅对未填密码的「加密包B.zip」弹窗索取密码！

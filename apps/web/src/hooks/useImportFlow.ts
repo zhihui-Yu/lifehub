@@ -10,6 +10,8 @@
 import { useCallback } from 'react';
 import { LifeHubError, type ColumnMapping, type ImportPlan, type ImportSource, type ImportSummary } from '@lifehub/core';
 import { createImportService, createPlatformRuntime, type PlatformRuntime } from '@/platform';
+import { buildDailyIndexFromBills, saveEncryptedDailyBillIndex } from '@/lib/bill-daily-index';
+import { invalidateLoadedDayBillsCache } from './useBillList';
 import { dekProvider, useBillStore, useImportStore, useVaultStore } from '@/store';
 import { useSettingsStore } from '@/store/settings-store';
 import { useVault } from './useVault';
@@ -22,10 +24,14 @@ export interface UseImportFlowResult {
   refreshPreview: (mapping: ColumnMapping) => Promise<void>;
   /** 更新映射并刷新预览。 */
   updateMapping: (mapping: ColumnMapping) => Promise<void>;
-  /** 执行导入（可选指定是否允许重复导入或覆盖已有批次）。 */
+  /** 执行导入（可选指定是否允许重复导入、覆盖已有批次，或批量循环中延后刷新 store）。 */
   run: (
     mapping: ColumnMapping,
-    options?: { allowDuplicate?: boolean; overwriteExisting?: boolean },
+    options?: {
+      allowDuplicate?: boolean;
+      overwriteExisting?: boolean;
+      skipStoreRefresh?: boolean;
+    },
   ) => Promise<ImportSummary | null>;
 }
 
@@ -140,7 +146,11 @@ export function useImportFlow(): UseImportFlowResult {
   const run = useCallback(
     async (
       mapping: ColumnMapping,
-      options?: { allowDuplicate?: boolean; overwriteExisting?: boolean },
+      options?: {
+        allowDuplicate?: boolean;
+        overwriteExisting?: boolean;
+        skipStoreRefresh?: boolean;
+      },
     ): Promise<ImportSummary | null> => {
       setError(null);
       const { service, activeRuntime } = await ensureService();
@@ -161,9 +171,14 @@ export function useImportFlow(): UseImportFlowResult {
           overwriteExisting,
         });
         setSummary(summary);
-        if (activeRuntime?.billRepository) {
+        invalidateLoadedDayBillsCache();
+        if (!options?.skipStoreRefresh && activeRuntime?.billRepository) {
           const latestBills = await activeRuntime.billRepository.list();
           useBillStore.getState().setBills(latestBills);
+          void saveEncryptedDailyBillIndex(
+            activeRuntime,
+            buildDailyIndexFromBills(latestBills),
+          );
         }
         return summary;
       } catch (cause) {

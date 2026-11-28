@@ -237,6 +237,70 @@ export async function readXlsxTable(bytes: Uint8Array): Promise<RawTable> {
 }
 
 /**
+ * 快速检测字节数组中是否出现 ASCII 子串 `/Encrypt`（PDF 规范规定加密字典引用在文件尾必须非加密可见）。
+ */
+function hasPdfEncryptMarker(bytes: Uint8Array): boolean {
+  // '/Encrypt' -> [0x2f, 0x45, 0x6e, 0x63, 0x72, 0x79, 0x70, 0x74]
+  const limit = bytes.length - 8;
+  for (let i = 0; i <= limit; i += 1) {
+    if (
+      bytes[i] === 0x2f &&
+      bytes[i + 1] === 0x45 &&
+      bytes[i + 2] === 0x6e &&
+      bytes[i + 3] === 0x63 &&
+      bytes[i + 4] === 0x72 &&
+      bytes[i + 5] === 0x79 &&
+      bytes[i + 6] === 0x70 &&
+      bytes[i + 7] === 0x74
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 精准检测 PDF 文件是否需要用户输入打开密码（User Password）。
+ *
+ * 说明：
+ * 1. 先做 O(N) 纯字节扫描查找 `/Encrypt`，普通无加密银行流水 PDF 在 0.1ms 内直接返回 `false`，不加载 pdfjs；
+ * 2. 若存在 `/Encrypt`（区分「仅设了打印权限 Owner Password、无需打开密码」与「真正需要打开密码」），
+ *    调用 pdfjs 尝试免密打开文档头，仅在抛出 `PasswordException` 时返回 `true`。
+ *
+ * @param bytes PDF 文件原始字节
+ * @returns 需要用户输入密码才能读取时返回 true，否则返回 false
+ * @throws 无（所有异常在内部捕获安全返回 false）
+ */
+export async function isPdfBytesEncrypted(bytes: Uint8Array): Promise<boolean> {
+  if (!hasPdfEncryptMarker(bytes)) {
+    return false;
+  }
+  try {
+    const pdfjs: typeof import('pdfjs-dist/legacy/build/pdf.mjs') = await import(
+      'pdfjs-dist/legacy/build/pdf.mjs'
+    );
+    const globalScope = globalThis as Record<string, unknown>;
+    if (!globalScope.pdfjsWorker) {
+      const workerModule = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+      globalScope.pdfjsWorker = workerModule;
+    }
+    const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+    const doc = await loadingTask.promise;
+    await doc.destroy();
+    return false;
+  } catch (err) {
+    const errObj = err as { name?: string; message?: string } | null;
+    if (
+      errObj &&
+      (errObj.name === 'PasswordException' || /password/i.test(String(errObj.message ?? '')))
+    ) {
+      return true;
+    }
+    return false;
+  }
+}
+
+/**
  * 用 pdfjs 抽取 PDF 文本层并按页还原成行文本。
  *
  * 说明：银行流水 PDF 的每一笔交易被拆成若干独立文本片段（日期 / 时间 / 金额 / 用途分行），

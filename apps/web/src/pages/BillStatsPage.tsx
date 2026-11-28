@@ -25,7 +25,7 @@ import { useBillStore } from '@/store';
  * @throws 无显式抛出
  */
 export function BillStatsPage() {
-  const { bills, loading } = useBillList();
+  const { bills, loading } = useBillList({ eagerAll: true });
   const { categories } = useCategories();
   const filters = useBillStore((state) => state.filters);
   const setFilters = useBillStore((state) => state.setFilters);

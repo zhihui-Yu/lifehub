@@ -5,8 +5,8 @@
  *
  * 说明：
  * 1. 单文件快速路径：选择单个文件后直接解析并进入映射页（若文件加密则针对该文件弹窗索取密码）；
- * 2. 批量混合路径：支持连续叠加选择多个文件与多个文件夹，每个 PDF / ZIP 可单独填写不同密码（无密码留空），
- *    未预先填写密码的加密文件也会在导入时按文件名逐个提示输入或跳过，互不覆盖干扰。
+ * 2. 批量混合路径：支持连续叠加选择多个文件与多个文件夹；在加入列表时即对文件头做字节级加密检测，
+ *    仅对真正加密的 PDF / ZIP 一一对应渲染独立密码输入框，无需密码的文件（CSV / XLSX / JSON / 未加密 PDF / 未加密 ZIP）不渲染密码框。
  */
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -27,6 +27,7 @@ import {
   Typography,
 } from '@mui/material';
 import CloseOutlined from '@mui/icons-material/CloseOutlined';
+import LockOutlined from '@mui/icons-material/LockOutlined';
 import { useNavigate } from 'react-router-dom';
 import { classifySourceChannel, ColumnMapper } from '@lifehub/core';
 import type { ImportBatch, ImportSource } from '@lifehub/core';
@@ -37,20 +38,35 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog';
 import { LoadingOverlay } from '@/components/common/LoadingOverlay';
 import { useImportFlow } from '@/hooks/useImportFlow';
 import { useVault } from '@/hooks/useVault';
+import { invalidateLoadedDayBillsCache } from '@/hooks/useBillList';
+import {
+  buildDailyIndexFromBills,
+  clearDailyBillIndexCache,
+  saveEncryptedDailyBillIndex,
+} from '@/lib/bill-daily-index';
+import type { PlatformRuntime } from '@/platform';
 import { useBillStore, useImportStore } from '@/store';
 import { detectFileType, isSupportedFileType, readFileBytes } from '@/utils/file';
-import { buildImportSource } from '@/lib/import/extract';
-import { extractZipFiles, isPasswordRequiredError } from '@/lib/import/zip';
+import { buildImportSource, isPdfBytesEncrypted } from '@/lib/import/extract';
+import {
+  extractZipFiles,
+  isPasswordRequiredError,
+  isZipBytesEncrypted,
+} from '@/lib/import/zip';
 
 /** 待批量导入队列中的单个文件条目。 */
 interface QueuedFileItem {
-  /** 唯一标识键（基于相对路径/文件名 + 字节大小 + 修改时间去重）。 */
+  /** 唯一标识键（基于展示路径 + 字节大小 + 修改时间去重）。 */
   key: string;
   /** 原始文件对象。 */
   file: File;
-  /** 展示名称（含子目录前缀时保留简短路径）。 */
+  /** 已预读的文件字节（导入时直接复用，避免二次读盘）。 */
+  bytes: Uint8Array;
+  /** 展示名称（含文件夹/压缩包前缀时保留完整可读路径）。 */
   displayName: string;
-  /** 该文件专属的解密/解压密码（仅 PDF / ZIP 可能用到，无密码为空串）。 */
+  /** 经字节头实测该文件是否需要解密密码（无需密码的文件绝不渲染密码输入框）。 */
+  requiresPassword: boolean;
+  /** 该文件专属的解密/解压密码。 */
   password: string;
 }
 
@@ -62,17 +78,11 @@ interface PendingWorkItem {
   password?: string;
 }
 
-/** 正在执行中的会话上下文（用于在遇到加密文件弹窗输入密码后无缝断点续跑）。 */
+/** 正在执行中的会话上下文（用于在遇到未填/填错密码的加密文件弹窗补填后无缝断点续跑）。 */
 interface ActiveImportSession {
   isBatch: boolean;
   queue: PendingWorkItem[];
   readySources: ImportSource[];
-}
-
-/** 生成文件去重键。 */
-function buildFileKey(file: File): string {
-  const rel = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
-  return `${rel}::${file.size}::${file.lastModified}`;
 }
 
 /** 获取文件可读展示名。 */
@@ -81,10 +91,78 @@ function getDisplayFileName(file: File): string {
   return rel && rel.trim() !== '' ? rel : file.name;
 }
 
-/** 判断文件格式是否可能携带密码（仅 PDF 与 ZIP 可能加密）。 */
-function mayHavePassword(file: File): boolean {
-  const kind = detectFileType(file);
-  return kind === 'pdf' || kind === 'zip';
+/** 生成队列项去重键。 */
+function buildQueueKey(displayName: string, file: File): string {
+  return `${displayName}::${file.size}::${file.lastModified}`;
+}
+
+/**
+ * 预检一批候选文件：
+ * 1. 未加密的 `.zip` 自动就地展开为内部账单文件，避免外层空挂无意义的密码框；
+ * 2. 对每个 `.pdf` 与 `.zip` 做真实字节级加密检测，精准标记 `requiresPassword`（CSV/XLSX/JSON 及未加密 PDF 恒为 `false`）。
+ */
+async function inspectCandidateFiles(
+  files: readonly File[],
+  prefixPath = '',
+): Promise<QueuedFileItem[]> {
+  const out: QueuedFileItem[] = [];
+  for (const file of files) {
+    if (!isSupportedFileType(file)) {
+      continue;
+    }
+    const baseDisplay = getDisplayFileName(file);
+    const displayName = prefixPath ? `${prefixPath} / ${baseDisplay}` : baseDisplay;
+    const bytes = await readFileBytes(file);
+    const kind = detectFileType(file);
+
+    if (kind === 'zip') {
+      const zipEncrypted = isZipBytesEncrypted(bytes);
+      if (!zipEncrypted) {
+        try {
+          const innerFiles = await extractZipFiles(bytes, undefined, file.name);
+          const unpacked = await inspectCandidateFiles(innerFiles, displayName);
+          if (unpacked.length > 0) {
+            out.push(...unpacked);
+            continue;
+          }
+        } catch {
+          // 若解压异常则保留原条目交由后续导入阶段统一报错提示
+        }
+      }
+      out.push({
+        key: buildQueueKey(displayName, file),
+        file,
+        bytes,
+        displayName,
+        requiresPassword: zipEncrypted,
+        password: '',
+      });
+      continue;
+    }
+
+    if (kind === 'pdf') {
+      const pdfEncrypted = await isPdfBytesEncrypted(bytes);
+      out.push({
+        key: buildQueueKey(displayName, file),
+        file,
+        bytes,
+        displayName,
+        requiresPassword: pdfEncrypted,
+        password: '',
+      });
+      continue;
+    }
+
+    out.push({
+      key: buildQueueKey(displayName, file),
+      file,
+      bytes,
+      displayName,
+      requiresPassword: false,
+      password: '',
+    });
+  }
+  return out;
 }
 
 /** 批量导入时优先导入微信/支付宝明细账单，再导入银行流水，使跨来源去重天然保留最完整商户与备注。 */
@@ -119,6 +197,9 @@ export function ImportPage() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [autoImport, setAutoImport] = useState(false);
   const [queuedFiles, setQueuedFiles] = useState<QueuedFileItem[]>([]);
+  const queuedFilesRef = useRef<QueuedFileItem[]>(queuedFiles);
+  queuedFilesRef.current = queuedFiles;
+
   const [pendingDeleteBatch, setPendingDeleteBatch] = useState<ImportBatch | null>(null);
   const [confirmClearAllOpen, setConfirmClearAllOpen] = useState(false);
 
@@ -177,9 +258,15 @@ export function ImportPage() {
       await runtime.importBatchRepository.delete?.(target.id);
       const nextBatches = await runtime.importBatchRepository.list();
       setBatches(nextBatches);
+      clearDailyBillIndexCache();
+      invalidateLoadedDayBillsCache();
       if (runtime.billRepository?.list) {
         const latestBills = await runtime.billRepository.list();
         useBillStore.getState().setBills(latestBills);
+        void saveEncryptedDailyBillIndex(
+          runtime as PlatformRuntime,
+          buildDailyIndexFromBills(latestBills),
+        );
       }
       setNotice(`已删除「${target.fileName}」及其关联的 ${deletedCount} 条账单`);
     } catch {
@@ -203,6 +290,8 @@ export function ImportPage() {
         await runtime.billRepository.clearAll();
       }
       setBatches([]);
+      clearDailyBillIndexCache();
+      invalidateLoadedDayBillsCache();
       useBillStore.getState().setBills([]);
       useImportStore.getState().reset();
       setNotice('已清空全部导入记录及关联账单，现在可重新导入');
@@ -283,6 +372,8 @@ export function ImportPage() {
           if (autoImport && validation.ok) {
             const summary = await run(result.suggestedMapping);
             if (summary) {
+              clearDailyBillIndexCache();
+              invalidateLoadedDayBillsCache();
               navigate('/bills');
               return;
             }
@@ -306,7 +397,7 @@ export function ImportPage() {
         if (!validation.ok) {
           continue;
         }
-        const summary = await run(planned.suggestedMapping);
+        const summary = await run(planned.suggestedMapping, { skipStoreRefresh: true });
         if (summary) {
           totalImported += summary.rowImported;
           totalSkipped += summary.rowSkipped;
@@ -315,6 +406,7 @@ export function ImportPage() {
       }
 
       setQueuedFiles([]);
+      invalidateLoadedDayBillsCache();
 
       if (runtime) {
         const nextBatches = await runtime.importBatchRepository.list();
@@ -322,6 +414,10 @@ export function ImportPage() {
         if (runtime.billRepository?.list) {
           const latestBills = await runtime.billRepository.list();
           useBillStore.getState().setBills(latestBills);
+          await saveEncryptedDailyBillIndex(
+            runtime as PlatformRuntime,
+            buildDailyIndexFromBills(latestBills),
+          );
         }
       }
 
@@ -353,8 +449,14 @@ export function ImportPage() {
       return;
     }
 
-    // 单文件且当前待导入列表为空时：保持零多余点击，直接开始解析
-    if (!fromFolder && supported.length === 1 && queuedFiles.length === 0 && supported[0]) {
+    // 单文件且当前待导入队列为空时（非文件夹、非未加密多文件 ZIP）：走 0 点击快速路径
+    if (
+      !fromFolder &&
+      supported.length === 1 &&
+      queuedFilesRef.current.length === 0 &&
+      supported[0] &&
+      detectFileType(supported[0]) !== 'zip'
+    ) {
       sessionRef.current = {
         isBatch: false,
         queue: [
@@ -369,24 +471,52 @@ export function ImportPage() {
       return;
     }
 
-    // 多文件、文件夹或已有待导入列表时：累加进待导入清单，支持继续混加其他文件/文件夹并单独设密码
-    setQueuedFiles((prev) => {
-      const existingKeys = new Set(prev.map((item) => item.key));
-      const next = [...prev];
-      for (const file of supported) {
-        const key = buildFileKey(file);
-        if (!existingKeys.has(key)) {
-          existingKeys.add(key);
-          next.push({
-            key,
-            file,
-            displayName: getDisplayFileName(file),
-            password: '',
-          });
+    void (async () => {
+      setBusy(true);
+      try {
+        const inspected = await inspectCandidateFiles(supported);
+        // 若单选了一个加密 ZIP（或内含仅 1 个文件的未加密 ZIP）且队列原本为空，仍走单文件直达体验
+        if (
+          !fromFolder &&
+          supported.length === 1 &&
+          queuedFilesRef.current.length === 0 &&
+          inspected.length === 1 &&
+          inspected[0]
+        ) {
+          sessionRef.current = {
+            isBatch: false,
+            queue: [
+              {
+                file: inspected[0].file,
+                bytes: inspected[0].bytes,
+                displayName: inspected[0].displayName,
+              },
+            ],
+            readySources: [],
+          };
+          await resumeImportSession();
+          return;
+        }
+
+        setQueuedFiles((prev) => {
+          const existingKeys = new Set(prev.map((item) => item.key));
+          const next = [...prev];
+          for (const item of inspected) {
+            if (!existingKeys.has(item.key)) {
+              existingKeys.add(item.key);
+              next.push(item);
+            }
+          }
+          return next;
+        });
+      } catch (err) {
+        setLocalError(err instanceof Error ? err.message : '读取待导入文件失败');
+      } finally {
+        if (!sessionRef.current) {
+          setBusy(false);
         }
       }
-      return next;
-    });
+    })();
   };
 
   /** 启动待导入清单的批量导入。 */
@@ -400,8 +530,9 @@ export function ImportPage() {
       isBatch: queuedFiles.length > 1,
       queue: queuedFiles.map((item) => ({
         file: item.file,
+        bytes: item.bytes,
         displayName: item.displayName,
-        password: item.password.trim() || undefined,
+        password: item.requiresPassword ? item.password.trim() || undefined : undefined,
       })),
       readySources: [],
     };
@@ -441,6 +572,7 @@ export function ImportPage() {
 
   const displayError = error ?? localError;
   const stepIndex = batchSummary ? 3 : busy && queuedFiles.length > 0 ? 2 : 0;
+  const encryptedQueueCount = queuedFiles.filter((f) => f.requiresPassword).length;
 
   return (
     <div data-testid="import-page">
@@ -480,10 +612,11 @@ export function ImportPage() {
             justifyContent="space-between"
             flexWrap="wrap"
             gap={1}
-            sx={{ mb: 1.25 }}
+            sx={{ mb: 1.5 }}
           >
             <Typography variant="subtitle2" sx={{ fontWeight: 700, color: 'var(--lifehub-text)' }}>
-              待导入（{queuedFiles.length} 个文件，可继续选择文件或文件夹叠加）
+              待导入（共 {queuedFiles.length} 个文件
+              {encryptedQueueCount > 0 ? ` · ${encryptedQueueCount} 个加密文件需填密码` : ''}）
             </Typography>
             <Stack direction="row" spacing={1} alignItems="center">
               <Button
@@ -510,7 +643,7 @@ export function ImportPage() {
           </Stack>
           <Box
             sx={{
-              maxHeight: 280,
+              maxHeight: 340,
               overflowY: 'auto',
               display: 'flex',
               flexDirection: 'column',
@@ -521,35 +654,54 @@ export function ImportPage() {
               <Box
                 key={item.key}
                 data-testid={`queued-file-row-${idx}`}
+                data-encrypted={item.requiresPassword ? 'true' : 'false'}
                 sx={{
                   display: 'flex',
-                  alignItems: 'center',
+                  flexDirection: { xs: item.requiresPassword ? 'column' : 'row', sm: 'row' },
+                  alignItems: { xs: item.requiresPassword ? 'stretch' : 'center', sm: 'center' },
                   gap: 1,
-                  py: 0.5,
+                  py: 0.75,
                   borderBottom:
                     idx < queuedFiles.length - 1 ? '1px solid var(--lifehub-border)' : 'none',
                 }}
               >
-                <Typography
-                  variant="body2"
-                  title={item.displayName}
-                  sx={{
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                    color: 'var(--lifehub-text)',
-                  }}
-                >
-                  {item.displayName}
-                </Typography>
-                {mayHavePassword(item.file) ? (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flex: 1, minWidth: 0 }}>
+                  {item.requiresPassword ? (
+                    <LockOutlined
+                      sx={{ fontSize: 16, color: 'warning.main', flexShrink: 0 }}
+                    />
+                  ) : null}
+                  <Typography
+                    variant="body2"
+                    title={item.displayName}
+                    sx={{
+                      flex: 1,
+                      minWidth: 0,
+                      wordBreak: 'break-all',
+                      color: 'var(--lifehub-text)',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {idx + 1}. {item.displayName}
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    disabled={busy}
+                    aria-label={`移除 ${item.file.name}`}
+                    sx={{ display: { xs: item.requiresPassword ? 'inline-flex' : 'none', sm: 'none' } }}
+                    onClick={() =>
+                      setQueuedFiles((prev) => prev.filter((q) => q.key !== item.key))
+                    }
+                  >
+                    <CloseOutlined fontSize="small" />
+                  </IconButton>
+                </Box>
+                {item.requiresPassword ? (
                   <TextField
                     size="small"
                     type="password"
                     disabled={busy}
-                    placeholder="密码（无则留空）"
+                    placeholder="请输入此文件密码"
                     value={item.password}
                     onChange={(event) => {
                       const val = event.target.value;
@@ -557,7 +709,7 @@ export function ImportPage() {
                         prev.map((q) => (q.key === item.key ? { ...q, password: val } : q)),
                       );
                     }}
-                    sx={{ width: { xs: 132, sm: 164 }, flexShrink: 0 }}
+                    sx={{ width: { xs: '100%', sm: 188 }, flexShrink: 0 }}
                     inputProps={{
                       'data-testid': `queued-file-password-${idx}`,
                       'aria-label': `${item.file.name} 密码`,
@@ -568,6 +720,10 @@ export function ImportPage() {
                   size="small"
                   disabled={busy}
                   aria-label={`移除 ${item.file.name}`}
+                  sx={{
+                    display: { xs: item.requiresPassword ? 'none' : 'inline-flex', sm: 'inline-flex' },
+                    flexShrink: 0,
+                  }}
                   onClick={() =>
                     setQueuedFiles((prev) => prev.filter((q) => q.key !== item.key))
                   }

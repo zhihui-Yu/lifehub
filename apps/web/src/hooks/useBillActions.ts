@@ -25,6 +25,8 @@ import {
   saveRememberedCategoryMapping,
 } from '@/lib/category-memory';
 import { recordCloudTombstone, recordCloudTombstones } from '@/lib/cloud-tombstones';
+import { clearDailyBillIndexCache } from '@/lib/bill-daily-index';
+import { invalidateLoadedDayBillsCache } from './useBillList';
 import { syncAutoSnapshotToStorageDir } from '@/utils/download';
 
 /** 账单分类动作的附加选项。 */
@@ -229,11 +231,15 @@ export function useBillActions() {
         },
       );
       await runtime.billRepository.put(built);
+      invalidateLoadedDayBillsCache([built.localDate]);
       const { result: memoryResult, updatedMap } = await applyCategoryMemory(
         built,
         workingBills,
         options,
       );
+      if (updatedMap.size > 0) {
+        invalidateLoadedDayBillsCache();
+      }
       if (storeBills.length > 0) {
         const nextBills = [
           built,
@@ -269,6 +275,7 @@ export function useBillActions() {
         timeZone,
       });
       await runtime.billRepository.put(updated);
+      invalidateLoadedDayBillsCache([existing.localDate, updated.localDate]);
       const storeBills = useBillStore.getState().bills;
       const workingBills = storeBills.length > 0 ? storeBills : await runtime.billRepository.list();
       const { result: memoryResult, updatedMap } = await applyCategoryMemory(
@@ -276,6 +283,9 @@ export function useBillActions() {
         workingBills,
         options,
       );
+      if (updatedMap.size > 0) {
+        invalidateLoadedDayBillsCache();
+      }
       if (storeBills.length > 0) {
         const nextBills = storeBills.map((b) =>
           b.id === updated.id ? updated : (updatedMap.get(b.id) ?? b),
@@ -297,12 +307,17 @@ export function useBillActions() {
       }
       await runtime.billRepository.delete(id);
       recordCloudTombstone('bill', id);
+      clearDailyBillIndexCache();
+      invalidateLoadedDayBillsCache();
       const storeBills = useBillStore.getState().bills;
       if (storeBills.length > 0) {
         const nextBills = storeBills.filter((b) => b.id !== id);
         setBills(nextBills);
         scheduleBillsAutoSnapshot(nextBills);
-      } else {
+      } else if (
+        typeof (runtime.billRepository as { queryByLocalDateRange?: unknown })
+          .queryByLocalDateRange !== 'function'
+      ) {
         await refresh();
       }
     },
@@ -358,6 +373,8 @@ export function useBillActions() {
       }
     }
     recordCloudTombstones('bill', allIds);
+    clearDailyBillIndexCache();
+    invalidateLoadedDayBillsCache();
     if (runtime.importBatchRepository?.list && runtime.importBatchRepository?.delete) {
       const batches = await runtime.importBatchRepository.list();
       for (const batch of batches) {
@@ -387,6 +404,7 @@ export function useBillActions() {
         deviceId: LOCAL_DEVICE_ID,
       };
       await runtime.billRepository.put(updated);
+      invalidateLoadedDayBillsCache([existing.localDate, updated.localDate]);
       const storeBills = useBillStore.getState().bills;
       const workingBills = storeBills.length > 0 ? storeBills : await runtime.billRepository.list();
       const { result: memoryResult, updatedMap } = await applyCategoryMemory(
@@ -394,6 +412,9 @@ export function useBillActions() {
         workingBills,
         options,
       );
+      if (updatedMap.size > 0) {
+        invalidateLoadedDayBillsCache();
+      }
       if (storeBills.length > 0) {
         const nextBills = storeBills.map((b) =>
           b.id === updated.id ? updated : (updatedMap.get(b.id) ?? b),
