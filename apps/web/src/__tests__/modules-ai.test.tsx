@@ -184,6 +184,76 @@ describe('Module E —— X-14 脱敏管线与 Prompt 构造器安全断言', ()
     expect(fullPrompt).toContain('喝水（定量·ml）：打卡 10 天 | 周期累计总量 18500 ml | 打卡日均 1850 ml/天');
     expect(fullPrompt).toContain('跑步（定量·km）：打卡 5 天 | 周期累计总量 16.5 km | 打卡日均 3.3 km/天');
   });
+
+  it('专项分析模式严格切分数据边界：财务分析仅发送账单模块，绝不混发课表、习惯或树洞数据', () => {
+    const redacted = redactBillsForAi(makeSampleBills());
+    const fullContext = {
+      redactedBills: redacted,
+      scheduleStats: {
+        weekExpected: 10,
+        weekCompleted: 8,
+        weekRate: 80,
+        monthExpected: 40,
+        monthCompleted: 32,
+        monthRate: 80,
+      },
+      habitStats: {
+        activeHabitCount: 2,
+        habitCompletedCount: 10,
+        scheduleCompletedCount: 8,
+        combinedCompletedCount: 18,
+        maxCurrentStreak: 5,
+        maxLongestStreak: 9,
+      },
+      diaryStats: {
+        selectedCount: 1,
+        sanitizedCharLength: 20,
+        moodDistribution: { 平静: 1 },
+        tagDistribution: { 思考: 1 },
+        monthlyCountDistribution: { '2026-10': 1 },
+        items: [
+          {
+            yearMonth: '2026-10',
+            moodLabel: '平静',
+            tags: ['思考'],
+            sanitizedExcerpt: '今天复盘了工作节奏',
+          },
+        ],
+      },
+    };
+
+    const financePrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'finance' }).userPrompt;
+    expect(financePrompt).toContain('脱敏账单全量结构摘要');
+    expect(financePrompt).not.toContain('生活课表执行情况');
+    expect(financePrompt).not.toContain('微习惯打卡');
+    expect(financePrompt).not.toContain('树洞随笔');
+    expect(financePrompt).not.toContain('今天复盘了工作节奏');
+
+    const lifePrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'life' }).userPrompt;
+    expect(lifePrompt).toContain('生活课表执行情况');
+    expect(lifePrompt).not.toContain('脱敏账单全量结构摘要');
+    expect(lifePrompt).not.toContain('微习惯打卡');
+    expect(lifePrompt).not.toContain('树洞随笔');
+
+    const habitsPrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'habits' }).userPrompt;
+    expect(habitsPrompt).toContain('微习惯打卡');
+    expect(habitsPrompt).not.toContain('脱敏账单全量结构摘要');
+    expect(habitsPrompt).not.toContain('生活课表执行情况');
+    expect(habitsPrompt).not.toContain('课表 + 习惯合并完成事件总数');
+    expect(habitsPrompt).not.toContain('树洞随笔');
+
+    const personaPrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'persona' }).userPrompt;
+    expect(personaPrompt).toContain('树洞随笔');
+    expect(personaPrompt).not.toContain('脱敏账单全量结构摘要');
+    expect(personaPrompt).not.toContain('生活课表执行情况');
+    expect(personaPrompt).not.toContain('微习惯打卡');
+
+    const compPrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'comprehensive' }).userPrompt;
+    expect(compPrompt).toContain('脱敏账单全量结构摘要');
+    expect(compPrompt).toContain('生活课表执行情况');
+    expect(compPrompt).toContain('微习惯打卡');
+    expect(compPrompt).toContain('树洞随笔');
+  });
 });
 
 describe('Module E —— E-01 API Key 本地 AES-GCM 加密存储与 E-04 / X-13 纯指标审计', () => {

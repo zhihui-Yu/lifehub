@@ -92,7 +92,7 @@ export const AI_TOPIC_META: Record<
     desc: '聚焦微习惯连续打卡、定量累计总量与防断签策略',
     starterQuestions: [
       '结合我各项习惯的打卡天数和累计总量（如饮水/运动量），有哪些优化建议？',
-      '怎样提高微习惯连续打卡天数，并把习惯和课表固定时段绑定起来？',
+      '怎样稳定提高微习惯连续打卡天数，降低精力不足日的断签率？',
     ],
   },
   persona: {
@@ -270,18 +270,23 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
     comprehensive:
       '请基于脱敏后的消费分桶结构、生活课表完成率、微习惯连续打卡与各习惯定量累计数据（如饮水量、运动里程等），以及用户脱敏后的树洞心情记录，输出简明、结构化的中文复盘建议，并回答用户的追问。',
     finance:
-      '你当前处于【财务分析专项】模式：请深度聚焦用户的脱敏收支分桶分布、消费分类结构、高频匿名商户特征与大额支出风险，提供可落地的预算控制与财务优化方案。',
+      '你当前处于【财务分析专项】模式（仅接收脱敏财务账单数据，不包含其他生活模块）：请深度聚焦用户的脱敏收支分桶分布、月度收支趋势、消费分类金额结构、高频匿名商户特征与大额支出风险，提供可落地的预算控制与财务优化方案。',
     life:
-      '你当前处于【生活课表与时间分析专项】模式：请深度聚焦用户的周/月课表时间块完成率、作息密度与精力分配，给出具体的时间块重排与执行力提升建议。',
+      '你当前处于【生活课表与时间分析专项】模式（仅接收课表时间块执行数据，不包含财务或其他模块）：请深度聚焦用户的课表时间块完成率、各时段执行差异、作息密度与精力分配，给出具体的时间块重排与执行力提升建议。',
     habits:
-      '你当前处于【微习惯养成专项】模式：请深度聚焦用户的活跃微习惯、各习惯完成天数（每天完成计 1 次）、定量习惯的周期累计总量与打卡日均表现（如喝水 ml、跑步 km 是否达标或稳定）、连续打卡天数（Streak）与课表协同情况，给出科学的定量进阶与防断签方案。',
+      '你当前处于【微习惯养成专项】模式（仅接收微习惯打卡与定量统计数据，不包含财务或其他模块）：请深度聚焦用户的活跃微习惯、各习惯完成天数（每天完成计 1 次）、定量习惯的周期累计总量与打卡日均表现（如喝水 ml、跑步 km 是否达标或稳定）及连续打卡天数（Streak），给出科学的定量进阶与防断签方案。',
     persona:
-      '你当前处于【人物观察与树洞心理分析专项】模式：请深度聚焦用户主动勾选的树洞随笔、情绪标签、人际关系记录与未来规划，温和且深刻地剖析用户的情绪轨迹、关注的人物互动特征与内在需求。',
+      '你当前处于【人物观察与树洞心理分析专项】模式（仅接收已自动脱敏的树洞随笔数据，不包含财务或其他模块）：请深度聚焦用户的树洞随笔、情绪标签、高频话题与人际观察，温和且深刻地剖析用户的情绪轨迹、人际互动特征与内在需求。',
   };
+
+  const privacyScopeLine =
+    topic === 'comprehensive' || topic === 'finance'
+      ? '用户提供的数据已在本地经过严格隐私脱敏（金额已分桶/粗化区间、交易对手已泛化为匿名代号、日期已粗化到月份）。'
+      : '用户提供的数据已在本地经过严格隐私脱敏与模块切分（仅提供当前所选专项模块数据，绝不包含未选模块信息）。';
 
   const systemPrompt = [
     '你是 LifeHub 个人生活与财务复盘及深度对话顾问。',
-    '用户提供的数据已在本地经过严格隐私脱敏（金额已分桶、交易对手已泛化为匿名代号、日期已粗化到月份）。',
+    privacyScopeLine,
     topicRoleMap[topic],
     '',
     '【输出排版规范（严格遵循 Markdown 结构化格式）】',
@@ -388,15 +393,21 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 
   const habitSection = habitStats
     ? [
-        '【微习惯打卡与跨模块完成统计（模块 C · 全量习惯汇总）】',
+        topic === 'comprehensive'
+          ? '【微习惯打卡与跨模块完成统计（模块 C · 全量习惯汇总）】'
+          : '【微习惯打卡与定量表现统计（模块 C · 全量习惯汇总）】',
         `- 活跃习惯数：${habitStats.activeHabitCount} 个`,
         `- 习惯打卡完成总次数（按完成日计）：${habitStats.habitCompletedCount} 次`,
-        `- 课表完成次数：${habitStats.scheduleCompletedCount} 次`,
-        `- 课表 + 习惯合并完成事件总数：${habitStats.combinedCompletedCount} 次`,
+        ...(topic === 'comprehensive'
+          ? [
+              `- 课表完成次数：${habitStats.scheduleCompletedCount} 次`,
+              `- 课表 + 习惯合并完成事件总数：${habitStats.combinedCompletedCount} 次`,
+            ]
+          : []),
         `- 当前最高连续打卡：${habitStats.maxCurrentStreak} 天 | 历史最长连续打卡：${habitStats.maxLongestStreak} 天`,
         ...habitDetailLines,
       ].join('\n')
-    : '【微习惯打卡与跨模块完成统计（模块 C）】\n- 暂无习惯打卡数据';
+    : '【微习惯打卡统计（模块 C）】\n- 暂无习惯打卡数据';
 
   const diaryTagLine =
     diaryStats && Object.keys(diaryStats.tagDistribution ?? {}).length > 0
@@ -429,19 +440,23 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
         ].join('\n')
       : '【树洞随笔与人物/心情摘要（模块 D）】\n- 所选时间段内暂无树洞条目';
 
-  const fallbackHint = context.usedHistoricalBillsFallback
-    ? '；注：所选近期窗口内无新增账单，已自动纳入本机可用历史账单供完整复盘'
-    : '';
+  const fallbackHint =
+    (topic === 'comprehensive' || topic === 'finance') && context.usedHistoricalBillsFallback
+      ? '；注：所选近期窗口内无新增账单，已自动纳入本机可用历史账单供完整复盘'
+      : '';
+  const scopeHintMap: Record<AiAnalysisTopic, string> = {
+    comprehensive: '全模块汇总',
+    finance: '仅发送财务账单模块，已隔离其他模块数据',
+    life: '仅发送生活课表模块，已隔离其他模块数据',
+    habits: '仅发送微习惯模块，已隔离其他模块数据',
+    persona: '仅发送树洞随笔模块，已隔离其他模块数据',
+  };
   const rangeLine =
     context.fromDate && context.toDate
-      ? `数据时间段: ${context.fromDate.slice(0, 7)} ~ ${context.toDate.slice(0, 7)}（100% 全量聚合 + X-14 本地强制脱敏${fallbackHint}）`
-      : '数据时间段: 默认周期（100% 全量聚合 + X-14 本地强制脱敏）';
+      ? `数据时间段: ${context.fromDate.slice(0, 7)} ~ ${context.toDate.slice(0, 7)}（${scopeHintMap[topic]} · 100% 全量聚合 + X-14 本地强制脱敏${fallbackHint}）`
+      : `数据时间段: 默认周期（${scopeHintMap[topic]} · 100% 全量聚合 + X-14 本地强制脱敏）`;
 
-  const userPrompt = [
-    `Prompt 模板版本: ${PROMPT_TEMPLATE_ID}`,
-    `分析维度: ${AI_TOPIC_META[topic]?.label ?? '全维综合复盘'}`,
-    rangeLine,
-    '',
+  const financeSection = [
     '【脱敏账单全量结构摘要（模块 A · 100% 账单已纳入聚合，非抽样截断）】',
     `- 覆盖月份: ${redactedBills.months.length > 0 ? redactedBills.months.join(', ') : '无'}`,
     `- 账单总规模: 共 ${redactedBills.totalCount} 笔（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔${redactedBills.neutralCount > 0 ? ` / 中性流转 ${redactedBills.neutralCount} 笔` : ''}），涉及独立匿名商户 ${redactedBills.merchantAliasCount} 个`,
@@ -457,14 +472,32 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
     topMerchantLines,
     `- 代表性分层样本（中大额重点与跨月均衡抽样，共 ${sampleItems.length} 条）:`,
     sampleLines,
+  ].join('\n');
+
+  // 按所选分析维度严格切分隔离上传的数据段落：专项模式仅携带对应单模块数据，绝不混发无关模块
+  const activeModuleSections: string[] = [];
+  if (topic === 'comprehensive') {
+    activeModuleSections.push(financeSection, scheduleSection, habitSection, diarySection);
+  } else if (topic === 'finance') {
+    activeModuleSections.push(financeSection);
+  } else if (topic === 'life') {
+    activeModuleSections.push(scheduleSection);
+  } else if (topic === 'habits') {
+    activeModuleSections.push(habitSection);
+  } else if (topic === 'persona') {
+    activeModuleSections.push(diarySection);
+  }
+
+  const userPrompt = [
+    `Prompt 模板版本: ${PROMPT_TEMPLATE_ID}`,
+    `分析维度: ${AI_TOPIC_META[topic]?.label ?? '全维综合复盘'}`,
+    rangeLine,
     '',
-    scheduleSection,
+    activeModuleSections.join('\n\n'),
     '',
-    habitSection,
-    '',
-    diarySection,
-    '',
-    '请基于上述 100% 全量聚合的脱敏多维生活数据，给出有数据支撑的深度复盘洞察与可执行行动建议。',
+    topic === 'comprehensive'
+      ? '请基于上述 100% 全量聚合的脱敏多维生活数据，给出有数据支撑的深度复盘洞察与可执行行动建议。'
+      : `请严格聚焦上述【${AI_TOPIC_META[topic]?.label}】模块的全量脱敏数据，给出有数据支撑的专项诊断与可执行行动建议。`,
   ].join('\n');
 
   const fullPreviewText = `=== System Prompt ===\n${systemPrompt}\n\n=== User Prompt (${PROMPT_TEMPLATE_ID}) ===\n${userPrompt}`;

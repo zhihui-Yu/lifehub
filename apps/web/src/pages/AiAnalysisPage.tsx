@@ -625,14 +625,24 @@ export function AiAnalysisPage() {
   }, [loadInitialData]);
 
   const promptContext: AiPromptContext = useMemo(() => {
-    const usedFallback = effectiveBills.length === 0 && mergedAllBills.length > 0;
-    const billsToRedact = usedFallback ? mergedAllBills : effectiveBills;
+    const includeFinance = selectedTopic === 'comprehensive' || selectedTopic === 'finance';
+    const includeSchedule = selectedTopic === 'comprehensive' || selectedTopic === 'life';
+    const includeHabits = selectedTopic === 'comprehensive' || selectedTopic === 'habits';
+    const includeDiary = selectedTopic === 'comprehensive' || selectedTopic === 'persona';
+
+    const usedFallback =
+      includeFinance && effectiveBills.length === 0 && mergedAllBills.length > 0;
+    const billsToRedact = includeFinance
+      ? usedFallback
+        ? mergedAllBills
+        : effectiveBills
+      : [];
     const redactedBills = redactBillsForAi(billsToRedact, categoryMap);
     return {
       redactedBills,
-      scheduleStats: scheduleSummary,
-      habitStats: habitSummary,
-      diaryStats,
+      scheduleStats: includeSchedule ? scheduleSummary : undefined,
+      habitStats: includeHabits ? habitSummary : undefined,
+      diaryStats: includeDiary ? diaryStats : undefined,
       topic: selectedTopic,
       fromDate: dateWindow.fromDate,
       toDate: dateWindow.toDate,
@@ -647,6 +657,28 @@ export function AiAnalysisPage() {
     habitSummary,
     mergedAllBills,
     scheduleSummary,
+    selectedTopic,
+  ]);
+
+  const scopedDataSummaryLabel = useMemo(() => {
+    if (selectedTopic === 'finance') {
+      return `仅发送财务数据：${promptContext.redactedBills.totalCount} 笔账单`;
+    }
+    if (selectedTopic === 'life') {
+      return `仅发送课表数据：${loadedScheduleSlots.length} 项课表时段`;
+    }
+    if (selectedTopic === 'habits') {
+      return `仅发送习惯数据：${loadedHabitsWithStats.length} 个微习惯`;
+    }
+    if (selectedTopic === 'persona') {
+      return `仅发送树洞数据：${rangedDiaries.length} 篇树洞随笔`;
+    }
+    return `全维汇总：${promptContext.redactedBills.totalCount} 笔账单 · ${loadedScheduleSlots.length} 项课表 · ${loadedHabitsWithStats.length} 个习惯 · ${rangedDiaries.length} 篇树洞`;
+  }, [
+    loadedHabitsWithStats.length,
+    loadedScheduleSlots.length,
+    promptContext.redactedBills.totalCount,
+    rangedDiaries.length,
     selectedTopic,
   ]);
 
@@ -825,7 +857,7 @@ export function AiAnalysisPage() {
     isSystemPromptContext: true,
     timestamp: new Date().toISOString(),
     content: [
-      `上下文 · ${AI_TOPIC_META[selectedTopic].label} · ${dateWindow.label}（${actionLabel} · 已纳入 ${promptObj.redactedBills.totalCount} 笔账单）`,
+      `上下文 · ${AI_TOPIC_META[selectedTopic].label} · ${dateWindow.label}（${actionLabel} · ${scopedDataSummaryLabel}）`,
       '',
       promptObj.userPrompt,
     ].join('\n'),
@@ -1459,9 +1491,7 @@ export function AiAnalysisPage() {
                     data-testid="ai-context-data-summary"
                     sx={{ display: 'block', mb: 2, color: 'var(--lifehub-text-muted)', fontSize: 12 }}
                   >
-                    {dataLoading
-                      ? '正在加载本地全量数据…'
-                      : `当前上下文已全量纳入：${promptContext.redactedBills.totalCount} 笔账单 · ${loadedScheduleSlots.length} 项课表 · ${loadedHabitsWithStats.length} 个习惯 · ${rangedDiaries.length} 篇树洞`}
+                    {dataLoading ? '正在加载本地数据…' : scopedDataSummaryLabel}
                   </Typography>
 
                   {/* 单行紧凑操作按钮 */}
