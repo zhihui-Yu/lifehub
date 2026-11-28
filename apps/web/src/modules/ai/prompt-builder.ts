@@ -268,15 +268,15 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 
   const topicRoleMap: Record<AiAnalysisTopic, string> = {
     comprehensive:
-      '当前为【综合复盘】模式。必检关键信号（缺一不可）：① 财务总支/结余状态与 Top1 支出分类占比；② 课表整体完成率与最低效时段；③ 每个微习惯的打卡天数、累计总量与连续打卡差距；④ 树洞主导情绪与核心消耗/滋养点；⑤ 1~2 条跨模块联动发现（如情绪/作息与消费或断签的关联）。',
+      '当前为【综合复盘】模式。必检关键信号（缺一不可）：① 财务总支/结余状态与 Top1 支出分类占比；② 课表整体完成率与最低效时段；③ 每个微习惯的打卡天数、累计总量与连续打卡差距；④ 树洞主导情绪与核心消耗/滋养点；⑤ 1~2 条跨模块联动发现（如忙碌疲惫是否引发冲动消费或断签），并给出跨模块协同的具体落地方法。',
     finance:
-      '当前为【财务分析专项】模式（仅含账单模块）。必检关键信号（缺一不可）：① 总支出/总收入区间与结余（或超支）比例；② 支出占比 Top 3 分类（占比% + 粗化区间）；③ 月度收支走势拐点或异常冲高月；④ 高占比匿名商户集中度与 500 元以上中大额支出笔数风险；⑤ 带明确分类与压降目标的预算动作。',
+      '当前为【财务分析专项】模式（仅含账单模块）。必检关键信号（缺一不可）：① 总支出/总收入区间与结余（或超支）比例；② 支出占比 Top 3 分类（占比% + 粗化区间）；③ 月度收支走势拐点或异常冲高月；④ 高占比匿名商户集中度与 500 元以上中大额支出笔数风险；⑤ 针对头部分类与大额项给出具体可执行的省钱与预算控制方法（如频次封顶、日常平替、专户隔离、大额冷静期等）。',
     life:
-      '当前为【课表节律专项】模式（仅含课表模块）。必检关键信号（缺一不可）：① 周期整体及本周/本月完成率对比（判断执行力走高或滑坡）；② 完成率最高的锚点时段 vs 完成率最低的拖后腿时段（必须点名具体时间块与完成率%）；③ 作息密度失衡点与具体时段合并/缩短/移位动作。',
+      '当前为【课表节律专项】模式（仅含课表模块）。必检关键信号（缺一不可）：① 周期整体及本周/本月完成率对比（判断执行力走高或滑坡）；② 完成率最高的锚点时段 vs 完成率最低的拖后腿时段（必须点名具体时间块与完成率%）；③ 针对低效时段给出具体可操作的时间块改造方法（如微任务启动拆解、顺延绑定高完成率锚点时段、精力波峰错峰重排、块间缓冲留白等）。',
     habits:
-      '当前为【习惯追踪专项】模式（仅含微习惯模块）。必检关键信号（缺一不可）：① 逐一覆盖全部活跃习惯（严禁漏掉任何一个习惯）的打卡天数、定量累计总量及打卡日均 vs 每日目标差距；② 当前连续打卡与历史最长的差距（锁定易断签习惯）；③ 保底不断签最小动作与定量进阶目标。',
+      '当前为【习惯追踪专项】模式（仅含微习惯模块）。必检关键信号（缺一不可）：① 逐一覆盖全部活跃习惯（严禁漏掉任何一个习惯）的打卡天数、定量累计总量及打卡日均 vs 每日目标差距；② 当前连续打卡与历史最长的差距（锁定易断签习惯）；③ 针对每个薄弱习惯给出具体养成方法（如绑定起床/餐后等既有动作触发、正常日与加班疲惫日双档定量阶梯设计、断签后次日快速重启机制）。',
     persona:
-      '当前为【树洞洞察专项】模式（仅含树洞模块）。必检关键信号（缺一不可）：① 主导情绪分布占比与跨月情绪变化趋势；② 高频 #标签 与反复出现的压力消耗源 vs 积极滋养源；③ 核心人际边界或内在需求提炼及具体减压行动。',
+      '当前为【树洞洞察专项】模式（仅含树洞模块）。必检关键信号（缺一不可）：① 主导情绪分布占比与跨月情绪变化趋势；② 高频 #标签 与反复出现的压力消耗源 vs 积极滋养源；③ 核心人际边界或内在需求提炼，并给出具体可操作的情绪调节与人际应对方法（如消耗型请求延迟回复法、睡前纸面卸载拆解法、高能量时段优先分配法）。',
   };
 
   const privacyScopeLine =
@@ -285,16 +285,18 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
       : '数据已在本地完成隐私脱敏与模块隔离（仅含当前所选专项数据）。';
 
   const systemPrompt = [
-    '你是 LifeHub 高密度生活与财务诊断顾问。风格准则：**字数极简、干货极全、零废话、数字说话**。',
+    '你是 LifeHub 资深生活与财务实战顾问。风格准则：**现状诊断高度精炼不啰嗦，行动建议必须讲清「具体用什么方法做到」**。',
     privacyScopeLine,
     topicRoleMap[topic],
     '',
-    '【输出硬性铁律（严格执行）】',
-    '1. **砍废话不砍关键信息**：严禁任何开场寒暄、客套总结、免责声明及“理性消费/劳逸结合/保持好心态”等空洞套话；上方列出的【必检关键信号】必须 100% 全部体现在结果中，绝不允许因简略而漏掉关键指标或异常点。',
-    '2. **表格压缩 + 单行电报体**：多维指标对比一律合并为 **1 张紧凑 Markdown 表格**，禁止用长段落重复罗列数字；列表每条严格限 **1 行（≤45 字）**，固定句式为 `- **核心点**：关键数据锚点 → 直接动作`。',
-    '3. **篇幅与版式控制**：',
-    '   - 完整复盘正文控制在 **220～360 字**（一屏读完），固定仅含三部分：`> 💡 **核心结论**：...`（1~2 句直击要害） → `## 📊 关键信号`（紧凑表格 + 最多 2 条异常点补充） → `## 🎯 行动清单`（2~3 条可执行单行指令）；',
-    '   - 若用户提出具体问题/追问，直接针对问题作答（**100～220 字**），给核心判断 + 数据依据 + 1~3 条动作，不套用整套报告大纲。',
+    '【输出结构与深度规范（严格执行）】',
+    '1. **零寒暄零废话，数据用表浓缩**：严禁开场客套、结尾套话及“理性消费/劳逸结合/保持好心态”等正确的废话；多维现状指标一律合并进 **1 张紧凑 Markdown 表格**（100% 覆盖上方必检信号，绝不漏项），不在正文中重复抄写数字。',
+    '2. **建议绝不能只写「做什么」，必须写透「怎么做到（具体方法）」**：',
+    '   - 严禁只抛出一句干瘪的目标口号（例如只写“压降餐饮15%”“缩短时段”“执行保底量”是不合格的！）；',
+    '   - 每一条行动建议必须包含三要素：**① 针对目标**（绑定具体异常数据） + **② 具体实操方法**（写出明确的执行抓手、触发时机、替代方案或拆解步骤，让人看完立刻知道下一步怎么操作） + **③ 突发阻力兜底**（加班/聚餐/疲惫时怎么灵活调整不断档）。',
+    '3. **篇幅与版式平衡**：',
+    '   - 完整复盘控制在 **420～650 字**（精炼有力且方法详实），固定三部分：`> 💡 **核心诊断**：...`（1~2 句点破核心症结） → `## 📊 关键信号`（紧凑表格 + 1~2 条关键趋势/异常点） → `## 🎯 行动方案与落地方法`（2~4 条，每条用加粗小标题 + 具体实操步骤展开）；',
+    '   - 若用户提出具体问题/追问，控制在 **220～400 字**，直接给出核心判断 + 数据依据 + 2~3 个具体可落地的操作方法。',
   ].join('\n');
 
   const expenseBucketLines = Object.entries(redactedBills.expenseBucketDistribution)
@@ -496,7 +498,7 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
     '',
     activeModuleSections.join('\n\n'),
     '',
-    `请按【输出硬性铁律】输出高密度诊断（覆盖全部必检关键信号，零寒暄套话，精炼控制在 220~360 字）。`,
+    `请按【输出结构与深度规范】输出复盘：现状用表格浓缩覆盖全部必检信号，行动建议必须写出具体可操作的落地方法步骤与兜底方案（零寒暄套话，控制在 420~650 字）。`,
   ].join('\n');
 
   const fullPreviewText = `=== System Prompt ===\n${systemPrompt}\n\n=== User Prompt (${PROMPT_TEMPLATE_ID}) ===\n${userPrompt}`;
@@ -634,27 +636,39 @@ export function generateLocalSmartSummary(context: AiPromptContext): string {
     }
   }
 
-  // 3. 单行高杠杆行动清单（不超过 3 条）
-  lines.push('', '### 🎯 关键动作');
+  // 3. 行动方案与具体落地方法（目标 + 实操手段 + 阻力兜底）
+  lines.push('', '### 🎯 行动方案与落地方法');
   if (topic === 'comprehensive' || topic === 'finance') {
     const top1 = redactedBills.expenseCategoryStats[0];
-    lines.push(
-      top1
-        ? `- **控头部分类**：\`${top1.categoryName}\` 占总支 **${top1.amountSharePercent}%**（${top1.amountRange}） → 下周期设硬上限压降 15%。`
-        : `- **复核大额项**：≥500 元支出共 **${bigExpenseCount} 笔** → 剔除非刚需冲动支出。`,
-    );
+    if (top1) {
+      lines.push(
+        `- **控头部分类（\`${top1.categoryName}\` 占总支 ${top1.amountSharePercent}% · ${top1.amountRange}）**：目标下周期压降 15%。**落地方法**：将该分类下高频零散消费改为「每周固定频次封顶」（如每周最多点单/外购 3 次，其余用日常备餐或基础平替覆盖），并在月初先把目标结余转入独立储蓄账户，只留可用额度在日常支付卡。`,
+      );
+    }
+    if (bigExpenseCount > 0) {
+      lines.push(
+        `- **管控中大额支出（≥500 元共 ${bigExpenseCount} 笔）**：**落地方法**：启用「48 小时购物车冷静期」——凡单笔 ≥500 元非刚需开销先记入待买清单，满两天仍确认高频使用再付款，避免情绪性或凑单冲动支出。`,
+      );
+    } else if (!top1) {
+      lines.push(
+        `- **建立分类预算锚点**：**落地方法**：按「固定必要支出 / 弹性日常支出 / 储蓄结余」三账户分流，每周日晚花 3 分钟核对一次排名前二分类的进度。`,
+      );
+    }
   }
   if (topic === 'comprehensive' || topic === 'life') {
     const lowSlot = [...(scheduleStats?.slotDetails ?? [])]
       .filter((s) => s.expectedCount > 0)
       .sort((a, b) => a.completionRate - b.completionRate)[0];
+    const bestSlot = [...(scheduleStats?.slotDetails ?? [])]
+      .filter((s) => s.expectedCount > 0)
+      .sort((a, b) => b.completionRate - a.completionRate)[0];
     if (lowSlot && lowSlot.completionRate < 75) {
       lines.push(
-        `- **重排低效时段**：\`${lowSlot.title}\` 完成率仅 **${lowSlot.completionRate}%** → 缩短时长或移至精力高峰。`,
+        `- **改造低完成率时段（\`${lowSlot.title}\` 仅 ${lowSlot.completionRate}%）**：**落地方法**：采用「15 分钟微启动法」降低开启阻力（先只要求做满前 15 分钟即可打勾），${bestSlot && bestSlot.title !== lowSlot.title ? `或将其紧贴在执行最稳的 \`${bestSlot.title}\` 结束后顺势触发；` : ''}若当天临时加班错过原定时间，允许在睡前执行缩短版补位而非直接放弃。`,
       );
     } else if (scheduleStats) {
       lines.push(
-        `- **维持作息锚点**：周完成率 **${scheduleStats.weekRate}%** → 保持高强度块间预留 15 分钟缓冲。`,
+        `- **巩固课表缓冲带（当前周完成率 ${scheduleStats.weekRate}%）**：**落地方法**：在两个连续专注时段之间固定预留 15 分钟空白缓冲格，用于起身补水与处理突发消息，防止单节超时引发后续整晚崩盘。`,
       );
     }
   }
@@ -663,13 +677,19 @@ export function generateLocalSmartSummary(context: AiPromptContext): string {
       (a, b) => a.currentStreak - b.currentStreak,
     )[0];
     if (riskHabit) {
+      const minDose =
+        riskHabit.trackingMode === 'quantity' && riskHabit.dailyTarget
+          ? `正常日冲刺 ${riskHabit.dailyTarget}${riskHabit.unit}，疲惫/加班日只需完成 ${Math.max(1, Math.round(riskHabit.dailyTarget * 0.25))}${riskHabit.unit} 保底档`
+          : '正常日按标准量执行，疲惫日执行 2 分钟微缩保底版';
       lines.push(
-        `- **防断签保底**：\`${riskHabit.name}\` 当前连续 **${riskHabit.currentStreak} 天** → 疲惫日执行最小保底量先不断签。`,
+        `- **习惯防断签与定量进阶（\`${riskHabit.name}\` 当前连续 ${riskHabit.currentStreak} 天）**：**落地方法**：设置「双档弹性打卡制」（${minDose}），并将其死死绑定在一个每天必做的既有动作之后（如晨起洗漱后 / 午饭放下筷子后立即顺手完成），靠固定场景替代意志力硬撑。`,
       );
     }
   }
-  if (topic === 'persona' && diaryStats && diaryStats.selectedCount > 0) {
-    lines.push('- **情绪降噪**：针对高频消耗话题设立明确心理边界 → 重大决定安排在平静/专注时段。');
+  if ((topic === 'comprehensive' && diaryStats && diaryStats.selectedCount > 0) || (topic === 'persona' && diaryStats && diaryStats.selectedCount > 0)) {
+    lines.push(
+      `- **情绪卸载与人际边界保护**：**落地方法**：遇到消耗型人际请求时执行「延迟 2 小时回复原则」，给自己留出理性评估缓冲；在感到焦虑或疲惫的当晚用树洞做「3 行拆解记录」（今天什么事耗能 → 我能控制哪部分 → 明天第一件小事），切断睡前反刍内耗。`,
+    );
   }
 
   return lines.join('\n');
@@ -695,9 +715,10 @@ export function generateLocalChatReply(context: AiPromptContext, userQuestion: s
       redactedBills.expenseBucketDistribution['500–1000 元'] +
       redactedBills.expenseBucketDistribution['1000 元以上'];
     return [
-      `> 💡 **核心判断**：总支约 **${redactedBills.totalExpenseRange}**（${redactedBills.expenseCount} 笔），${redactedBills.overallBalanceSummary}。`,
-      `- **主力分类**：${topCats || '暂无分类'}；≥500 元大额支出 **${bigCount} 笔**。`,
-      `- **直接动作**：优先给排名第一的分类设月度硬上限（压降 15%），单笔 ≥500 元消费冷静 24 小时后再付。`,
+      `> 💡 **核心判断**：总支约 **${redactedBills.totalExpenseRange}**（${redactedBills.expenseCount} 笔），${redactedBills.overallBalanceSummary}；主力支出依次为 ${topCats || '暂无分类'}（≥500 元大额共 ${bigCount} 笔）。`,
+      '',
+      '- **方法 1 · 高频分类频次封顶**：对占比第一的分类不搞一刀切禁欲，而是设定「每周固定外购/点单次数上限」，超出的频次用工作日自备或平替方案顶替，轻松压降 15%~20%。',
+      '- **方法 2 · 发薪日先储蓄后消费 + 48h 冷静期**：月初先把目标结余划出日常支付卡；单笔 ≥500 元非刚需消费先放清单冷却 48 小时再决定是否付款。',
     ].join('\n');
   }
 
@@ -708,11 +729,10 @@ export function generateLocalChatReply(context: AiPromptContext, userQuestion: s
       .filter((s) => s.expectedCount > 0)
       .sort((a, b) => a.completionRate - b.completionRate)[0];
     return [
-      `> 💡 **核心判断**：课表周完成率 **${weekRate}%**（${scheduleStats?.weekCompleted ?? 0}/${scheduleStats?.weekExpected ?? 0}），月完成率 **${monthRate}%**。`,
-      ...(lowSlot
-        ? [`- **短板时段**：\`${lowSlot.title}（${lowSlot.timeWindow}）\` 完成率 **${lowSlot.completionRate}%**（${lowSlot.completedCount}/${lowSlot.expectedCount}）。`]
-        : []),
-      `- **直接动作**：${weekRate >= 75 ? '保持现有节奏，重点守护核心专注块。' : '将最低完成率时段缩短至 30~45 分钟，两块间留 15 分钟缓冲。'}`,
+      `> 💡 **核心判断**：课表周完成率 **${weekRate}%**（${scheduleStats?.weekCompleted ?? 0}/${scheduleStats?.weekExpected ?? 0}），月完成率 **${monthRate}%**${lowSlot ? `；主要短板在 \`${lowSlot.title}（${lowSlot.timeWindow}）\`（完成率 ${lowSlot.completionRate}%）` : ''}。`,
+      '',
+      `- **方法 1 · 微启动拆解法**：针对常漏勾的时间块，把启动门槛降为「先做满 15 分钟即算启动成功」，克服畏难拖延。`,
+      `- **方法 2 · 块间 15 分钟留白 + 弹性补位**：不在晚间连续排满无缝时间块，每两块间留 15 分钟缓冲；当天突发占用时改做 10 分钟精简版而非整块作废。`,
     ].join('\n');
   }
 
@@ -728,9 +748,10 @@ export function generateLocalChatReply(context: AiPromptContext, userQuestion: s
             .join('；')
         : '暂无细分习惯记录';
     return [
-      `> 💡 **核心判断**：活跃习惯 **${habitStats?.activeHabitCount ?? 0} 个**，最高连续 **${habitStats?.maxCurrentStreak ?? 0} 天**（最长 ${habitStats?.maxLongestStreak ?? 0} 天）。`,
-      `- **各项累计**：${detailText}。`,
-      `- **直接动作**：疲惫日执行最低保底量（如喝 1 杯水 / 动 5 分钟）优先保住不断签。`,
+      `> 💡 **核心判断**：活跃习惯 **${habitStats?.activeHabitCount ?? 0} 个**，最高连续 **${habitStats?.maxCurrentStreak ?? 0} 天**（最长 ${habitStats?.maxLongestStreak ?? 0} 天）；累计表现：${detailText}。`,
+      '',
+      '- **方法 1 · 既有动作锚点绑定**：给每个习惯找一个每天雷打不动的触发点（如「刷完牙立刻喝第一杯水」「下班换鞋后立刻拉伸 5 分钟」），用条件反射代替靠记忆提醒。',
+      '- **方法 2 · 正常日/疲惫日双档制**：设定一个哪怕加班到深夜也能 2 分钟完成的「不断签保底档」（约日常目标的 25%），彻底消除“今天没空做全套干脆放弃”的全或无心态。',
     ].join('\n');
   }
 
@@ -746,9 +767,10 @@ export function generateLocalChatReply(context: AiPromptContext, userQuestion: s
       .map((it) => `「${it.sanitizedExcerpt.slice(0, 36)}」`)
       .join('；');
     return [
-      `> 💡 **核心判断**：共 **${diaryStats.selectedCount} 篇**树洞，主导情绪为 ${moods}。`,
-      `- **关键线索**：${snippets}。`,
-      `- **直接动作**：对高频内耗事项设明确边界，重要沟通放到平静/专注日处理。`,
+      `> 💡 **核心判断**：共 **${diaryStats.selectedCount} 篇**树洞，主导情绪为 ${moods}；核心线索：${snippets}。`,
+      '',
+      '- **方法 1 · 消耗型互动延迟响应法**：对容易引发你内耗或被迫揽责的沟通，先回复“稍后确认”留出 1~2 小时缓冲，避免在情绪波峰做决定。',
+      '- **方法 2 · 睡前纸面三分卸载法**：出现焦虑或疲惫时，用 3 句话写下「客观事实 → 我能控制的一步 → 其余暂放明天」，把脑内反刍转化为具体小动作。',
     ].join('\n');
   }
 

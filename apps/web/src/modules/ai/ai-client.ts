@@ -92,14 +92,14 @@ function buildProviderRequestPayload(
   if (chatHistory && chatHistory.length > 0) {
     const nonContextMessages = chatHistory.filter((m) => !m.isSystemPromptContext);
     if (nonContextMessages.length > 0) {
-      // 当用户在对话窗口发起具体提问时，将首条 userPrompt 末尾的「输出完整复盘报告」替换为「基于上方数据直接精炼回答下方提问」
+      // 当用户在对话窗口发起具体提问时，将首条 userPrompt 末尾的「输出完整复盘报告」替换为「基于上方数据直接回答提问并给出具体落地方法」
       const baseDataContext = prompt.userPrompt.replace(
-        /\n\n请按【输出硬性铁律】输出高密度诊断[^\n]*$/,
+        /\n\n请按【输出结构与深度规范】输出复盘[^\n]*$/,
         '',
       );
       messages[1] = {
         role: 'user',
-        content: `${baseDataContext}\n\n（以上为当前维度的全量脱敏背景数据，请据此精炼回答下方提问：零寒暄套话、必须带关键数字依据与可执行动作，控制在 100~220 字。）`,
+        content: `${baseDataContext}\n\n（以上为当前维度的全量脱敏背景数据。请据此精炼回答下方提问：零寒暄套话，先给数据支撑的核心判断，再给出 2~3 个具体可操作的落地方法步骤与突发兜底方案，控制在 220~400 字。）`,
       };
       for (const msg of nonContextMessages) {
         const lastMsg = messages[messages.length - 1];
