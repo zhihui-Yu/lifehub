@@ -755,5 +755,69 @@ describe('Emoji UTF-16 代理对无损压缩加密与历史受损快照自动自
     expect(smartPullNoop.billsToPut).toHaveLength(0);
     expect(loadAllSpy).not.toHaveBeenCalled();
     expect(calls).toEqual([{ method: 'GET', objectName: 'lifehub-sync-manifest.json.enc' }]);
+
+    // 5. 验证新设备空库拉取恢复时实时回调进度，且落盘后提交 syncedShards，二次拉取立即进入 0 下载快路！
+    window.localStorage.clear();
+    calls.length = 0;
+    const progressLogs: string[] = [];
+    const firstDeviceRestore = await syncCloudPullSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => 0,
+        loadMonthLocalBills: async () => [],
+        loadAllLocalBills: async () => [],
+      },
+      { onProgress: (msg) => progressLogs.push(msg) },
+    );
+    expect(firstDeviceRestore.unchanged).toBe(false);
+    expect(firstDeviceRestore.billsToPut).toHaveLength(4);
+    expect(progressLogs.some((m) => m.includes('正在连接云端读取分片清单'))).toBe(true);
+    expect(typeof firstDeviceRestore.commitSyncedStateAfterPersist).toBe('function');
+    firstDeviceRestore.commitSyncedStateAfterPersist?.();
+
+    calls.length = 0;
+    const secondPullAfterRestore = await syncCloudPullSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => 4,
+        loadMonthLocalBills: loadMonthSpy,
+        loadAllLocalBills: loadAllSpy,
+      },
+    );
+    expect(secondPullAfterRestore.unchanged).toBe(true);
+    expect(secondPullAfterRestore.downloadedShardCount).toBe(0);
+    expect(loadAllSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ method: 'GET', objectName: 'lifehub-sync-manifest.json.enc' }]);
+  });
+
+  it('大规模账单备份压缩与解压保持毫秒级线性吞吐且 100% 无损，彻底消除 V8 大字符串扁平化卡死', () => {
+    const manyBills = Array.from({ length: 3000 }, (_, idx) =>
+      makeBill({
+        id: `perf-bill-${String(idx).padStart(5, '0')}`,
+        localDate: `2026-10-${String((idx % 28) + 1).padStart(2, '0')}`,
+        occurredAt: `2026-10-${String((idx % 28) + 1).padStart(2, '0')}T08:30:00.000Z`,
+        counterparty: `高频餐饮商户_${idx % 120} 🍜`,
+        note: `工作餐支付明细 #${idx} ☕️`,
+        amountMinor: 1500 + (idx % 9000),
+      }),
+    );
+    const largeJson = JSON.stringify({
+      format: 'lifehub-cloud-shard-bills-v1',
+      month: '2026-10',
+      bills: manyBills,
+    });
+    const t0 = performance.now();
+    const compressed = compressBackupJson(largeJson);
+    const t1 = performance.now();
+    const restored = decompressBackupJson(compressed);
+    const t2 = performance.now();
+
+    expect(restored).toBe(largeJson);
+    expect(t1 - t0).toBeLessThan(1500);
+    expect(t2 - t1).toBeLessThan(500);
   });
 });

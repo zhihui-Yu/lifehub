@@ -17,6 +17,7 @@ import {
   Button,
   Checkbox,
   Chip,
+  CircularProgress,
   Collapse,
   Divider,
   FormControlLabel,
@@ -96,6 +97,32 @@ function inferProviderFromEndpoint(
 }
 
 /**
+ * 在真实浏览器 / WebView 中让出一帧绘制机会，确保状态提示与按钮转圈在重负载开始前立即上屏（jsdom 测试环境下零延迟直通）。
+ */
+async function waitNextPaintFrame(): Promise<void> {
+  if (typeof window === 'undefined' || typeof setTimeout !== 'function') {
+    return;
+  }
+  const ua = typeof navigator !== 'undefined' ? (navigator.userAgent ?? '') : '';
+  if (/jsdom/i.test(ua)) {
+    return;
+  }
+  const timerMeta = setTimeout as unknown as { clock?: unknown; _isMockFunction?: boolean };
+  if (timerMeta.clock !== undefined || timerMeta._isMockFunction === true) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    if (typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => {
+        setTimeout(resolve, 0);
+      });
+    } else {
+      setTimeout(resolve, 0);
+    }
+  });
+}
+
+/**
  * 渲染远程云存储连接与多端数据同步面板。
  */
 export function CloudStoragePanel() {
@@ -119,6 +146,7 @@ export function CloudStoragePanel() {
     severity: 'success' | 'info' | 'warning' | 'error';
     text: string;
   } | null>(null);
+  const [busyAction, setBusyAction] = useState<'test' | 'upload' | 'restore' | null>(null);
   const [panelExpanded, setPanelExpanded] = useState<boolean>(false);
 
   const buildLocalBillDataSource = useCallback((): LocalBillSyncDataSource => {
@@ -239,6 +267,7 @@ export function CloudStoragePanel() {
       purged: PurgedEntityIds,
       fullBillsForNonLazyFallback?: Bill[],
       skipCloudDirtyMark = false,
+      onProgress?: (statusText: string) => void,
     ): Promise<void> => {
       saveLocalCloudTombstones(mergedCore.tombstones);
 
@@ -277,7 +306,16 @@ export function CloudStoragePanel() {
 
         if (billsToPut.length > 0) {
           if (billsToPut.length > 1 && typeof billRepo.putMany === 'function') {
-            await billRepo.putMany(billsToPut);
+            const WRITE_BATCH = 300;
+            for (let offset = 0; offset < billsToPut.length; offset += WRITE_BATCH) {
+              const slice = billsToPut.slice(offset, offset + WRITE_BATCH);
+              const doneCount = Math.min(offset + slice.length, billsToPut.length);
+              if (billsToPut.length > WRITE_BATCH) {
+                onProgress?.(`正在分批加密写入本地账单库（${doneCount}/${billsToPut.length}）…`);
+                await waitNextPaintFrame();
+              }
+              await billRepo.putMany(slice);
+            }
           } else {
             for (const bill of billsToPut) {
               await billRepo.put(bill);
@@ -466,22 +504,28 @@ export function CloudStoragePanel() {
       return;
     }
 
+    setBusyAction('test');
     setBanner({
       severity: 'info',
       text: '正在向远程云存储发起真实连通与密钥鉴权探测…',
     });
     void (async () => {
-      const remoteCheck = await probeRemoteCloudConnection(config);
-      if (remoteCheck.correctedEndpoint) {
-        updateConfig({ endpoint: remoteCheck.correctedEndpoint });
+      try {
+        await waitNextPaintFrame();
+        const remoteCheck = await probeRemoteCloudConnection(config);
+        if (remoteCheck.correctedEndpoint) {
+          updateConfig({ endpoint: remoteCheck.correctedEndpoint });
+        }
+        if (remoteCheck.remoteRecord) {
+          setLastRecord(remoteCheck.remoteRecord);
+        }
+        setBanner({
+          severity: remoteCheck.ok ? 'success' : 'error',
+          text: remoteCheck.message,
+        });
+      } finally {
+        setBusyAction(null);
       }
-      if (remoteCheck.remoteRecord) {
-        setLastRecord(remoteCheck.remoteRecord);
-      }
-      setBanner({
-        severity: remoteCheck.ok ? 'success' : 'error',
-        text: remoteCheck.message,
-      });
     })();
   };
 
@@ -522,6 +566,7 @@ export function CloudStoragePanel() {
         return;
       }
 
+      setBusyAction('upload');
       setBanner({
         severity: 'info',
         text: '正在检查分片哈希并增量同步…',
@@ -529,13 +574,17 @@ export function CloudStoragePanel() {
 
       void (async () => {
         try {
+          await waitNextPaintFrame();
+          const updateProgress = (text: string): void => {
+            setBanner({ severity: 'info', text });
+          };
           const freshExtra = await loadLocalExtraModules();
           const syncRes = await syncCloudUploadSmart(
             config,
             trimmedSecret,
             freshExtra,
             buildLocalBillDataSource(),
-            { allowPasswordChange },
+            { allowPasswordChange, onProgress: updateProgress },
           );
 
           if (syncRes.correctedEndpoint) {
@@ -549,6 +598,7 @@ export function CloudStoragePanel() {
               syncRes.purged,
               undefined,
               true,
+              updateProgress,
             );
           } else {
             setExtraModulesState(freshExtra);
@@ -583,6 +633,8 @@ export function CloudStoragePanel() {
                 ? remoteErr.message
                 : '推送至远程对象存储失败，请检查连接地址与密钥权限',
           });
+        } finally {
+          setBusyAction(null);
         }
       })();
     } catch (err) {
@@ -594,21 +646,32 @@ export function CloudStoragePanel() {
   };
 
   const handleRestore = async (): Promise<void> => {
+    const hasCredentials =
+      config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0;
+    const updateProgress = (text: string): void => {
+      setBanner({ severity: 'info', text });
+    };
+
+    // 点击瞬间同步展示状态提示与按钮转圈，绝不等本地库扫描后再提示
+    setBusyAction('restore');
+    setBanner({
+      severity: 'info',
+      text: hasCredentials
+        ? '正在连接云端读取分片清单…'
+        : '正在解密本地备份缓存并准备恢复…',
+    });
+
     try {
-      const hasCredentials =
-        config.accessKey.trim().length > 0 && config.secretKey.trim().length > 0;
+      await waitNextPaintFrame();
       const freshLocal = await loadLocalExtraModules();
 
       if (hasCredentials) {
-        setBanner({
-          severity: 'info',
-          text: '正在比对云端分片清单并按需拉取增量…',
-        });
         const pullRes = await syncCloudPullSmart(
           config,
           encryptionPassword,
           freshLocal,
           buildLocalBillDataSource(),
+          { onProgress: updateProgress },
         );
         if (pullRes.unchanged) {
           setLastRecord(pullRes.record);
@@ -618,13 +681,24 @@ export function CloudStoragePanel() {
           });
           return;
         }
+        if (pullRes.billsToPut.length > 0) {
+          updateProgress(`正在写入本地加密库（共 ${pullRes.billsToPut.length} 条新增或变动账单）…`);
+          await waitNextPaintFrame();
+        }
+        const supportsLazy = Boolean(
+          runtimeRef.current &&
+            typeof (runtimeRef.current.billRepository as { queryByLocalDateRange?: unknown })
+              .queryByLocalDateRange === 'function',
+        );
         await applyIncrementalChangesToLocalPersistence(
           pullRes.billsToPut,
           pullRes.mergedCore,
           pullRes.purged,
-          [...bills, ...pullRes.billsToPut],
+          supportsLazy ? undefined : [...bills, ...pullRes.billsToPut],
           true,
+          updateProgress,
         );
+        pullRes.commitSyncedStateAfterPersist?.();
         setLastRecord(pullRes.record);
         setBanner({
           severity: 'success',
@@ -676,6 +750,8 @@ export function CloudStoragePanel() {
         },
         mergedResult.purged,
         mergedResult.merged.bills,
+        false,
+        updateProgress,
       );
       setLastRecord(restored.record);
       setBanner({
@@ -691,6 +767,8 @@ export function CloudStoragePanel() {
         severity: 'error',
         text: err instanceof Error ? err.message : '从云端恢复账单失败',
       });
+    } finally {
+      setBusyAction(null);
     }
   };
 
@@ -946,34 +1024,53 @@ export function CloudStoragePanel() {
             <Button
               variant="outlined"
               size="small"
+              disabled={busyAction !== null}
+              startIcon={
+                busyAction === 'test' ? <CircularProgress size={14} color="inherit" /> : undefined
+              }
               onClick={handleTestConnection}
               data-testid="cloud-test-button"
             >
-              测试连接
+              {busyAction === 'test' ? '正在测试连接…' : '测试连接'}
             </Button>
             <Button
               variant="contained"
               size="small"
-              startIcon={<CloudUploadOutlined />}
+              disabled={busyAction !== null}
+              startIcon={
+                busyAction === 'upload' ? (
+                  <CircularProgress size={14} color="inherit" />
+                ) : (
+                  <CloudUploadOutlined />
+                )
+              }
               onClick={handleUpload}
               data-testid="cloud-upload-button"
             >
-              立即上传备份至云端
+              {busyAction === 'upload' ? '正在上传同步…' : '立即上传备份至云端'}
             </Button>
             <Button
               variant="outlined"
               color="secondary"
               size="small"
-              startIcon={<CloudDownloadOutlined />}
+              disabled={busyAction !== null}
+              startIcon={
+                busyAction === 'restore' ? (
+                  <CircularProgress size={14} color="inherit" />
+                ) : (
+                  <CloudDownloadOutlined />
+                )
+              }
               onClick={() => void handleRestore()}
               data-testid="cloud-restore-button"
             >
-              从云端拉取恢复
+              {busyAction === 'restore' ? '正在拉取恢复…' : '从云端拉取恢复'}
             </Button>
             {lastRecord && (
               <Button
                 variant="text"
                 size="small"
+                disabled={busyAction !== null}
                 onClick={handleDecryptSource}
                 data-testid="cloud-decrypt-source-button"
               >

@@ -228,6 +228,29 @@ export interface UploadCloudOptions {
   allowPasswordChange?: boolean;
   /** 指定本次快照的修订版本号。 */
   revision?: number;
+  /** 实时同步阶段提示回调（用于在界面单条提示栏展示当前进度，避免无反馈感）。 */
+  onProgress?: (statusText: string) => void;
+}
+
+/**
+ * 当连续同步计算超过一帧预算（12ms）且运行在真实计时器环境时，让出一次宏任务供浏览器刷新渲染与响应输入。
+ */
+async function maybeYieldCloudMainThread(lastYieldAt: number): Promise<number> {
+  const now = Date.now();
+  if (now - lastYieldAt < 12 || typeof setTimeout !== 'function') {
+    return lastYieldAt;
+  }
+  const timerMeta = setTimeout as unknown as {
+    clock?: unknown;
+    _isMockFunction?: boolean;
+  };
+  if (timerMeta.clock !== undefined || timerMeta._isMockFunction === true) {
+    return lastYieldAt;
+  }
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
+  return Date.now();
 }
 
 /** 云存储配置在 localStorage 中的持久化键名。 */
@@ -908,17 +931,36 @@ function cleanBrokenSurrogates(text: string): string {
 }
 
 /**
- * 对备份 JSON 文本执行同步无损「高频字典 + LZ77 滑动窗口」双级压缩（严格保护 UTF-16 Emoji 代理对完整性）。
+ * 对备份 JSON 文本执行同步无损「高频字典 + LZ77 滑动窗口」双级压缩（严格保护 UTF-16 Emoji 代理对完整性，窗口有界查找 O(N) 不卡主线程）。
  */
 export function compressBackupJson(jsonText: string): string {
-  let escaped = '';
+  let hasPua = false;
   for (let i = 0; i < jsonText.length; i += 1) {
     const code = jsonText.charCodeAt(i);
     if (code >= 0xe000 && code <= 0xe9ff) {
-      escaped += '\ue000' + String.fromCharCode(code - 0xe000 + 0x0100);
-    } else {
-      escaped += jsonText[i];
+      hasPua = true;
+      break;
     }
+  }
+
+  let escaped = jsonText;
+  if (hasPua) {
+    const escParts: string[] = [];
+    let segStart = 0;
+    for (let i = 0; i < jsonText.length; i += 1) {
+      const code = jsonText.charCodeAt(i);
+      if (code >= 0xe000 && code <= 0xe9ff) {
+        if (i > segStart) {
+          escParts.push(jsonText.slice(segStart, i));
+        }
+        escParts.push('\ue000' + String.fromCharCode(code - 0xe000 + 0x0100));
+        segStart = i + 1;
+      }
+    }
+    if (segStart < jsonText.length) {
+      escParts.push(jsonText.slice(segStart));
+    }
+    escaped = escParts.join('');
   }
 
   let tokenized = escaped;
@@ -931,7 +973,8 @@ export function compressBackupJson(jsonText: string): string {
 
   const windowSize = 1800;
   const maxMatchLen = 120;
-  let out = '';
+  const outParts: string[] = [];
+  let chunkBuf = '';
   let i = 0;
   const len = tokenized.length;
   while (i < len) {
@@ -939,10 +982,12 @@ export function compressBackupJson(jsonText: string): string {
     if (!isLowSurrogateCode(curCode) && i >= 4 && i + 4 <= len) {
       const seed = tokenized.slice(i, i + 4);
       const searchStart = Math.max(0, i - windowSize);
-      let prevIdx = tokenized.lastIndexOf(seed, i - 1);
-      while (prevIdx >= searchStart && isLowSurrogateCode(tokenized.charCodeAt(prevIdx))) {
-        prevIdx = prevIdx > 0 ? tokenized.lastIndexOf(seed, prevIdx - 1) : -1;
+      const windowSlice = tokenized.slice(searchStart, Math.min(len, i + 3));
+      let relIdx = windowSlice.lastIndexOf(seed, i - 1 - searchStart);
+      while (relIdx >= 0 && isLowSurrogateCode(windowSlice.charCodeAt(relIdx))) {
+        relIdx = relIdx > 0 ? windowSlice.lastIndexOf(seed, relIdx - 1) : -1;
       }
+      const prevIdx = relIdx >= 0 ? searchStart + relIdx : -1;
       if (prevIdx >= searchStart && prevIdx < i) {
         let matchLen = 4;
         const maxPossible = Math.min(maxMatchLen, len - i);
@@ -958,10 +1003,14 @@ export function compressBackupJson(jsonText: string): string {
         }
         if (matchLen >= 4) {
           const offset = i - prevIdx;
-          out +=
+          chunkBuf +=
             '\ue07f' +
             String.fromCharCode(0xe100 + offset) +
             String.fromCharCode(0xe100 + matchLen);
+          if (chunkBuf.length >= 8192) {
+            outParts.push(chunkBuf);
+            chunkBuf = '';
+          }
           i += matchLen;
           continue;
         }
@@ -972,59 +1021,110 @@ export function compressBackupJson(jsonText: string): string {
       i + 1 < len &&
       isLowSurrogateCode(tokenized.charCodeAt(i + 1))
     ) {
-      out += (tokenized[i] ?? '') + (tokenized[i + 1] ?? '');
+      chunkBuf += (tokenized[i] ?? '') + (tokenized[i + 1] ?? '');
       i += 2;
     } else {
-      out += tokenized[i] ?? '';
+      chunkBuf += tokenized[i] ?? '';
       i += 1;
     }
+    if (chunkBuf.length >= 8192) {
+      outParts.push(chunkBuf);
+      chunkBuf = '';
+    }
+  }
+  if (chunkBuf.length > 0) {
+    outParts.push(chunkBuf);
   }
 
-  return out;
+  return outParts.join('');
 }
 
 /**
- * 将 `compressBackupJson` 压缩后的文本无损还原为原始 JSON 字符串。
+ * 将 `compressBackupJson` 压缩后的文本无损还原为原始 JSON 字符串（基于 Uint16Array 线性缓冲区，彻底消除大字符串 ConsString 扁平化卡顿）。
  */
 export function decompressBackupJson(compressed: string): string {
-  let tokenized = '';
-  let i = 0;
   const len = compressed.length;
+  if (len === 0) {
+    return '';
+  }
+
+  let buf = new Uint16Array(Math.max(1024, len * 3));
+  let tPos = 0;
+  let i = 0;
   while (i < len) {
     const code = compressed.charCodeAt(i);
     if (code === 0xe07f && i + 2 < len) {
       const offset = compressed.charCodeAt(i + 1) - 0xe100;
       const matchLen = compressed.charCodeAt(i + 2) - 0xe100;
-      const startPos = tokenized.length - offset;
-      for (let k = 0; k < matchLen; k += 1) {
-        tokenized += tokenized[startPos + k] ?? '';
+      if (tPos + matchLen > buf.length) {
+        let nextCap = buf.length * 2;
+        while (nextCap < tPos + matchLen) {
+          nextCap *= 2;
+        }
+        const grown = new Uint16Array(nextCap);
+        grown.set(buf.subarray(0, tPos));
+        buf = grown;
       }
+      const startPos = tPos - offset;
+      for (let k = 0; k < matchLen; k += 1) {
+        const refIdx = startPos + k;
+        buf[tPos + k] = refIdx >= 0 && refIdx < tPos + k ? (buf[refIdx] ?? 0) : 0;
+      }
+      tPos += matchLen;
       i += 3;
     } else {
-      tokenized += compressed[i];
+      if (tPos + 1 > buf.length) {
+        const grown = new Uint16Array(buf.length * 2);
+        grown.set(buf.subarray(0, tPos));
+        buf = grown;
+      }
+      buf[tPos] = code;
+      tPos += 1;
       i += 1;
     }
   }
 
-  let restored = '';
+  const dictEnd = 0xe001 + BACKUP_JSON_DICT.length;
+  const restoredParts: string[] = [];
+  const literalCodes: number[] = [];
+  const flushLiterals = (): void => {
+    if (literalCodes.length === 0) return;
+    const CHUNK = 4096;
+    for (let offset = 0; offset < literalCodes.length; offset += CHUNK) {
+      restoredParts.push(
+        String.fromCharCode(...literalCodes.slice(offset, offset + CHUNK)),
+      );
+    }
+    literalCodes.length = 0;
+  };
+
   let j = 0;
-  const tLen = tokenized.length;
-  while (j < tLen) {
-    const code = tokenized.charCodeAt(j);
-    if (code === 0xe000 && j + 1 < tLen) {
-      const origCode = tokenized.charCodeAt(j + 1) - 0x0100 + 0xe000;
-      restored += String.fromCharCode(origCode);
+  while (j < tPos) {
+    const code = buf[j] ?? 0;
+    if (code === 0xe000 && j + 1 < tPos) {
+      const origCode = (buf[j + 1] ?? 0) - 0x0100 + 0xe000;
+      literalCodes.push(origCode);
+      if (literalCodes.length >= 4096) {
+        flushLiterals();
+      }
       j += 2;
-    } else if (code >= 0xe001 && code < 0xe001 + BACKUP_JSON_DICT.length) {
-      restored += BACKUP_JSON_DICT[code - 0xe001] ?? '';
+    } else if (code >= 0xe001 && code < dictEnd) {
+      if (literalCodes.length > 0) {
+        flushLiterals();
+      }
+      restoredParts.push(BACKUP_JSON_DICT[code - 0xe001] ?? '');
       j += 1;
     } else {
-      restored += tokenized[j];
+      literalCodes.push(code);
+      if (literalCodes.length >= 4096) {
+        flushLiterals();
+      }
       j += 1;
     }
   }
+  flushLiterals();
 
-  return restored;
+  return restoredParts.join('');
 }
 
 /**
@@ -2738,6 +2838,7 @@ async function resolveShardedRemoteDataset(
   manifest: CloudShardManifestPayload,
   secret: string,
   localShards?: ReadonlyMap<string, ComputedCloudShard>,
+  onProgress?: (statusText: string) => void,
 ): Promise<{ dataset: CloudFullDataset; downloadedShardCount: number }> {
   const resolvedTarget = resolveCloudEndpointTarget(config, CLOUD_SYNC_MANIFEST_FILE);
   const bucketNamespace = `${resolvedTarget.host}/${resolvedTarget.bucketName}`;
@@ -2773,9 +2874,14 @@ async function resolveShardedRemoteDataset(
   }
 
   const DOWNLOAD_CONCURRENCY = 4;
+  let completedCount = 0;
+  let lastYieldAt = Date.now();
+  if (toDownload.length > 0) {
+    onProgress?.(`正在下载云端变动分片（0/${toDownload.length}）…`);
+  }
   for (let i = 0; i < toDownload.length; i += DOWNLOAD_CONCURRENCY) {
     const batch = toDownload.slice(i, i + DOWNLOAD_CONCURRENCY);
-    const fetched = await Promise.all(
+    const rawFetched = await Promise.all(
       batch.map(async (desc) => {
         const res = await fetchRemoteObjectSnapshot(config, desc.fileName);
         if (!res.exists || !res.snapshot) {
@@ -2784,16 +2890,20 @@ async function resolveShardedRemoteDataset(
             `云端分片文件缺失（${desc.fileName}），请重新完整上传一次云端备份`,
           );
         }
-        const plainJson = unsealEncryptedCloudObject(res.snapshot, secret);
-        putVerifiedShardPlain(bucketNamespace, passwordFp, desc.key, desc.contentHash, plainJson);
-        return { key: desc.key, plainJson };
+        return { desc, snapshot: res.snapshot };
       }),
     );
-    for (const item of fetched) {
-      shardJsonByKey.set(item.key, item.plainJson);
+    for (const { desc, snapshot } of rawFetched) {
+      lastYieldAt = await maybeYieldCloudMainThread(lastYieldAt);
+      const plainJson = unsealEncryptedCloudObject(snapshot, secret);
+      putVerifiedShardPlain(bucketNamespace, passwordFp, desc.key, desc.contentHash, plainJson);
+      shardJsonByKey.set(desc.key, plainJson);
+      completedCount += 1;
+      onProgress?.(`正在下载并解密云端分片（${completedCount}/${toDownload.length}）…`);
     }
   }
 
+  lastYieldAt = await maybeYieldCloudMainThread(lastYieldAt);
   return {
     dataset: assembleDatasetFromShardJsons(shardJsonByKey),
     downloadedShardCount: toDownload.length,
@@ -2971,6 +3081,7 @@ export async function syncUploadWithRemoteMerge(
             parsedManifest,
             normalizedSecret,
             localShards,
+            options?.onProgress,
           );
           downloadedShardCount = resolvedRemote.downloadedShardCount;
           const mergeRes = mergeCloudDatasets(
@@ -3748,11 +3859,14 @@ export async function syncCloudUploadSmart(
   }
 
   // 完整对账通道（首次同步、迁移旧单文件或批量导入后）：从真实本地库读取全量账单，并精确过滤仅远端带来的差异账单写库
+  options?.onProgress?.('正在读取本地账单库进行首次分片对账…');
   const allLocalBills = await billSource.loadAllLocalBills();
+  await maybeYieldCloudMainThread(0);
   const fullLocalDataset: CloudFullDataset = {
     ...localCoreOnly,
     bills: allLocalBills,
   };
+  options?.onProgress?.('正在比对并上传变动分片…');
   const syncRes = await syncUploadWithRemoteMerge(
     effectiveConfig,
     fullLocalDataset,
@@ -3824,6 +3938,7 @@ export async function syncCloudPullSmart(
   password: string | undefined,
   localExtra: CloudBackupExtraModules,
   billSource: LocalBillSyncDataSource,
+  options?: { onProgress?: (statusText: string) => void },
 ): Promise<{
   unchanged: boolean;
   record: CloudSyncRecord;
@@ -3833,7 +3948,9 @@ export async function syncCloudPullSmart(
   totalBillCount: number;
   downloadedShardCount: number;
   totalShardCount: number;
+  commitSyncedStateAfterPersist?: () => void;
 }> {
+  const onProgress = options?.onProgress;
   const secret = (password ?? config.savedPassword ?? '').trim();
   if (!secret) {
     throw new LifeHubError(
@@ -3853,6 +3970,7 @@ export async function syncCloudPullSmart(
     tombstones: normalizeCloudTombstones(localExtra.tombstones ?? loadLocalCloudTombstones()),
   };
 
+  onProgress?.('正在连接云端读取分片清单…');
   const [manifestStatus, localBillCount] = await Promise.all([
     fetchRemoteObjectSnapshot(config, CLOUD_SYNC_MANIFEST_FILE),
     billSource.getLocalBillCount(),
@@ -3944,29 +4062,37 @@ export async function syncCloudPullSmart(
           const fetchList = [...keysToFetch]
             .map((k) => parsedManifest.shards[k])
             .filter((d): d is CloudShardDescriptor => Boolean(d));
+          let lastYieldAt = Date.now();
+          if (fetchList.length > 0) {
+            onProgress?.(`正在下载云端变动分片（0/${fetchList.length}）…`);
+          }
           for (let i = 0; i < fetchList.length; i += 4) {
             const batch = fetchList.slice(i, i + 4);
-            const resBatch = await Promise.all(
+            const rawBatch = await Promise.all(
               batch.map(async (desc) => {
                 const obj = await fetchRemoteObjectSnapshot(effectiveConfig, desc.fileName);
                 if (!obj.exists || !obj.snapshot) {
                   throw new LifeHubError('LIFEHUB_E_STORAGE', `云端分片缺失：${desc.fileName}`);
                 }
-                const plain = unsealEncryptedCloudObject(obj.snapshot, secret);
-                putVerifiedShardPlain(bucketNamespace, currentFp, desc.key, desc.contentHash, plain);
-                return { key: desc.key, plain };
+                return { desc, snapshot: obj.snapshot };
               }),
             );
-            for (const item of resBatch) {
-              fetchedJsons.set(item.key, item.plain);
+            for (const { desc, snapshot } of rawBatch) {
+              lastYieldAt = await maybeYieldCloudMainThread(lastYieldAt);
+              const plain = unsealEncryptedCloudObject(snapshot, secret);
+              putVerifiedShardPlain(bucketNamespace, currentFp, desc.key, desc.contentHash, plain);
+              fetchedJsons.set(desc.key, plain);
               downloadedCount += 1;
+              onProgress?.(`正在下载并解密云端分片（${downloadedCount}/${fetchList.length}）…`);
             }
           }
 
+          onProgress?.('正在按月比对合并差异账单…');
           const localSliceArrays = await Promise.all(
             [...changedMonths].map((m) => pullMonthFn(m)),
           );
           const localSliceBills = localSliceArrays.flat();
+          lastYieldAt = await maybeYieldCloudMainThread(lastYieldAt);
           const remoteSliceDataset = assembleDatasetFromShardJsons(fetchedJsons);
           const mergeRes = mergeCloudDatasets(
             { ...localCoreOnly, bills: localSliceBills },
@@ -3983,15 +4109,20 @@ export async function syncCloudPullSmart(
             .reduce((acc, [, d]) => acc + d.itemCount, 0);
           const finalTotalCount = unchangedMonthsCount + mergeRes.merged.bills.length;
 
-          saveSyncedShardsState({
-            bucketNamespace,
-            passwordFingerprint: currentFp,
-            revision: parsedManifest.revision ?? 1,
-            syncedAt: parsedManifest.syncedAt,
-            billCount: finalTotalCount,
-            shards: parsedManifest.shards,
-          });
-          clearCloudBillsDirtyState();
+          const commitSyncedStateAfterPersist = (): void => {
+            saveSyncedShardsState({
+              bucketNamespace,
+              passwordFingerprint: currentFp,
+              revision: parsedManifest.revision ?? 1,
+              syncedAt: parsedManifest.syncedAt,
+              billCount: finalTotalCount,
+              shards: parsedManifest.shards,
+            });
+            clearCloudBillsDirtyState();
+          };
+          if (billsToPut.length === 0 && mergeRes.purged.billIds.length === 0) {
+            commitSyncedStateAfterPersist();
+          }
           writeLightweightRecordCache(effectiveConfig, secret, {
             ...recordMeta,
             billCount: finalTotalCount,
@@ -4014,30 +4145,41 @@ export async function syncCloudPullSmart(
             totalBillCount: finalTotalCount,
             downloadedShardCount: downloadedCount,
             totalShardCount,
+            commitSyncedStateAfterPersist,
           };
         }
       }
     }
 
     // 首次拉取通道：读取本地真实账单做分片哈希去重下载，并仅写回差异账单
-    const allLocalBills = await billSource.loadAllLocalBills();
+    if (localBillCount > 0) {
+      onProgress?.(`正在读取本地现有 ${localBillCount} 条账单比对分片…`);
+    }
+    const allLocalBills = localBillCount > 0 ? await billSource.loadAllLocalBills() : [];
+    let lastYieldAt = await maybeYieldCloudMainThread(0);
     const fullLocal: CloudFullDataset = { ...localCoreOnly, bills: allLocalBills };
     const localShards = partitionDatasetIntoShards(fullLocal);
+    lastYieldAt = await maybeYieldCloudMainThread(lastYieldAt);
     const resolvedRemote = await resolveShardedRemoteDataset(
       effectiveConfig,
       parsedManifest,
       secret,
       localShards,
+      onProgress,
     );
+    onProgress?.('正在合并云端与本地数据…');
+    lastYieldAt = await maybeYieldCloudMainThread(lastYieldAt);
     const mergeRes = mergeCloudDatasets(
       fullLocal,
       resolvedRemote.dataset,
       loadLatestCloudSyncRecord()?.revision ?? 0,
       parsedManifest.revision ?? 1,
     );
+    await maybeYieldCloudMainThread(lastYieldAt);
     const billsToPut = diffChangedBillsAgainstBaseline(mergeRes.merged.bills, allLocalBills);
     const computedFinalShards = partitionDatasetIntoShards(mergeRes.merged);
     const finalShardDescs: Record<string, CloudShardDescriptor> = {};
+    const localAheadMonths: string[] = [];
     for (const [k, s] of computedFinalShards.entries()) {
       finalShardDescs[k] = {
         key: s.key,
@@ -4046,24 +4188,48 @@ export async function syncCloudPullSmart(
         itemCount: s.itemCount,
         sizeBytes: parsedManifest.shards[k]?.sizeBytes,
       };
+      if (k.startsWith('bills-') && parsedManifest.shards[k]?.contentHash !== s.contentHash) {
+        localAheadMonths.push(k.slice(6));
+      }
     }
-    if (
-      billsToPut.length === 0 &&
+    const allAlignedWithRemote =
       mergeRes.merged.bills.length === parsedManifest.billCount &&
+      Object.keys(finalShardDescs).length === Object.keys(parsedManifest.shards).length &&
       Object.keys(finalShardDescs).every(
         (k) => finalShardDescs[k]?.contentHash === parsedManifest.shards[k]?.contentHash,
-      )
-    ) {
-      saveSyncedShardsState({
-        bucketNamespace,
-        passwordFingerprint: currentFp,
-        revision: parsedManifest.revision ?? 1,
-        syncedAt: parsedManifest.syncedAt,
-        billCount: mergeRes.merged.bills.length,
-        shards: parsedManifest.shards,
-      });
-      clearCloudBillsDirtyState();
+      );
+
+    const commitSyncedStateAfterPersist = (): void => {
+      if (allAlignedWithRemote) {
+        saveSyncedShardsState({
+          bucketNamespace,
+          passwordFingerprint: currentFp,
+          revision: parsedManifest.revision ?? 1,
+          syncedAt: parsedManifest.syncedAt,
+          billCount: mergeRes.merged.bills.length,
+          shards: parsedManifest.shards,
+        });
+        clearCloudBillsDirtyState();
+      } else if (!localAheadMonths.includes('unknown')) {
+        // 本机含有尚未上传的额外月份账单：仍保存远端分片哈希基线，并仅将这些待上传月份标记为 dirty，下次拉取/上传免全表扫描
+        saveSyncedShardsState({
+          bucketNamespace,
+          passwordFingerprint: currentFp,
+          revision: parsedManifest.revision ?? 1,
+          syncedAt: parsedManifest.syncedAt,
+          billCount: mergeRes.merged.bills.length,
+          shards: parsedManifest.shards,
+        });
+        clearCloudBillsDirtyState();
+        if (localAheadMonths.length > 0) {
+          markCloudBillsDirty(localAheadMonths.map((m) => `${m}-01`));
+        }
+      }
+    };
+    if (billsToPut.length === 0 && mergeRes.purged.billIds.length === 0) {
+      commitSyncedStateAfterPersist();
     }
+
     const savedMeta = writeLocalDatasetSnapshotCache(
       effectiveConfig,
       mergeRes.merged,
@@ -4089,18 +4255,28 @@ export async function syncCloudPullSmart(
       totalBillCount: mergeRes.merged.bills.length,
       downloadedShardCount: resolvedRemote.downloadedShardCount,
       totalShardCount,
+      commitSyncedStateAfterPersist,
     };
   }
 
   // 回退兼容旧版单文件 `lifehub-backup.json.enc`
+  onProgress?.('正在下载旧版单文件云端备份（建议恢复后点击一次上传升级为分片极速结构）…');
   const legacyRemote = await fetchRemoteObjectSnapshot(effectiveConfig, LEGACY_CLOUD_BACKUP_FILE);
   if (legacyRemote.exists && legacyRemote.snapshot && legacyRemote.rawBody) {
-    writeSnapshotCache(legacyRemote.rawBody);
+    await maybeYieldCloudMainThread(0);
+    onProgress?.('正在解密旧版云端备份数据…');
     const { dataset: remoteDataset, record } = decryptSnapshotToDataset(
       legacyRemote.snapshot,
       secret,
     );
-    const allLocalBills = await billSource.loadAllLocalBills();
+    await maybeYieldCloudMainThread(0);
+    if (remoteDataset.bills.length <= 500) {
+      writeSnapshotCache(legacyRemote.rawBody);
+    } else {
+      writeLightweightRecordCache(effectiveConfig, secret, record);
+    }
+    const allLocalBills = localBillCount > 0 ? await billSource.loadAllLocalBills() : [];
+    await maybeYieldCloudMainThread(0);
     const mergeRes = mergeCloudDatasets(
       { ...localCoreOnly, bills: allLocalBills },
       remoteDataset,

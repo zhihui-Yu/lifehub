@@ -96,7 +96,28 @@ export class EncryptedStore {
   }
 
   /**
-   * 批量写入业务实体。
+   * 当连续加解密阻塞超过一帧预算（12ms）且运行在真实计时器环境时，主动让出一次宏任务给宿主渲染帧。
+   */
+  private async maybeYieldMacrotask(lastYieldAt: number): Promise<number> {
+    const now = Date.now();
+    if (now - lastYieldAt < 12 || typeof setTimeout !== 'function') {
+      return lastYieldAt;
+    }
+    const timerMeta = setTimeout as unknown as {
+      clock?: unknown;
+      _isMockFunction?: boolean;
+    };
+    if (timerMeta.clock !== undefined || timerMeta._isMockFunction === true) {
+      return lastYieldAt;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    return Date.now();
+  }
+
+  /**
+   * 批量写入业务实体（按 256 条分批加密落盘并按帧预算让出事件循环，避免万级写入阻塞 UI）。
    *
    * @param entityType 实体类型
    * @param entities 业务实体列表
@@ -109,11 +130,17 @@ export class EncryptedStore {
     indexOf?: (entity: T) => { localDate?: string | null; occurredAt?: string | null },
   ): Promise<void> {
     this.assertUnlocked();
-    const records: StoredRecord[] = [];
+    if (entities.length === 0) {
+      return;
+    }
     const dek = this.dek.getDek(entityType);
     const keyVersion = this.dek.getKeyVersion();
     const CHUNK = 256;
+    let lastYieldAt = Date.now();
     for (let offset = 0; offset < entities.length; offset += CHUNK) {
+      if (offset > 0) {
+        lastYieldAt = await this.maybeYieldMacrotask(lastYieldAt);
+      }
       const slice = entities.slice(offset, offset + CHUNK);
       const batch = await Promise.all(
         slice.map(async (entity) => {
@@ -133,10 +160,9 @@ export class EncryptedStore {
           } satisfies StoredRecord;
         }),
       );
-      records.push(...batch);
-    }
-    if (records.length > 0) {
-      await this.adapter.putMany(entityType, records);
+      if (batch.length > 0) {
+        await this.adapter.putMany(entityType, batch);
+      }
     }
   }
 
@@ -190,14 +216,18 @@ export class EncryptedStore {
     return this.decryptRecordsBatch<T>(entityType, records);
   }
 
-  /** 分块并发解密记录列表，大幅降低万级账单读取时的微任务串行等待耗时。 */
+  /** 分块并发解密记录列表，并在长耗时分块间按帧预算让出事件循环，保持界面丝滑响应。 */
   private async decryptRecordsBatch<T>(
     entityType: EntityType,
     records: readonly StoredRecord[],
   ): Promise<T[]> {
     const out: T[] = [];
     const CHUNK = 256;
+    let lastYieldAt = Date.now();
     for (let offset = 0; offset < records.length; offset += CHUNK) {
+      if (offset > 0) {
+        lastYieldAt = await this.maybeYieldMacrotask(lastYieldAt);
+      }
       const slice = records.slice(offset, offset + CHUNK);
       const settled = await Promise.all(
         slice.map(async (record) => {
