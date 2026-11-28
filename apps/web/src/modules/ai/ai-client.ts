@@ -90,16 +90,24 @@ function buildProviderRequestPayload(
     { role: 'user', content: prompt.userPrompt },
   ];
   if (chatHistory && chatHistory.length > 0) {
-    for (const msg of chatHistory) {
-      if (msg.isSystemPromptContext) {
-        // 系统构建的脱敏上下文已作为首条 userPrompt 注入，跳过避免重复和连续 user 角色报错
-        continue;
-      }
-      const lastMsg = messages[messages.length - 1];
-      if (lastMsg && lastMsg.role === msg.role) {
-        lastMsg.content = `${lastMsg.content}\n\n${msg.content}`;
-      } else {
-        messages.push({ role: msg.role, content: msg.content });
+    const nonContextMessages = chatHistory.filter((m) => !m.isSystemPromptContext);
+    if (nonContextMessages.length > 0) {
+      // 当用户在对话窗口发起具体提问时，将首条 userPrompt 末尾的「输出完整复盘报告」替换为「基于上方数据直接精炼回答下方提问」
+      const baseDataContext = prompt.userPrompt.replace(
+        /\n\n请按【输出硬性铁律】输出高密度诊断[^\n]*$/,
+        '',
+      );
+      messages[1] = {
+        role: 'user',
+        content: `${baseDataContext}\n\n（以上为当前维度的全量脱敏背景数据，请据此精炼回答下方提问：零寒暄套话、必须带关键数字依据与可执行动作，控制在 100~220 字。）`,
+      };
+      for (const msg of nonContextMessages) {
+        const lastMsg = messages[messages.length - 1];
+        if (lastMsg && lastMsg.role === msg.role) {
+          lastMsg.content = `${lastMsg.content}\n\n【用户提问】${msg.content}`;
+        } else {
+          messages.push({ role: msg.role, content: msg.content });
+        }
       }
     }
   }
