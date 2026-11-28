@@ -699,7 +699,8 @@ export function ImportPage() {
                 {item.requiresPassword ? (
                   <TextField
                     size="small"
-                    type="password"
+                    type="text"
+                    autoComplete="off"
                     disabled={busy}
                     placeholder="请输入此文件密码"
                     value={item.password}
@@ -783,7 +784,8 @@ export function ImportPage() {
             autoFocus
             fullWidth
             size="small"
-            type="password"
+            type="text"
+            autoComplete="off"
             label="解密密码"
             value={dialogPassword}
             onChange={(event) => setDialogPassword(event.target.value)}

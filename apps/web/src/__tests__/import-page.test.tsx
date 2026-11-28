@@ -741,8 +741,8 @@ describe('ImportPage（A-08）', () => {
         target: { files: [zipA, zipB] },
       });
     });
-    expect(await screen.findByTestId('queued-file-password-2')).toBeInTheDocument();
-    expect(screen.getByTestId('queued-file-password-3')).toBeInTheDocument();
+    expect(await screen.findByTestId('queued-file-password-2')).toHaveAttribute('type', 'text');
+    expect(screen.getByTestId('queued-file-password-3')).toHaveAttribute('type', 'text');
     expect(screen.queryByTestId('queued-file-password-0')).not.toBeInTheDocument();
     expect(screen.queryByTestId('queued-file-password-1')).not.toBeInTheDocument();
 
