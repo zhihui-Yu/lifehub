@@ -96,7 +96,28 @@ export class EncryptedStore {
   }
 
   /**
-   * 批量写入业务实体。
+   * 当连续加解密阻塞超过一帧预算（12ms）且运行在真实计时器环境时，主动让出一次宏任务给宿主渲染帧。
+   */
+  private async maybeYieldMacrotask(lastYieldAt: number): Promise<number> {
+    const now = Date.now();
+    if (now - lastYieldAt < 12 || typeof setTimeout !== 'function') {
+      return lastYieldAt;
+    }
+    const timerMeta = setTimeout as unknown as {
+      clock?: unknown;
+      _isMockFunction?: boolean;
+    };
+    if (timerMeta.clock !== undefined || timerMeta._isMockFunction === true) {
+      return lastYieldAt;
+    }
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    return Date.now();
+  }
+
+  /**
+   * 批量写入业务实体（按 256 条分批加密落盘并按帧预算让出事件循环，避免万级写入阻塞 UI）。
    *
    * @param entityType 实体类型
    * @param entities 业务实体列表
@@ -109,27 +130,39 @@ export class EncryptedStore {
     indexOf?: (entity: T) => { localDate?: string | null; occurredAt?: string | null },
   ): Promise<void> {
     this.assertUnlocked();
-    const records: StoredRecord[] = [];
+    if (entities.length === 0) {
+      return;
+    }
     const dek = this.dek.getDek(entityType);
     const keyVersion = this.dek.getKeyVersion();
-    for (const entity of entities) {
-      const meta = this.extractMeta(entity);
-      const payload = await this.crypto.encryptRecord(dek, entityType, meta.id, keyVersion, entity);
-      const index = indexOf?.(entity) ?? {};
-      records.push({
-        id: meta.id,
-        entityType,
-        version: meta.version,
-        createdAt: meta.createdAt,
-        updatedAt: meta.updatedAt,
-        deviceId: meta.deviceId,
-        localDate: index.localDate ?? null,
-        occurredAt: index.occurredAt ?? null,
-        payload,
-      });
-    }
-    if (records.length > 0) {
-      await this.adapter.putMany(entityType, records);
+    const CHUNK = 256;
+    let lastYieldAt = Date.now();
+    for (let offset = 0; offset < entities.length; offset += CHUNK) {
+      if (offset > 0) {
+        lastYieldAt = await this.maybeYieldMacrotask(lastYieldAt);
+      }
+      const slice = entities.slice(offset, offset + CHUNK);
+      const batch = await Promise.all(
+        slice.map(async (entity) => {
+          const meta = this.extractMeta(entity);
+          const payload = await this.crypto.encryptRecord(dek, entityType, meta.id, keyVersion, entity);
+          const index = indexOf?.(entity) ?? {};
+          return {
+            id: meta.id,
+            entityType,
+            version: meta.version,
+            createdAt: meta.createdAt,
+            updatedAt: meta.updatedAt,
+            deviceId: meta.deviceId,
+            localDate: index.localDate ?? null,
+            occurredAt: index.occurredAt ?? null,
+            payload,
+          } satisfies StoredRecord;
+        }),
+      );
+      if (batch.length > 0) {
+        await this.adapter.putMany(entityType, batch);
+      }
     }
   }
 
@@ -162,18 +195,7 @@ export class EncryptedStore {
   async getMany<T>(entityType: EntityType, ids: readonly string[]): Promise<T[]> {
     this.assertUnlocked();
     const records = await this.adapter.getMany(entityType, ids);
-    const out: T[] = [];
-    for (const record of records) {
-      try {
-        out.push(await this.decryptRecord<T>(entityType, record));
-      } catch (err) {
-        if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
-          continue;
-        }
-        throw err;
-      }
-    }
-    return out;
+    return this.decryptRecordsBatch<T>(entityType, records);
   }
 
   /**
@@ -191,15 +213,39 @@ export class EncryptedStore {
   async query<T>(entityType: EntityType, filter?: StorageQueryLike): Promise<T[]> {
     this.assertUnlocked();
     const records = await this.adapter.query(entityType, filter);
+    return this.decryptRecordsBatch<T>(entityType, records);
+  }
+
+  /** 分块并发解密记录列表，并在长耗时分块间按帧预算让出事件循环，保持界面丝滑响应。 */
+  private async decryptRecordsBatch<T>(
+    entityType: EntityType,
+    records: readonly StoredRecord[],
+  ): Promise<T[]> {
     const out: T[] = [];
-    for (const record of records) {
-      try {
-        out.push(await this.decryptRecord<T>(entityType, record));
-      } catch (err) {
-        if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
-          continue;
+    const CHUNK = 256;
+    let lastYieldAt = Date.now();
+    for (let offset = 0; offset < records.length; offset += CHUNK) {
+      if (offset > 0) {
+        lastYieldAt = await this.maybeYieldMacrotask(lastYieldAt);
+      }
+      const slice = records.slice(offset, offset + CHUNK);
+      const settled = await Promise.all(
+        slice.map(async (record) => {
+          try {
+            const value = await this.decryptRecord<T>(entityType, record);
+            return { ok: true as const, value };
+          } catch (err) {
+            if (err instanceof LifeHubError && err.code === 'LIFEHUB_E_CRYPTO_AUTH_FAILED') {
+              return { ok: false as const };
+            }
+            throw err;
+          }
+        }),
+      );
+      for (const item of settled) {
+        if (item.ok) {
+          out.push(item.value);
         }
-        throw err;
       }
     }
     return out;

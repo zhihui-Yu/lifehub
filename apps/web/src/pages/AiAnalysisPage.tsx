@@ -10,7 +10,7 @@
  *    - 桌面端左侧精简会话栏 + 右侧无干扰阅读流，配置与审计收纳至独立弹窗；
  * 3. **适配 DeepSeek V4 模型体系**：原生支持 `deepseek-flash` 与 `deepseek-v4-pro` 及 `thinking` 深度思考开关。
  */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Badge,
@@ -60,6 +60,7 @@ import { addDays, type Bill } from '@lifehub/core';
 import { useBillStore } from '@/store';
 import { useVault } from '@/hooks/useVault';
 import { getTodayLocalDate } from '@/modules/shared/date-utils';
+import { expandScheduleForRange, type StoredScheduleSlot } from '@/modules/schedule/rrule';
 import { ScheduleService } from '@/modules/schedule/schedule-service';
 import {
   computeHabitRangeSummaries,
@@ -96,6 +97,7 @@ import {
   executeAiChatMessage,
   executeLocalSmartAnalysis,
   executeRemoteAiAnalysis,
+  formatThinkingAndContentReply,
 } from '@/modules/ai/ai-client';
 import { AiMarkdownRenderer } from '@/modules/ai/AiMarkdownRenderer';
 
@@ -137,6 +139,209 @@ function createSessionId(): string {
     return `session-${crypto.randomUUID()}`;
   }
   return `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+interface StreamBufferState {
+  targetText: string;
+  networkDone: boolean;
+  onDrainComplete: (() => void) | null;
+  notify: (() => void) | null;
+}
+
+function splitStreamReplyParts(text: string): {
+  hasReasoningEnvelope: boolean;
+  reasoning: string;
+  main: string;
+  isStreamingThinking: boolean;
+} {
+  const isStreamingThinking = text.startsWith('💭 【正在深度思考…】');
+  const isFinishedThinking = text.startsWith('💭 【深度思考过程】');
+  if ((isStreamingThinking || isFinishedThinking) && text.includes('\n\n---\n\n')) {
+    const prefix = isStreamingThinking ? '💭 【正在深度思考…】' : '💭 【深度思考过程】';
+    const splitIdx = text.indexOf('\n\n---\n\n');
+    return {
+      hasReasoningEnvelope: true,
+      reasoning: text.slice(prefix.length, splitIdx).replace(/^\n/, ''),
+      main: text.slice(splitIdx + '\n\n---\n\n'.length),
+      isStreamingThinking,
+    };
+  }
+  return {
+    hasReasoningEnvelope: false,
+    reasoning: '',
+    main: text,
+    isStreamingThinking: false,
+  };
+}
+
+function advanceSmoothCursor(shown: number, targetStr: string, fastDrain: boolean): number {
+  const backlog = targetStr.length - shown;
+  if (backlog <= 0) {
+    return targetStr.length;
+  }
+  // 60fps 自适应阻尼平滑推进：网络突发几十个字时拆解为每帧平顺滑出，网络间隔期保持 1~2 字/帧匀速吐字，消除「一顿一顿」感
+  const step = fastDrain
+    ? Math.max(8, Math.ceil(backlog * 0.36))
+    : Math.max(1, Math.min(24, Math.ceil(backlog * 0.16)));
+  let next = Math.min(targetStr.length, shown + step);
+  if (next < targetStr.length) {
+    const code = targetStr.charCodeAt(next - 1);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      next += 1;
+    }
+  }
+  return next;
+}
+
+/**
+ * 独立隔离的 60fps 流式气泡组件：
+ * 流式吐字期间仅刷新此叶子节点（外层 AiAnalysisPage 与历史消息零重渲染），并通过 rAF 自适应缓冲抹平网络包突发抖动。
+ */
+function LiveStreamingAssistantBubble({
+  bufferRef,
+  scrollContainerRef,
+}: {
+  bufferRef: React.MutableRefObject<StreamBufferState>;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const [displayedText, setDisplayedText] = useState<string>('');
+  const cursorRef = useRef({ reasoningLen: 0, mainLen: 0 });
+  const rafIdRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const state = bufferRef.current;
+    cursorRef.current = { reasoningLen: 0, mainLen: 0 };
+
+    const tick = () => {
+      rafIdRef.current = null;
+      const curTarget = state.targetText;
+      if (!curTarget) {
+        if (state.networkDone && state.onDrainComplete) {
+          const cb = state.onDrainComplete;
+          state.onDrainComplete = null;
+          cb();
+        }
+        return;
+      }
+
+      const parts = splitStreamReplyParts(curTarget);
+      let { reasoningLen, mainLen } = cursorRef.current;
+      if (reasoningLen > parts.reasoning.length) reasoningLen = parts.reasoning.length;
+      if (mainLen > parts.main.length) mainLen = parts.main.length;
+
+      if (reasoningLen < parts.reasoning.length) {
+        reasoningLen = advanceSmoothCursor(reasoningLen, parts.reasoning, state.networkDone);
+      } else if (mainLen < parts.main.length) {
+        mainLen = advanceSmoothCursor(mainLen, parts.main, state.networkDone);
+      }
+      cursorRef.current = { reasoningLen, mainLen };
+
+      const visibleReasoning = parts.reasoning.slice(0, reasoningLen);
+      const visibleMain =
+        reasoningLen >= parts.reasoning.length ? parts.main.slice(0, mainLen) : '';
+      const stillThinking =
+        parts.hasReasoningEnvelope &&
+        (parts.isStreamingThinking || visibleMain.trim().length === 0) &&
+        !state.networkDone;
+      const nextRendered = parts.hasReasoningEnvelope
+        ? formatThinkingAndContentReply(visibleReasoning, visibleMain, stillThinking)
+        : visibleMain;
+
+      setDisplayedText((prev) => (prev === nextRendered ? prev : nextRendered));
+
+      const fullyCaughtUp =
+        reasoningLen >= parts.reasoning.length && mainLen >= parts.main.length;
+      if (!fullyCaughtUp) {
+        if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+          rafIdRef.current = window.requestAnimationFrame(tick);
+        }
+      } else if (state.networkDone && state.onDrainComplete) {
+        const cb = state.onDrainComplete;
+        state.onDrainComplete = null;
+        cb();
+      }
+    };
+
+    const scheduleTick = () => {
+      const ua = typeof navigator !== 'undefined' ? (navigator.userAgent ?? '') : '';
+      if (/jsdom/i.test(ua) || typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') {
+        setDisplayedText(state.targetText);
+        if (state.networkDone && state.onDrainComplete) {
+          const cb = state.onDrainComplete;
+          state.onDrainComplete = null;
+          cb();
+        }
+        return;
+      }
+      if (rafIdRef.current === null) {
+        rafIdRef.current = window.requestAnimationFrame(tick);
+      }
+    };
+
+    state.notify = scheduleTick;
+    if (state.targetText) {
+      scheduleTick();
+    }
+
+    return () => {
+      state.notify = null;
+      if (rafIdRef.current !== null && typeof window !== 'undefined' && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
+  }, [bufferRef]);
+
+  useLayoutEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container || !displayedText) return;
+    const distanceToBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
+    if (distanceToBottom < 180) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [displayedText, scrollContainerRef]);
+
+  if (!displayedText) {
+    return (
+      <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.75 }}>
+        <CircularProgress size={15} thickness={5} />
+        <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 13 }}>
+          正在连接模型开始思考…
+        </Typography>
+      </Stack>
+    );
+  }
+
+  return (
+    <Stack
+      direction="row"
+      spacing={{ xs: 0, sm: 1.5 }}
+      alignItems="flex-start"
+      data-testid="ai-streaming-message"
+      sx={{ width: '100%', minWidth: 0 }}
+    >
+      <Box
+        sx={{
+          width: 28,
+          height: 28,
+          borderRadius: '9px',
+          backgroundColor: 'rgba(99, 102, 241, 0.1)',
+          color: 'primary.main',
+          display: { xs: 'none', sm: 'flex' },
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+          mt: 0.25,
+        }}
+      >
+        <AutoAwesomeOutlined sx={{ fontSize: 16 }} />
+      </Box>
+      <Box sx={{ flex: 1, minWidth: 0, maxWidth: '100%' }}>
+        <AiMarkdownRenderer content={displayedText} />
+      </Box>
+    </Stack>
+  );
 }
 
 /**
@@ -230,14 +435,17 @@ export function AiAnalysisPage() {
   const today = useMemo(() => getTodayLocalDate(), []);
 
   const [loadedBills, setLoadedBills] = useState<Bill[]>([]);
+  const [dataLoading, setDataLoading] = useState<boolean>(true);
   const [categoryMap, setCategoryMap] = useState<Map<string, string>>(new Map());
-  const [scheduleSummary, setScheduleSummary] = useState<AiScheduleSummaryInput | undefined>(
+  const [baseScheduleSummary, setBaseScheduleSummary] = useState<AiScheduleSummaryInput | undefined>(
     undefined,
   );
+  const [loadedScheduleSlots, setLoadedScheduleSlots] = useState<StoredScheduleSlot[]>([]);
   const [loadedHabitsWithStats, setLoadedHabitsWithStats] = useState<HabitWithStats[]>([]);
   const [loadedHabitCheckIns, setLoadedHabitCheckIns] = useState<StoredHabitCheckIn[]>([]);
   const [loadedCompletionEvents, setLoadedCompletionEvents] = useState<CompletionEvent[]>([]);
   const [diaryEntries, setDiaryEntries] = useState<DecryptedDiaryEntry[]>([]);
+  const dataReadyPromiseRef = useRef<Promise<void> | null>(null);
 
   // 配置状态（默认指向 DeepSeek V4 主力模型 deepseek-flash）
   const [provider, setProvider] = useState<AiProviderType>('deepseek');
@@ -261,6 +469,12 @@ export function AiAnalysisPage() {
   const [chatInput, setChatInput] = useState('');
   const [analysisOutput, setAnalysisOutput] = useState<string>('');
   const [analyzing, setAnalyzing] = useState(false);
+  const streamBufferRef = useRef<StreamBufferState>({
+    targetText: '',
+    networkDone: false,
+    onDrainComplete: null,
+    notify: null,
+  });
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [auditHistory, setAuditHistory] = useState<AIAnalysisRequestRecord[]>([]);
@@ -301,6 +515,37 @@ export function AiAnalysisPage() {
     }
   }, []);
 
+  const resetStreamBuffer = useCallback(() => {
+    streamBufferRef.current.targetText = '';
+    streamBufferRef.current.networkDone = false;
+    streamBufferRef.current.onDrainComplete = null;
+  }, []);
+
+  const handleStreamChunk = useCallback((partialText: string) => {
+    streamBufferRef.current.targetText = partialText;
+    streamBufferRef.current.notify?.();
+  }, []);
+
+  const finishAndDrainStreamBuffer = useCallback(async (finalText: string) => {
+    const state = streamBufferRef.current;
+    if (!state.targetText) {
+      return;
+    }
+    state.targetText = finalText;
+    state.networkDone = true;
+    const ua = typeof navigator !== 'undefined' ? (navigator.userAgent ?? '') : '';
+    if (/jsdom/i.test(ua) || !state.notify) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      const safetyTimer = setTimeout(resolve, 180);
+      state.onDrainComplete = () => {
+        clearTimeout(safetyTimer);
+        resolve();
+      };
+      state.notify?.();
+    });
+  }, []);
   // 进入 AI 页面时锁定外层 html/body 视口并归零外层残留滚动条，确保仅内部会话区可滑动
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -342,17 +587,101 @@ export function AiAnalysisPage() {
         label: '近 1 个月',
         days: 30,
       };
-    const safeDays = Math.min(180, Math.max(1, opt.days));
-    const fromDate = addDays(today, -(safeDays - 1));
+    const safeDays = Math.min(3650, Math.max(1, opt.days));
+    const fromDate = timeRange === 'all' ? '1970-01-01' : addDays(today, -(safeDays - 1));
     return { fromDate, toDate: today, label: opt.label };
   }, [timeRange, today]);
 
+  // 合并本地持久化库账单与内存最新变更（修复按日懒加载下 storeBills 仅有局部日期账单导致漏读全库的问题）
+  const mergedAllBills = useMemo(() => {
+    if (loadedBills.length === 0) {
+      return storeBills;
+    }
+    if (storeBills.length === 0) {
+      return loadedBills;
+    }
+    const byId = new Map<string, Bill>();
+    for (const b of loadedBills) {
+      byId.set(b.id, b);
+    }
+    for (const b of storeBills) {
+      byId.set(b.id, b);
+    }
+    return Array.from(byId.values());
+  }, [loadedBills, storeBills]);
+
   const effectiveBills = useMemo(() => {
-    const raw = storeBills.length > 0 ? storeBills : loadedBills;
-    return raw.filter(
+    return mergedAllBills.filter(
       (b) => b.localDate >= dateWindow.fromDate && b.localDate <= dateWindow.toDate,
     );
-  }, [dateWindow.fromDate, dateWindow.toDate, loadedBills, storeBills]);
+  }, [dateWindow.fromDate, dateWindow.toDate, mergedAllBills]);
+
+  const scheduleSummary = useMemo<AiScheduleSummaryInput | undefined>(() => {
+    if (!baseScheduleSummary && loadedScheduleSlots.length === 0) {
+      return undefined;
+    }
+    const base = baseScheduleSummary ?? {
+      weekExpected: 0,
+      weekCompleted: 0,
+      weekRate: 0,
+      monthExpected: 0,
+      monthCompleted: 0,
+      monthRate: 0,
+    };
+    if (loadedScheduleSlots.length === 0) {
+      return base;
+    }
+    // 对所选周期（最长取近 365 天防无限展开）统计每个具体时间块的完成率
+    const slotRangeFrom =
+      dateWindow.fromDate < addDays(today, -365) ? addDays(today, -365) : dateWindow.fromDate;
+    const instances = expandScheduleForRange(loadedScheduleSlots, slotRangeFrom, dateWindow.toDate);
+    const completedKeySet = new Set<string>();
+    for (const ev of loadedCompletionEvents) {
+      if (
+        ev.sourceType === 'schedule' &&
+        ev.localDate >= slotRangeFrom &&
+        ev.localDate <= dateWindow.toDate
+      ) {
+        completedKeySet.add(`${ev.sourceId}:${ev.localDate}`);
+      }
+    }
+    const perSlotAcc = new Map<string, { expected: number; completed: number }>();
+    let rangeCompleted = 0;
+    for (const inst of instances) {
+      const done = completedKeySet.has(`${inst.slotId}:${inst.localDate}`);
+      if (done) rangeCompleted += 1;
+      const acc = perSlotAcc.get(inst.slotId) ?? { expected: 0, completed: 0 };
+      acc.expected += 1;
+      if (done) acc.completed += 1;
+      perSlotAcc.set(inst.slotId, acc);
+    }
+    const slotDetails = loadedScheduleSlots.map((slot) => {
+      const acc = perSlotAcc.get(slot.id) ?? { expected: 0, completed: 0 };
+      return {
+        title: slot.title,
+        timeWindow: `${slot.startTime}-${slot.endTime}`,
+        expectedCount: acc.expected,
+        completedCount: acc.completed,
+        completionRate: acc.expected > 0 ? Math.round((acc.completed / acc.expected) * 100) : 0,
+      };
+    });
+    const rangeExpected = instances.length;
+    const rangeRate = rangeExpected > 0 ? Math.round((rangeCompleted / rangeExpected) * 100) : 0;
+    return {
+      ...base,
+      rangeExpected,
+      rangeCompleted,
+      rangeRate,
+      slotDetails,
+    };
+  }, [
+    baseScheduleSummary,
+    dateWindow.fromDate,
+    dateWindow.toDate,
+    loadedCompletionEvents,
+    loadedScheduleSlots,
+    today,
+  ]);
 
   const rangedDiaries = useMemo(
     () =>
@@ -368,62 +697,89 @@ export function AiAnalysisPage() {
   );
 
   const loadInitialData = useCallback(async () => {
-    try {
-      const earliestWindowDate = addDays(today, -180);
-      const [
-        configRec,
-        audits,
-        schedStats,
-        habitsWithStats,
-        allCheckIns,
-        rangedCompletionEvents,
-        loadedDiaries,
-      ] = await Promise.all([
-        aiStorage.getConfigRecord(),
-        aiStorage.listRequestAudits(),
-        scheduleService.getWeekAndMonthStats(today),
-        habitService.listHabitsWithStats(today),
-        habitService.listAllCheckIns(),
-        completionRepo.listByDateRange(earliestWindowDate, today),
-        diaryService.listEntries().catch(() => [] as DecryptedDiaryEntry[]),
-      ]);
-
-      setProvider(configRec.provider);
-      setBaseUrl(configRec.baseUrl);
-      setModel(configRec.model);
-      setThinkingEnabled(Boolean(configRec.thinkingEnabled));
-      setHasEncryptedKey(configRec.hasApiKey);
-      setAuditHistory(audits);
-      setDiaryEntries(loadedDiaries);
-
-      setScheduleSummary({
-        weekExpected: schedStats.week.expectedCount,
-        weekCompleted: schedStats.week.completedCount,
-        weekRate: schedStats.week.completionRate,
-        monthExpected: schedStats.month.expectedCount,
-        monthCompleted: schedStats.month.completedCount,
-        monthRate: schedStats.month.completionRate,
-      });
-
-      setLoadedHabitsWithStats(habitsWithStats);
-      setLoadedHabitCheckIns(allCheckIns);
-      setLoadedCompletionEvents(rangedCompletionEvents);
-
-      if (runtime && status === 'unlocked') {
-        const [repoBills, repoCategories] = await Promise.all([
-          runtime.billRepository.list(),
-          runtime.categoryRepository.list(),
+    const run = async () => {
+      setDataLoading(true);
+      try {
+        const earliestWindowDate = timeRange === 'all' ? '1970-01-01' : addDays(today, -365);
+        const [
+          configRec,
+          audits,
+          schedStats,
+          schedSlots,
+          habitsWithStats,
+          allCheckIns,
+          rangedCompletionEvents,
+          loadedDiaries,
+        ] = await Promise.all([
+          aiStorage.getConfigRecord(),
+          aiStorage.listRequestAudits(),
+          scheduleService.getWeekAndMonthStats(today),
+          scheduleService.listSlots().catch(() => [] as StoredScheduleSlot[]),
+          habitService.listHabitsWithStats(today),
+          habitService.listAllCheckIns(),
+          completionRepo.listByDateRange(earliestWindowDate, today),
+          diaryService.listEntries().catch(() => [] as DecryptedDiaryEntry[]),
         ]);
-        setLoadedBills(repoBills);
-        const map = new Map<string, string>();
-        for (const cat of repoCategories) {
-          map.set(cat.id, cat.name);
+
+        setProvider(configRec.provider);
+        setBaseUrl(configRec.baseUrl);
+        setModel(configRec.model);
+        setThinkingEnabled(Boolean(configRec.thinkingEnabled));
+        setHasEncryptedKey(configRec.hasApiKey);
+        setAuditHistory(audits);
+        setDiaryEntries(loadedDiaries);
+        setLoadedScheduleSlots(schedSlots);
+
+        setBaseScheduleSummary({
+          weekExpected: schedStats.week.expectedCount,
+          weekCompleted: schedStats.week.completedCount,
+          weekRate: schedStats.week.completionRate,
+          monthExpected: schedStats.month.expectedCount,
+          monthCompleted: schedStats.month.completedCount,
+          monthRate: schedStats.month.completionRate,
+        });
+
+        setLoadedHabitsWithStats(habitsWithStats);
+        setLoadedHabitCheckIns(allCheckIns);
+        setLoadedCompletionEvents(rangedCompletionEvents);
+
+        if (runtime && status === 'unlocked') {
+          const billRepo = runtime.billRepository as {
+            list: () => Promise<Bill[]>;
+            queryByLocalDateRange?: (from: string, to: string) => Promise<Bill[]>;
+          };
+          const queryBillsPromise =
+            timeRange !== 'all' && typeof billRepo.queryByLocalDateRange === 'function'
+              ? billRepo.queryByLocalDateRange(earliestWindowDate, today)
+              : billRepo.list();
+          const [repoBills, repoCategories] = await Promise.all([
+            queryBillsPromise,
+            runtime.categoryRepository.list(),
+          ]);
+          // 若近一年窗口内无账单而用户有更早历史账单，兜底补拉一次全库
+          const finalRepoBills =
+            repoBills.length === 0 &&
+            timeRange !== 'all' &&
+            typeof billRepo.queryByLocalDateRange === 'function'
+              ? await billRepo.list()
+              : repoBills;
+          setLoadedBills(finalRepoBills);
+
+          const map = new Map<string, string>();
+          for (const cat of repoCategories) {
+            map.set(cat.id, cat.name);
+          }
+          setCategoryMap(map);
         }
-        setCategoryMap(map);
+      } catch {
+        // 忽略初始化非致命异常
+      } finally {
+        setDataLoading(false);
       }
-    } catch {
-      // 忽略初始化非致命异常
-    }
+    };
+    const p = run();
+    dataReadyPromiseRef.current = p;
+    await p;
   }, [
     aiStorage,
     completionRepo,
@@ -432,6 +788,7 @@ export function AiAnalysisPage() {
     runtime,
     scheduleService,
     status,
+    timeRange,
     today,
   ]);
 
@@ -509,17 +866,28 @@ export function AiAnalysisPage() {
   }, [loadInitialData]);
 
   const promptContext: AiPromptContext = useMemo(() => {
-    const rawAll = storeBills.length > 0 ? storeBills : loadedBills;
-    const billsToRedact = effectiveBills.length > 0 ? effectiveBills : rawAll;
+    const includeFinance = selectedTopic === 'comprehensive' || selectedTopic === 'finance';
+    const includeSchedule = selectedTopic === 'comprehensive' || selectedTopic === 'life';
+    const includeHabits = selectedTopic === 'comprehensive' || selectedTopic === 'habits';
+    const includeDiary = selectedTopic === 'comprehensive' || selectedTopic === 'persona';
+
+    const usedFallback =
+      includeFinance && effectiveBills.length === 0 && mergedAllBills.length > 0;
+    const billsToRedact = includeFinance
+      ? usedFallback
+        ? mergedAllBills
+        : effectiveBills
+      : [];
     const redactedBills = redactBillsForAi(billsToRedact, categoryMap);
     return {
       redactedBills,
-      scheduleStats: scheduleSummary,
-      habitStats: habitSummary,
-      diaryStats,
+      scheduleStats: includeSchedule ? scheduleSummary : undefined,
+      habitStats: includeHabits ? habitSummary : undefined,
+      diaryStats: includeDiary ? diaryStats : undefined,
       topic: selectedTopic,
       fromDate: dateWindow.fromDate,
       toDate: dateWindow.toDate,
+      usedHistoricalBillsFallback: usedFallback,
     };
   }, [
     categoryMap,
@@ -528,16 +896,49 @@ export function AiAnalysisPage() {
     diaryStats,
     effectiveBills,
     habitSummary,
-    loadedBills,
+    mergedAllBills,
     scheduleSummary,
     selectedTopic,
-    storeBills,
+  ]);
+
+  const scopedDataSummaryLabel = useMemo(() => {
+    if (selectedTopic === 'finance') {
+      return `仅发送财务数据：${promptContext.redactedBills.totalCount} 笔账单`;
+    }
+    if (selectedTopic === 'life') {
+      return `仅发送课表数据：${loadedScheduleSlots.length} 项课表时段`;
+    }
+    if (selectedTopic === 'habits') {
+      return `仅发送习惯数据：${loadedHabitsWithStats.length} 个微习惯`;
+    }
+    if (selectedTopic === 'persona') {
+      return `仅发送树洞数据：${rangedDiaries.length} 篇树洞随笔`;
+    }
+    return `全维汇总：${promptContext.redactedBills.totalCount} 笔账单 · ${loadedScheduleSlots.length} 项课表 · ${loadedHabitsWithStats.length} 个习惯 · ${rangedDiaries.length} 篇树洞`;
+  }, [
+    loadedHabitsWithStats.length,
+    loadedScheduleSlots.length,
+    promptContext.redactedBills.totalCount,
+    rangedDiaries.length,
+    selectedTopic,
   ]);
 
   const builtPrompt = useMemo(
     () => buildLifeReviewPrompt(promptContext),
     [promptContext],
   );
+
+  // 保存最新上下文快照引用，确保等待异步数据就绪门闩后能读取到最新加载完的完整上下文
+  const latestPromptRef = useRef({ promptContext, builtPrompt });
+  latestPromptRef.current = { promptContext, builtPrompt };
+
+  const ensureDataReady = useCallback(async () => {
+    if (dataReadyPromiseRef.current) {
+      await dataReadyPromiseRef.current;
+      // 让 React 完成一次微任务状态提交以刷新 latestPromptRef
+      await Promise.resolve();
+    }
+  }, []);
 
   const upsertSession = useCallback(
     (
@@ -689,14 +1090,17 @@ export function AiAnalysisPage() {
     }
   };
 
-  const buildSystemContextUserBubble = (actionLabel: string): AiChatMessage => ({
+  const buildSystemContextUserBubble = (
+    actionLabel: string,
+    promptObj = latestPromptRef.current.builtPrompt,
+  ): AiChatMessage => ({
     role: 'user',
     isSystemPromptContext: true,
     timestamp: new Date().toISOString(),
     content: [
-      `上下文 · ${AI_TOPIC_META[selectedTopic].label} · ${dateWindow.label}（${actionLabel}）`,
+      `上下文 · ${AI_TOPIC_META[selectedTopic].label} · ${dateWindow.label}（${actionLabel} · ${scopedDataSummaryLabel}）`,
       '',
-      builtPrompt.userPrompt,
+      promptObj.userPrompt,
     ].join('\n'),
   });
 
@@ -704,8 +1108,10 @@ export function AiAnalysisPage() {
     try {
       setAnalyzing(true);
       setErrorMsg(null);
-      const sysUserBubble = buildSystemContextUserBubble('本地速览');
-      const result = await executeLocalSmartAnalysis(promptContext, { storage: aiStorage });
+      await ensureDataReady();
+      const { promptContext: activeCtx, builtPrompt: activePrompt } = latestPromptRef.current;
+      const sysUserBubble = buildSystemContextUserBubble('本地速览', activePrompt);
+      const result = await executeLocalSmartAnalysis(activeCtx, { storage: aiStorage });
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
         ...cur,
@@ -731,12 +1137,29 @@ export function AiAnalysisPage() {
   };
 
   const handleRemoteAnalyze = async () => {
+    let baseMessagesBeforeRun: AiChatMessage[] | null = null;
     try {
+      resetStreamBuffer();
       setAnalyzing(true);
       setErrorMsg(null);
-      await syncFormConfigIfNeeded();
-      const sysUserBubble = buildSystemContextUserBubble('AI 深度复盘');
-      const result = await executeRemoteAiAnalysis(builtPrompt, { storage: aiStorage });
+      await Promise.all([syncFormConfigIfNeeded(), ensureDataReady()]);
+      const { builtPrompt: activePrompt } = latestPromptRef.current;
+      const sysUserBubble = buildSystemContextUserBubble('AI 深度复盘', activePrompt);
+      // 立即将上下文卡片推入会话流，让流式思考与生成直接在对话区实时铺开
+      upsertSession((cur) => {
+        baseMessagesBeforeRun = cur.messages;
+        return {
+          ...cur,
+          topic: selectedTopic,
+          timeRange,
+          messages: [...cur.messages, sysUserBubble],
+        };
+      });
+      const result = await executeRemoteAiAnalysis(activePrompt, {
+        storage: aiStorage,
+        onStreamUpdate: handleStreamChunk,
+      });
+      await finishAndDrainStreamBuffer(result.replyText);
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
         ...cur,
@@ -744,7 +1167,6 @@ export function AiAnalysisPage() {
         timeRange,
         messages: [
           ...cur.messages,
-          sysUserBubble,
           {
             role: 'assistant',
             content: result.replyText,
@@ -755,11 +1177,16 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } catch (err) {
+      if (baseMessagesBeforeRun !== null) {
+        const rollback = baseMessagesBeforeRun;
+        upsertSession((cur) => ({ ...cur, messages: rollback }));
+      }
       const msg = err instanceof Error ? err.message : '远程 AI 分析请求失败';
       setErrorMsg(msg);
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } finally {
+      resetStreamBuffer();
       setAnalyzing(false);
     }
   };
@@ -771,9 +1198,12 @@ export function AiAnalysisPage() {
       setChatInput('');
     }
 
+    await ensureDataReady();
+    const { promptContext: activeCtx, builtPrompt: activePrompt } = latestPromptRef.current;
+
     const prefixMessages: AiChatMessage[] =
       currentMessages.length === 0
-        ? [buildSystemContextUserBubble('自动注入')]
+        ? [buildSystemContextUserBubble('自动注入', activePrompt)]
         : [];
 
     const userMsg: AiChatMessage = {
@@ -798,12 +1228,15 @@ export function AiAnalysisPage() {
     );
 
     try {
+      resetStreamBuffer();
       setAnalyzing(true);
       setErrorMsg(null);
       await syncFormConfigIfNeeded();
-      const result = await executeAiChatMessage(promptContext, nextHistory, {
+      const result = await executeAiChatMessage(activeCtx, nextHistory, {
         storage: aiStorage,
+        onStreamUpdate: handleStreamChunk,
       });
+      await finishAndDrainStreamBuffer(result.replyText);
       setAnalysisOutput(result.replyText);
       upsertSession((cur) => ({
         ...cur,
@@ -835,7 +1268,69 @@ export function AiAnalysisPage() {
       const audits = await aiStorage.listRequestAudits();
       setAuditHistory(audits);
     } finally {
+      resetStreamBuffer();
       setAnalyzing(false);
+    }
+  };
+
+  const handleRegenerateLast = async () => {
+    if (analyzing || currentMessages.length === 0) return;
+    const withoutLastAssistant =
+      currentMessages[currentMessages.length - 1]?.role === 'assistant'
+        ? currentMessages.slice(0, -1)
+        : [...currentMessages];
+    const lastRealUserQuestion = [...withoutLastAssistant]
+      .reverse()
+      .find((m) => m.role === 'user' && !m.isSystemPromptContext);
+
+    // 若上一轮是用户的自由追问，则针对该追问原地重新流式生成回复
+    if (lastRealUserQuestion) {
+      try {
+        resetStreamBuffer();
+        setAnalyzing(true);
+        setErrorMsg(null);
+        await Promise.all([syncFormConfigIfNeeded(), ensureDataReady()]);
+        const { promptContext: activeCtx } = latestPromptRef.current;
+        upsertSession((cur) => ({ ...cur, messages: withoutLastAssistant }));
+        const result = await executeAiChatMessage(activeCtx, withoutLastAssistant, {
+          storage: aiStorage,
+          onStreamUpdate: handleStreamChunk,
+        });
+        await finishAndDrainStreamBuffer(result.replyText);
+        setAnalysisOutput(result.replyText);
+        upsertSession((cur) => ({
+          ...cur,
+          messages: [
+            ...withoutLastAssistant,
+            {
+              role: 'assistant',
+              content: result.replyText,
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        }));
+        const audits = await aiStorage.listRequestAudits();
+        setAuditHistory(audits);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '重新生成回复失败';
+        setErrorMsg(msg);
+      } finally {
+        resetStreamBuffer();
+        setAnalyzing(false);
+      }
+      return;
+    }
+
+    // 否则为初始复盘报告，先移除末尾旧报告再按最新上下文重新生成
+    const trimmed =
+      withoutLastAssistant[withoutLastAssistant.length - 1]?.isSystemPromptContext
+        ? withoutLastAssistant.slice(0, -1)
+        : withoutLastAssistant;
+    upsertSession((cur) => ({ ...cur, messages: trimmed }));
+    if (isRemoteReady) {
+      await handleRemoteAnalyze();
+    } else {
+      await handleLocalSummary();
     }
   };
 
@@ -1256,9 +1751,16 @@ export function AiAnalysisPage() {
                 >
                   <Typography
                     variant="h6"
-                    sx={{ fontWeight: 700, mb: 2, fontSize: { xs: '1.08rem', sm: '1.22rem' } }}
+                    sx={{ fontWeight: 700, mb: 0.75, fontSize: { xs: '1.08rem', sm: '1.22rem' } }}
                   >
                     需要帮你复盘哪方面？
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    data-testid="ai-context-data-summary"
+                    sx={{ display: 'block', mb: 2, color: 'var(--lifehub-text-muted)', fontSize: 12 }}
+                  >
+                    {dataLoading ? '正在加载本地数据…' : scopedDataSummaryLabel}
                   </Typography>
 
                   {/* 单行紧凑操作按钮 */}
@@ -1412,7 +1914,7 @@ export function AiAnalysisPage() {
                                 <IconButton
                                   size="small"
                                   disabled={analyzing}
-                                  onClick={() => void (isRemoteReady ? handleRemoteAnalyze() : handleLocalSummary())}
+                                  onClick={() => void handleRegenerateLast()}
                                   aria-label="重新生成"
                                   sx={{ color: 'var(--lifehub-text-muted)', p: 0.5 }}
                                 >
@@ -1429,12 +1931,10 @@ export function AiAnalysisPage() {
               )}
 
               {analyzing && (
-                <Stack direction="row" spacing={1.25} alignItems="center" sx={{ py: 0.75 }}>
-                  <CircularProgress size={15} thickness={5} />
-                  <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)', fontSize: 13 }}>
-                    正在思考…
-                  </Typography>
-                </Stack>
+                <LiveStreamingAssistantBubble
+                  bufferRef={streamBufferRef}
+                  scrollContainerRef={chatScrollContainerRef}
+                />
               )}
 
               {/* 保留回归校验锚点 */}
@@ -1717,10 +2217,16 @@ export function AiAnalysisPage() {
                     inputProps={{ 'data-testid': 'ai-model-input' }}
                   >
                     <MenuItem value="deepseek-flash">
-                      deepseek-flash（推荐 · 高速多模态）
+                      deepseek-flash（推荐 · V4 高速主力）
                     </MenuItem>
                     <MenuItem value="deepseek-v4-pro">
-                      deepseek-v4-pro（旗舰复杂推理）
+                      deepseek-v4-pro（V4 旗舰复杂推理）
+                    </MenuItem>
+                    <MenuItem value="deepseek-chat">
+                      deepseek-chat（标准通用接口兼容）
+                    </MenuItem>
+                    <MenuItem value="deepseek-reasoner">
+                      deepseek-reasoner（R1 深度推理接口兼容）
                     </MenuItem>
                   </Select>
                 </FormControl>

@@ -65,6 +65,11 @@ export class WebCryptoProvider implements CryptoProvider {
   /** 随机字节源（已绑定 this，避免脱离宿主对象调用）。 */
   private readonly randomSource: ((array: Uint8Array) => Uint8Array) | undefined;
 
+  /** 最近一次导入的 32 字节原始密钥副本（用于批量加解密复用 CryptoKey，消除万次重复 importKey 开销）。 */
+  private cachedRawKey: Uint8Array | null = null;
+  /** 最近一次导入的 WebCrypto CryptoKey。 */
+  private cachedCryptoKey: unknown = null;
+
   /**
    * 构造 WebCrypto 实现。
    *
@@ -134,6 +139,32 @@ export class WebCryptoProvider implements CryptoProvider {
   }
 
   /**
+   * 获取或复用指定 32 字节原始密钥对应的 AES-GCM CryptoKey。
+   */
+  private async getAesCryptoKey(subtle: SubtleLike, key: Uint8Array): Promise<unknown> {
+    const prev = this.cachedRawKey;
+    if (prev && prev.length === key.length && this.cachedCryptoKey !== null) {
+      let same = true;
+      for (let i = 0; i < key.length; i += 1) {
+        if (prev[i] !== key[i]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) {
+        return this.cachedCryptoKey;
+      }
+    }
+    const imported = await subtle.importKey('raw', key, { name: 'AES-GCM', length: 256 }, false, [
+      'encrypt',
+      'decrypt',
+    ]);
+    this.cachedRawKey = key.slice();
+    this.cachedCryptoKey = imported;
+    return imported;
+  }
+
+  /**
    * AES-256-GCM 加密。
    *
    * @param key 加密密钥（32 字节）
@@ -145,10 +176,7 @@ export class WebCryptoProvider implements CryptoProvider {
   async encrypt(key: Uint8Array, plaintext: Uint8Array, aad: Uint8Array): Promise<EncryptedPayload> {
     const subtle = this.requireSubtle();
     const iv = this.randomBytes(IV_LENGTH);
-    const cryptoKey = await subtle.importKey('raw', key, { name: 'AES-GCM', length: 256 }, false, [
-      'encrypt',
-      'decrypt',
-    ]);
+    const cryptoKey = await this.getAesCryptoKey(subtle, key);
     const combined = await subtle.encrypt(
       { name: 'AES-GCM', iv, additionalData: aad, tagLength: GCM_TAG_LENGTH * 8 },
       cryptoKey,
@@ -172,10 +200,7 @@ export class WebCryptoProvider implements CryptoProvider {
    */
   async decrypt(key: Uint8Array, payload: EncryptedPayload, aad: Uint8Array): Promise<Uint8Array> {
     const subtle = this.requireSubtle();
-    const cryptoKey = await subtle.importKey('raw', key, { name: 'AES-GCM', length: 256 }, false, [
-      'encrypt',
-      'decrypt',
-    ]);
+    const cryptoKey = await this.getAesCryptoKey(subtle, key);
     const merged = new Uint8Array(payload.ciphertext.length + payload.tag.length);
     merged.set(payload.ciphertext, 0);
     merged.set(payload.tag, payload.ciphertext.length);

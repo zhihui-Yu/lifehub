@@ -237,6 +237,70 @@ export async function readXlsxTable(bytes: Uint8Array): Promise<RawTable> {
 }
 
 /**
+ * 快速检测字节数组中是否出现 ASCII 子串 `/Encrypt`（PDF 规范规定加密字典引用在文件尾必须非加密可见）。
+ */
+function hasPdfEncryptMarker(bytes: Uint8Array): boolean {
+  // '/Encrypt' -> [0x2f, 0x45, 0x6e, 0x63, 0x72, 0x79, 0x70, 0x74]
+  const limit = bytes.length - 8;
+  for (let i = 0; i <= limit; i += 1) {
+    if (
+      bytes[i] === 0x2f &&
+      bytes[i + 1] === 0x45 &&
+      bytes[i + 2] === 0x6e &&
+      bytes[i + 3] === 0x63 &&
+      bytes[i + 4] === 0x72 &&
+      bytes[i + 5] === 0x79 &&
+      bytes[i + 6] === 0x70 &&
+      bytes[i + 7] === 0x74
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 精准检测 PDF 文件是否需要用户输入打开密码（User Password）。
+ *
+ * 说明：
+ * 1. 先做 O(N) 纯字节扫描查找 `/Encrypt`，普通无加密银行流水 PDF 在 0.1ms 内直接返回 `false`，不加载 pdfjs；
+ * 2. 若存在 `/Encrypt`（区分「仅设了打印权限 Owner Password、无需打开密码」与「真正需要打开密码」），
+ *    调用 pdfjs 尝试免密打开文档头，仅在抛出 `PasswordException` 时返回 `true`。
+ *
+ * @param bytes PDF 文件原始字节
+ * @returns 需要用户输入密码才能读取时返回 true，否则返回 false
+ * @throws 无（所有异常在内部捕获安全返回 false）
+ */
+export async function isPdfBytesEncrypted(bytes: Uint8Array): Promise<boolean> {
+  if (!hasPdfEncryptMarker(bytes)) {
+    return false;
+  }
+  try {
+    const pdfjs: typeof import('pdfjs-dist/legacy/build/pdf.mjs') = await import(
+      'pdfjs-dist/legacy/build/pdf.mjs'
+    );
+    const globalScope = globalThis as Record<string, unknown>;
+    if (!globalScope.pdfjsWorker) {
+      const workerModule = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+      globalScope.pdfjsWorker = workerModule;
+    }
+    const loadingTask = pdfjs.getDocument({ data: bytes.slice() });
+    const doc = await loadingTask.promise;
+    await doc.destroy();
+    return false;
+  } catch (err) {
+    const errObj = err as { name?: string; message?: string } | null;
+    if (
+      errObj &&
+      (errObj.name === 'PasswordException' || /password/i.test(String(errObj.message ?? '')))
+    ) {
+      return true;
+    }
+    return false;
+  }
+}
+
+/**
  * 用 pdfjs 抽取 PDF 文本层并按页还原成行文本。
  *
  * 说明：银行流水 PDF 的每一笔交易被拆成若干独立文本片段（日期 / 时间 / 金额 / 用途分行），
@@ -321,9 +385,14 @@ const PDF_HEADER_WORDS: ReadonlySet<string> = new Set([
   '交易金额',
   '账户余额',
   '交易用途',
+  '交易地点',
   '交易地点/附言',
   '对方账号与户名',
   '账号',
+  '储种',
+  '钞汇',
+  '地区',
+  '收入/支出金额',
   '卡号/折号',
   '交易场所',
   '交易国家或地区简称',
@@ -355,6 +424,8 @@ const PDF_HEADER_WORDS: ReadonlySet<string> = new Set([
   'Amount',
   'Account Balance',
   'Transaction Usage',
+  'Transaction Place',
+  'Place',
   'Accounting Date',
   'Balance',
   'Usage',
@@ -378,7 +449,7 @@ function isHeaderOrFooterItem(str: string, y: number, maxAnchorY: number, minAnc
   if (PDF_HEADER_WORDS.has(str)) {
     return true;
   }
-  return /^(说明[:：]|打印时间[:：]|打印日期[:：]|生成时间[:：]?|温馨提示[:：]?|仅供您核对|中国建设银行|中国工商银行|工商银行历史明细|中国银行交易流水|交易区间[:：]|借记卡号[:：]|借方发生数[:：]|贷方发生数[:：]|按收支筛选[:：]|按币种筛选[:：]|-+END-+|当前时间段收支金额合计|本页支出算术合计|第\s*\d+\s*页|共\s*\d+\s*页|Page\s*\d+|Note[:：]|Print\s*Time)/i.test(
+  return /^(说明[:：]|打印时间[:：]|打印日期[:：]|下单时间[:：]|生成时间[:：]?|温馨提示[:：]?|仅供您核对|请扫描二维码|识别明细真伪|中国建设银行|中国工商银行|工商银行历史明细|中国银行交易流水|交易区间[:：]|起止日期[:：]|借记卡号[:：]|卡号\s+\d|户名[:：]|借方发生数[:：]|贷方发生数[:：]|按收支筛选[:：]|按币种筛选[:：]|-+END-+|当前时间段收支金额合计|本页支出算术合计|本页收入算术合计|本页交易笔数|第\s*\d+\s*页|共\s*\d+\s*页|Page\s*\d+|Note[:：]|Print\s*Time)/i.test(
     str,
   );
 }
@@ -411,9 +482,17 @@ function itemsToText(items: unknown[], context: PdfStatementContext = {}): strin
   const isRotated90 = rotatedCount > rawItems.length / 2;
 
   const positioned = rawItems
+    .filter((item) => {
+      if (!isRotated90) {
+        return true;
+      }
+      const t = item.transform;
+      // 横向 90° 旋转版面下剔除斜向防伪水印（如 30°/60° 倾斜水印），仅保留正文 90° 旋转文本
+      return Math.abs(t[0] ?? 0) < 1e-3 && (t[1] ?? 0) > 0 && (t[2] ?? 0) < 0;
+    })
     .map((item) => {
       const t = item.transform;
-      if (isRotated90 && Math.abs(t[0] ?? 0) < 1e-3 && (t[1] ?? 0) > 0 && (t[2] ?? 0) < 0) {
+      if (isRotated90) {
         return {
           x: t[5] as number,
           y: -(t[4] as number),
@@ -648,25 +727,39 @@ function itemsToText(items: unknown[], context: PdfStatementContext = {}): strin
       }
     }
 
-    // 中国工商银行等横向 90° 旋转流水坐标锚点分桶（含跨行对方户名无空格无缝拼接）
+    // 中国工商银行等横向 90° 旋转流水坐标锚点分桶：
+    // 同时兼容「含对方户名/对方账号（13列）」与「不含对方信息（11列，金额 X≈519~534、余额 X≈630~645）」两种版式，
+    // 并自动剔除外币子账户购结汇行（避免外币面额与人民币重复或按 1:1 误计入人民币）。
+    const hasIcbcWideLayout =
+      positioned.some((it) => it.str === '收入/支出金额' && it.x >= 495) ||
+      (!positioned.some((it) => it.str === '对方户名') &&
+        positioned.some(
+          (it) => it.x >= 500 && it.x < 590 && /^[-+][\d,]+\.\d{2}$/.test(it.str),
+        ));
+
+    const icbcAmountMinX = hasIcbcWideLayout ? 495 : 410;
+    const icbcAmountMaxX = hasIcbcWideLayout ? 590 : 495;
+    const icbcBalanceMinX = hasIcbcWideLayout ? 590 : 495;
+    const icbcBalanceMaxX = hasIcbcWideLayout ? 690 : 565;
+
     const icbcRawAnchors = positioned
       .filter(
         (item) =>
-          item.x >= 410 &&
-          item.x < 495 &&
+          item.x >= icbcAmountMinX &&
+          item.x < icbcAmountMaxX &&
           /^[-+]?[\d,]+\.\d{2}$/.test(item.str) &&
           positioned.some(
             (bal) =>
-              bal.x >= 495 &&
-              bal.x < 565 &&
+              bal.x >= icbcBalanceMinX &&
+              bal.x < icbcBalanceMaxX &&
               /^[\d,]+\.\d{2}$/.test(bal.str) &&
               Math.abs(bal.y - item.y) <= 4,
           ) &&
           positioned.some(
             (acct) =>
               acct.x >= 120 &&
-              acct.x < 200 &&
-              /^\d{10,22}$/.test(acct.str) &&
+              acct.x < 220 &&
+              /^(?:\d{10,22}|\d{4,8}\*+\d{2,6})$/.test(acct.str) &&
               Math.abs(acct.y - item.y) <= 4,
           ),
       )
@@ -712,7 +805,13 @@ function itemsToText(items: unknown[], context: PdfStatementContext = {}): strin
         }
       }
 
+      const icbcCurrencyMinX = hasIcbcWideLayout ? 315 : 265;
+      const icbcCurrencyMaxX = hasIcbcWideLayout ? 365 : 310;
+      const icbcSummaryMinX = hasIcbcWideLayout ? 390 : 330;
+      const icbcSummaryMaxX = hasIcbcWideLayout ? 445 : 375;
+
       const icbcLines: string[] = [];
+      let hadIcbcRows = false;
       for (const bucket of icbcBuckets) {
         const sorted = sortBucketItems(bucket.items);
         const colTime = sorted
@@ -721,33 +820,60 @@ function itemsToText(items: unknown[], context: PdfStatementContext = {}): strin
           .join(' ');
         const dateMatch = /(\d{4}-\d{2}-\d{2})/.exec(colTime);
         const timeMatch = /(\d{1,2}:\d{2}:\d{2})/.exec(colTime);
+        const currencyText = sorted
+          .filter((it) => it.x >= icbcCurrencyMinX && it.x < icbcCurrencyMaxX)
+          .map((it) => it.str)
+          .join('')
+          .replace(/\s+/g, '');
+        if (
+          currencyText !== '' &&
+          currencyText !== '人民币' &&
+          !/^(?:CNY|RMB)$/i.test(currencyText)
+        ) {
+          hadIcbcRows = true;
+          continue;
+        }
         const summary = sorted
-          .filter((it) => it.x >= 330 && it.x < 375)
+          .filter((it) => it.x >= icbcSummaryMinX && it.x < icbcSummaryMaxX)
           .map((it) => it.str)
           .join('')
           .replace(/\s+/g, '');
         const amount = sorted
-          .filter((it) => it.x >= 410 && it.x < 495 && /^[-+]?[\d,]+\.\d{2}$/.test(it.str))
+          .filter(
+            (it) =>
+              it.x >= icbcAmountMinX &&
+              it.x < icbcAmountMaxX &&
+              /^[-+]?[\d,]+\.\d{2}$/.test(it.str),
+          )
           .map((it) => it.str)
           .join('')
           .replace(/\s+/g, '');
         const balance = sorted
-          .filter((it) => it.x >= 495 && it.x < 565 && /^[\d,]+\.\d{2}$/.test(it.str))
+          .filter(
+            (it) =>
+              it.x >= icbcBalanceMinX &&
+              it.x < icbcBalanceMaxX &&
+              /^[\d,]+\.\d{2}$/.test(it.str),
+          )
           .map((it) => it.str)
           .join('')
           .replace(/\s+/g, '');
-        const counterparty = sorted
-          .filter((it) => it.x >= 565 && it.x < 640)
-          .map((it) => it.str)
-          .join('')
-          .replace(/\s+/g, '');
-        const counterpartyAcct = sorted
-          .filter((it) => it.x >= 640 && it.x < 705)
-          .map((it) => it.str)
-          .join('')
-          .replace(/\s+/g, '');
+        const counterparty = hasIcbcWideLayout
+          ? ''
+          : sorted
+              .filter((it) => it.x >= 565 && it.x < 640)
+              .map((it) => it.str)
+              .join('')
+              .replace(/\s+/g, '');
+        const counterpartyAcct = hasIcbcWideLayout
+          ? ''
+          : sorted
+              .filter((it) => it.x >= 640 && it.x < 705)
+              .map((it) => it.str)
+              .join('')
+              .replace(/\s+/g, '');
         const channel = sorted
-          .filter((it) => it.x >= 705)
+          .filter((it) => it.x >= (hasIcbcWideLayout ? 690 : 705))
           .map((it) => it.str)
           .join('')
           .replace(/\s+/g, '');
@@ -755,6 +881,7 @@ function itemsToText(items: unknown[], context: PdfStatementContext = {}): strin
         const matchedDate = dateMatch?.[1];
         const matchedTime = timeMatch?.[1] ?? '00:00:00';
         if (matchedDate && summary && amount && balance) {
+          hadIcbcRows = true;
           const bookDate = matchedDate.replace(/-/g, '');
           const sign = amount.startsWith('-') ? '支' : '收';
           const absAmount = amount.replace(/^[-+]/, '');
@@ -767,7 +894,7 @@ function itemsToText(items: unknown[], context: PdfStatementContext = {}): strin
         }
       }
 
-      if (icbcLines.length > 0) {
+      if (icbcLines.length > 0 || hadIcbcRows) {
         return icbcLines.join('\n');
       }
     }

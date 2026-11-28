@@ -168,6 +168,61 @@ describe('buildImportSource · PDF 路由（pdfjs 替身）', () => {
       mockPdfPages = DEFAULT_MOCK_PDF_PAGES;
     }
   });
+
+  it('工商银行 11 列无对方信息横向 PDF：90° 旋转还原、斜向防伪水印过滤且自动跳过外币子账户购结汇行', async () => {
+    mockPdfPages = [
+      [
+        // 30° 倾斜防伪水印（应被剔除）
+        {
+          str: '中国工商银行 0000 2026-10-01 09:00:00 DEMO',
+          transform: [-10, 17.32, -17.32, -10, 298.12, 36.67],
+        },
+        // 表头行（transform = [0, 7, -7, 0, -y, x]）
+        { str: '交易日期', transform: [0, 7, -7, 0, 63.01, 100.73] },
+        { str: '账号', transform: [0, 7, -7, 0, 63.01, 187.09] },
+        { str: '币种', transform: [0, 7, -7, 0, 63.01, 337.69] },
+        { str: '钞汇', transform: [0, 7, -7, 0, 63.01, 373.3] },
+        { str: '摘要', transform: [0, 7, -7, 0, 63.01, 414] },
+        { str: '地区', transform: [0, 7, -7, 0, 63.01, 459.79] },
+        { str: '收入/支出金额', transform: [0, 7, -7, 0, 63.01, 519.34] },
+        { str: '余额', transform: [0, 7, -7, 0, 63.01, 644.98] },
+        { str: '渠道', transform: [0, 7, -7, 0, 63.01, 725.36] },
+        // 第 1 笔：人民币正常消费支出
+        { str: '2026-10-05', transform: [0, 7, -7, 0, 77.51, 97.23] },
+        { str: '12:30:00', transform: [0, 7, -7, 0, 84.51, 100.73] },
+        { str: '6200000000000001234', transform: [0, 7, -7, 0, 81.01, 160.84] },
+        { str: '人民币', transform: [0, 7, -7, 0, 81.01, 334.19] },
+        { str: '钞', transform: [0, 7, -7, 0, 81.01, 376.8] },
+        { str: '无卡支付', transform: [0, 7, -7, 0, 81.01, 407] },
+        { str: '0200', transform: [0, 7, -7, 0, 81.01, 459.79] },
+        { str: '-88.50', transform: [0, 7, -7, 0, 81.01, 529.84] },
+        { str: '1,200.00', transform: [0, 7, -7, 0, 81.01, 637.98] },
+        { str: '网上银行', transform: [0, 7, -7, 0, 81.01, 718.36] },
+        // 第 2 笔：日元子账户购汇入账（外币面额应被跳过，避免按人民币重复或放大计入）
+        { str: '2026-10-06', transform: [0, 7, -7, 0, 95.51, 97.23] },
+        { str: '15:00:00', transform: [0, 7, -7, 0, 102.51, 100.73] },
+        { str: '6200000000000001234', transform: [0, 7, -7, 0, 99.01, 160.84] },
+        { str: '日元', transform: [0, 7, -7, 0, 99.01, 337.69] },
+        { str: '汇', transform: [0, 7, -7, 0, 99.01, 376.8] },
+        { str: '个人购汇', transform: [0, 7, -7, 0, 99.01, 407] },
+        { str: '0200', transform: [0, 7, -7, 0, 99.01, 459.79] },
+        { str: '+20,000.00', transform: [0, 7, -7, 0, 99.01, 524.59] },
+        { str: '20,000.00', transform: [0, 7, -7, 0, 99.01, 630.98] },
+        { str: '手机银行', transform: [0, 7, -7, 0, 99.01, 718.36] },
+      ],
+    ];
+    try {
+      const bytes = new Uint8Array([1, 2, 3]);
+      const source = await buildImportSource(fakeFile('工商银行历史明细.pdf'), bytes);
+      expect(source.format).toBe('pdf');
+      expect(source.text).toContain('12:30:00 20261005 无卡支付 支 88.50 1,200.00');
+      expect(source.text).toContain('网上银行');
+      expect(source.text).not.toContain('20,000.00');
+      expect(source.text).not.toContain('DEMO');
+    } finally {
+      mockPdfPages = DEFAULT_MOCK_PDF_PAGES;
+    }
+  });
 });
 
 describe('buildImportSource · JSON 路由与 parseJsonBillTable', () => {

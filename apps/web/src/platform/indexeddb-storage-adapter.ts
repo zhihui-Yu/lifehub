@@ -118,18 +118,45 @@ export class DexieStorageAdapter implements StorageAdapter {
     const orderColumn = filter?.orderBy?.column;
     const direction = filter?.orderBy?.direction === 'desc' ? 'desc' : 'asc';
 
-    // 排序：优先使用与 entityType 组合的复合索引（[entityType+localDate] 等）。
-    let collection: RecordCollection;
-    if (orderColumn && COMPOUND_INDEX_COLUMNS.includes(orderColumn)) {
-      const index = this.db.records.orderBy(`[entityType+${orderColumn}]` as never) as unknown as CompoundIndexLike;
-      collection = index.equals(entityType);
-      if (direction === 'desc') {
-        collection = collection.reverse();
+    const hasDateRangeFilter =
+      filter?.localDateFrom !== undefined || filter?.localDateTo !== undefined;
+
+    // 排序与区间裁剪：当查询带 localDate 闭区间且无需按其他列排序时，直接命中 `[entityType+localDate]` B-Tree 区间索引，避免全表反序列化扫描。
+    let collection: RecordCollection | null = null;
+    let usedCompoundDateRange = false;
+    if (hasDateRangeFilter && (!orderColumn || orderColumn === 'localDate')) {
+      try {
+        const whereClause = this.db.records.where('[entityType+localDate]');
+        if (whereClause && typeof whereClause.between === 'function') {
+          const fromKey = filter?.localDateFrom ?? '';
+          const toKey = filter?.localDateTo ?? '\uffff';
+          let ranged = whereClause.between([entityType, fromKey], [entityType, toKey], true, true);
+          if (orderColumn === 'localDate' && direction === 'desc') {
+            ranged = ranged.reverse();
+          }
+          collection = ranged;
+          usedCompoundDateRange = true;
+        }
+      } catch {
+        collection = null;
+        usedCompoundDateRange = false;
       }
-    } else {
-      // 没有对应复合索引的列（如 createdAt / version / deviceId）走主索引查询，
-      // 排序交由上层在内存中完成（这些列不是列表页的默认排序键）。
-      collection = this.db.records.where('entityType').equals(entityType);
+    }
+
+    if (!collection) {
+      if (orderColumn && COMPOUND_INDEX_COLUMNS.includes(orderColumn)) {
+        const index = this.db.records.orderBy(
+          `[entityType+${orderColumn}]` as never,
+        ) as unknown as CompoundIndexLike;
+        collection = index.equals(entityType);
+        if (direction === 'desc') {
+          collection = collection.reverse();
+        }
+      } else {
+        // 没有对应复合索引的列（如 createdAt / version / deviceId）走主索引查询，
+        // 排序交由上层在内存中完成（这些列不是列表页的默认排序键）。
+        collection = this.db.records.where('entityType').equals(entityType);
+      }
     }
 
     // 等值条件：只允许索引明文列。
@@ -152,14 +179,16 @@ export class DexieStorageAdapter implements StorageAdapter {
       }
     }
 
-    // localDate 闭区间。
-    if (filter?.localDateFrom !== undefined) {
-      const from = filter.localDateFrom;
-      predicates.push((record) => record.localDate !== null && record.localDate >= from);
-    }
-    if (filter?.localDateTo !== undefined) {
-      const to = filter.localDateTo;
-      predicates.push((record) => record.localDate !== null && record.localDate <= to);
+    // localDate 闭区间（若已走 [entityType+localDate] B-Tree 范围裁剪，则无需重复挂载 JS 过滤谓词）。
+    if (!usedCompoundDateRange) {
+      if (filter?.localDateFrom !== undefined) {
+        const from = filter.localDateFrom;
+        predicates.push((record) => record.localDate !== null && record.localDate >= from);
+      }
+      if (filter?.localDateTo !== undefined) {
+        const to = filter.localDateTo;
+        predicates.push((record) => record.localDate !== null && record.localDate <= to);
+      }
     }
 
     if (predicates.length > 0) {

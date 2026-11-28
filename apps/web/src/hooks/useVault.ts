@@ -37,6 +37,9 @@ export interface UseVaultResult {
   lock: () => void;
 }
 
+/** 模块级已打开运行时缓存（避免切换 Tab 时每个页面与子 Hook 重复初始化 IndexedDB 与空态重渲染）。 */
+let cachedPlatformRuntime: PlatformRuntime | null = null;
+
 /**
  * 初始化保险库会话。
  *
@@ -56,24 +59,31 @@ export function useVault(): UseVaultResult {
 
   const [error, setError] = useState<string | null>(null);
   const [recoveryBundle, setRecoveryBundle] = useState<RecoveryBundle | null>(null);
-  const [runtime, setRuntime] = useState<PlatformRuntime | null>(null);
+  const [runtime, setRuntime] = useState<PlatformRuntime | null>(() =>
+    useVaultStore.getState().status !== 'uninitialized' ? cachedPlatformRuntime : null,
+  );
 
   // 首次挂载时打开数据库并探测保险库是否已存在。
   useEffect(() => {
     let cancelled = false;
+    const isFreshBoot = useVaultStore.getState().status === 'uninitialized';
+    if (isFreshBoot) {
+      cachedPlatformRuntime = null;
+    }
     if (!useSettingsStore.getState().securityEnabled && !dekProvider.isUnlocked()) {
       const defaultDek = new Uint8Array(32).fill(7);
       dekProvider.unlock(defaultDek, 1);
       setUnlocked(defaultDek, 1);
     }
     void (async () => {
-      const platform = createPlatformRuntime(dekProvider);
+      const platform = cachedPlatformRuntime ?? createPlatformRuntime(dekProvider);
       try {
         await platform.storageAdapter.open();
         const created = await platform.vaultRepository.load();
         if (cancelled) {
           return;
         }
+        cachedPlatformRuntime = platform;
         setRuntime(platform);
         if (!useSettingsStore.getState().securityEnabled) {
           if (!dekProvider.isUnlocked()) {

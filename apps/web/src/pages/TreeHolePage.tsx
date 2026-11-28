@@ -73,8 +73,8 @@ export function TreeHolePage() {
   const [searchKeyword, setSearchKeyword] = useState('');
   const [moodFilter, setMoodFilter] = useState<string>('');
 
-  // 列表与反馈状态
-  const [entries, setEntries] = useState<DecryptedDiaryEntry[]>([]);
+  // 列表与反馈状态（全量解密缓存在内存，检索与心情筛选零 I/O 实时派生）
+  const [allEntries, setAllEntries] = useState<DecryptedDiaryEntry[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [bannerMsg, setBannerMsg] = useState<string | null>(null);
 
@@ -87,20 +87,37 @@ export function TreeHolePage() {
 
   const reloadEntries = useCallback(async () => {
     try {
-      const list = await service.listEntries({
-        keyword: searchKeyword,
-        mood: moodFilter || undefined,
-      });
-      setEntries(list);
+      const list = await service.listEntries();
+      setAllEntries(list);
       setErrorMsg(null);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : '加载树洞记录失败');
     }
-  }, [moodFilter, searchKeyword, service]);
+  }, [service]);
 
   useEffect(() => {
     void reloadEntries();
   }, [reloadEntries]);
+
+  const entries = useMemo(() => {
+    const kw = searchKeyword.trim().toLowerCase();
+    const mood = moodFilter.trim();
+    if (!kw && !mood) {
+      return allEntries;
+    }
+    return allEntries.filter((entry) => {
+      if (mood && entry.mood !== mood) {
+        return false;
+      }
+      if (kw) {
+        const haystack = `${entry.title}\n${entry.body}\n${entry.tags.join(' ')}\n${entry.mood ?? ''}`.toLowerCase();
+        if (!haystack.includes(kw)) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [allEntries, moodFilter, searchKeyword]);
 
   const handleCreateEntry = async () => {
     try {

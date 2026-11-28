@@ -344,6 +344,71 @@ async function decryptWinZipAes(
 }
 
 /**
+ * 快速检测 ZIP 压缩包字节流是否包含受密码保护的账单条目（无需解压载荷，< 0.2ms）。
+ *
+ * 说明：扫描 Central Directory（回退扫描起始 Local File Header）中的通用位标志 `flags & 0x0001`
+ * 或 WinZip AES 压缩方法 `99`，使批量导入界面仅对真正加密的压缩包渲染密码输入框。
+ *
+ * @param zipBytes ZIP 压缩包原始字节数组
+ * @returns 若压缩包需要密码解密返回 true，否则返回 false
+ * @throws 无（纯字节探测函数不抛出异常）
+ */
+export function isZipBytesEncrypted(zipBytes: Uint8Array): boolean {
+  if (zipBytes.byteLength < 22) {
+    return false;
+  }
+  const view = new DataView(zipBytes.buffer, zipBytes.byteOffset, zipBytes.byteLength);
+
+  let eocdOffset = -1;
+  const minEocdOffset = Math.max(0, zipBytes.byteLength - 65557);
+  for (let pos = zipBytes.byteLength - 22; pos >= minEocdOffset; pos -= 1) {
+    if (view.getUint32(pos, true) === 0x06054b50) {
+      eocdOffset = pos;
+      break;
+    }
+  }
+
+  if (eocdOffset >= 0) {
+    const totalEntries = view.getUint16(eocdOffset + 10, true);
+    const cdSize = view.getUint32(eocdOffset + 12, true);
+    const cdOffset = view.getUint32(eocdOffset + 16, true);
+    if (cdOffset + cdSize <= zipBytes.byteLength) {
+      let ptr = cdOffset;
+      for (let idx = 0; idx < totalEntries && ptr + 46 <= cdOffset + cdSize; idx += 1) {
+        if (view.getUint32(ptr, true) !== 0x02014b50) {
+          break;
+        }
+        const flags = view.getUint16(ptr + 8, true);
+        const method = view.getUint16(ptr + 10, true);
+        const fileNameLen = view.getUint16(ptr + 28, true);
+        const extraLen = view.getUint16(ptr + 30, true);
+        const commentLen = view.getUint16(ptr + 32, true);
+        const nameEnd = ptr + 46 + fileNameLen;
+        if (nameEnd <= zipBytes.byteLength) {
+          const entryName = decodeZipFileName(
+            zipBytes.subarray(ptr + 46, nameEnd),
+            (flags & 0x0800) !== 0,
+          );
+          if (isSupportedInnerBillFileName(entryName) && ((flags & 0x0001) !== 0 || method === 99)) {
+            return true;
+          }
+        }
+        ptr = nameEnd + extraLen + commentLen;
+      }
+      return false;
+    }
+  }
+
+  // 兜底检查首个 Local File Header (0x04034b50)
+  if (zipBytes.byteLength >= 30 && view.getUint32(0, true) === 0x04034b50) {
+    const flags = view.getUint16(6, true);
+    const method = view.getUint16(8, true);
+    return (flags & 0x0001) !== 0 || method === 99;
+  }
+  return false;
+}
+
+/**
  * 从 ZIP 压缩包字节中解密并解压出所有受支持的账单文件。
  *
  * 说明：

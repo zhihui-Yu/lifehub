@@ -175,8 +175,84 @@ describe('Module E —— X-14 脱敏管线与 Prompt 构造器安全断言', ()
     expect(fullPrompt).toContain('50–100 元');
     expect(fullPrompt).toContain('100–500 元');
     expect(fullPrompt).toContain('2026-10');
+    // 验证全量分类金额权重占比、粗化收支体量区间、月度趋势与高频商户画像已完整纳入
+    expect(fullPrompt).toContain('总支出约 300–400 元');
+    expect(fullPrompt).toContain('交通出行: 1 笔 | 占总支出 79% | 粗化累计 200–300 元');
+    expect(fullPrompt).toContain('餐饮美食: 1 笔 | 占总支出 21% | 粗化累计 50–100 元');
+    expect(fullPrompt).toContain('按月收支趋势全表（100% 月份覆盖）');
+    expect(fullPrompt).toContain('高支出占比 / 高频匿名商户 Top 15');
     expect(fullPrompt).toContain('喝水（定量·ml）：打卡 10 天 | 周期累计总量 18500 ml | 打卡日均 1850 ml/天');
     expect(fullPrompt).toContain('跑步（定量·km）：打卡 5 天 | 周期累计总量 16.5 km | 打卡日均 3.3 km/天');
+  });
+
+  it('专项分析模式严格切分数据边界：财务分析仅发送账单模块，绝不混发课表、习惯或树洞数据', () => {
+    const redacted = redactBillsForAi(makeSampleBills());
+    const fullContext = {
+      redactedBills: redacted,
+      scheduleStats: {
+        weekExpected: 10,
+        weekCompleted: 8,
+        weekRate: 80,
+        monthExpected: 40,
+        monthCompleted: 32,
+        monthRate: 80,
+      },
+      habitStats: {
+        activeHabitCount: 2,
+        habitCompletedCount: 10,
+        scheduleCompletedCount: 8,
+        combinedCompletedCount: 18,
+        maxCurrentStreak: 5,
+        maxLongestStreak: 9,
+      },
+      diaryStats: {
+        selectedCount: 1,
+        sanitizedCharLength: 20,
+        moodDistribution: { 平静: 1 },
+        tagDistribution: { 思考: 1 },
+        monthlyCountDistribution: { '2026-10': 1 },
+        items: [
+          {
+            yearMonth: '2026-10',
+            moodLabel: '平静',
+            tags: ['思考'],
+            sanitizedExcerpt: '今天复盘了工作节奏',
+          },
+        ],
+      },
+    };
+
+    const financePrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'finance' }).userPrompt;
+    expect(financePrompt).toContain('脱敏账单全量结构摘要');
+    expect(financePrompt).not.toContain('生活课表执行情况');
+    expect(financePrompt).not.toContain('微习惯打卡');
+    expect(financePrompt).not.toContain('树洞随笔');
+    expect(financePrompt).not.toContain('今天复盘了工作节奏');
+
+    const lifePrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'life' }).userPrompt;
+    expect(lifePrompt).toContain('生活课表执行情况');
+    expect(lifePrompt).not.toContain('脱敏账单全量结构摘要');
+    expect(lifePrompt).not.toContain('微习惯打卡');
+    expect(lifePrompt).not.toContain('树洞随笔');
+
+    const habitsPrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'habits' }).userPrompt;
+    expect(habitsPrompt).toContain('微习惯打卡');
+    expect(habitsPrompt).not.toContain('脱敏账单全量结构摘要');
+    expect(habitsPrompt).not.toContain('生活课表执行情况');
+    expect(habitsPrompt).not.toContain('课表 + 习惯合并完成事件总数');
+    expect(habitsPrompt).not.toContain('树洞随笔');
+
+    const personaPrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'persona' }).userPrompt;
+    expect(personaPrompt).toContain('树洞随笔');
+    expect(personaPrompt).not.toContain('脱敏账单全量结构摘要');
+    expect(personaPrompt).not.toContain('生活课表执行情况');
+    expect(personaPrompt).not.toContain('微习惯打卡');
+
+    const compPrompt = buildLifeReviewPrompt({ ...fullContext, topic: 'comprehensive' }).userPrompt;
+    expect(compPrompt).toContain('脱敏账单全量结构摘要');
+    expect(compPrompt).toContain('生活课表执行情况');
+    expect(compPrompt).toContain('微习惯打卡');
+    expect(compPrompt).toContain('树洞随笔');
   });
 });
 
@@ -253,6 +329,59 @@ describe('Module E —— E-01 API Key 本地 AES-GCM 加密存储与 E-04 / X-1
         prompt: '违规塞入的明文 Prompt',
       }),
     ).toThrow(/违反 X-13 红线/);
+  });
+
+  it('流式 SSE 增量输出实时回调思考过程（reasoning_content）与最终正文，不再长时间空白等待', async () => {
+    const db = fakeDbHolder.db as LifeHubDatabase;
+    const storage = new AiStorageService(db);
+    await storage.saveConfig({
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-flash',
+      thinkingEnabled: true,
+      apiKey: 'sk-stream-test-key',
+    });
+
+    const sseLines = [
+      'data: {"choices":[{"delta":{"reasoning_content":"先核对月度支出占比，"}}]}\n\n',
+      'data: {"choices":[{"delta":{"reasoning_content":"发现交通与餐饮占大头。"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":"> 💡 **核心洞察**：支出结构清晰。\\n\\n## 🎯 建议\\n- 控制高频项目"}}],"usage":{"prompt_tokens":95,"completion_tokens":45,"total_tokens":140}}\n\n',
+      'data: [DONE]\n\n',
+    ];
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of sseLines) {
+          controller.enqueue(encoder.encode(chunk));
+        }
+        controller.close();
+      },
+    });
+
+    const streamSnapshots: string[] = [];
+    const mockStreamFetch = vi.fn().mockResolvedValue(
+      new Response(stream, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    );
+
+    const redacted = redactBillsForAi(makeSampleBills());
+    const builtPrompt = buildLifeReviewPrompt({ redactedBills: redacted, topic: 'finance' });
+
+    const res = await executeRemoteAiAnalysis(builtPrompt, {
+      storage,
+      fetchFn: mockStreamFetch as unknown as typeof fetch,
+      onStreamUpdate: (partial) => streamSnapshots.push(partial),
+    });
+
+    expect(streamSnapshots.length).toBeGreaterThanOrEqual(2);
+    expect(streamSnapshots[0]).toContain('💭 【正在深度思考…】');
+    expect(streamSnapshots[0]).toContain('先核对月度支出占比');
+    expect(res.replyText).toContain('💭 【深度思考过程】');
+    expect(res.replyText).toContain('发现交通与餐饮占大头');
+    expect(res.replyText).toContain('支出结构清晰');
+    expect(res.auditRecord.tokensUsed).toBe(140);
   });
 
   it('executeLocalSmartAnalysis 零网络生成本地复盘总结并记录 local 审计指标', async () => {

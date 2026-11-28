@@ -872,4 +872,118 @@ describe('BillsPage', () => {
     fireEvent.click(screen.getByTestId('back-to-bills-button'));
     expect(window.location.hash).toBe('#/bills');
   });
+
+  it('按日默认折叠秒开模式：首屏不触发全表 list() 解密且默认折叠全部日期，点击某日才调用 queryByLocalDateRange 按需读取明细，再次点击可收起', async () => {
+    const { setMemoryDailyBillIndex, clearDailyBillIndexCache } = await import(
+      '@/lib/bill-daily-index'
+    );
+    localStorage.setItem(NAIVE_TZ_MIGRATION_KEY, '1');
+
+    const nov28Bill = makeBill({
+      id: 'lazy-nov-28',
+      localDate: '2026-11-28',
+      occurredAt: '2026-11-28T09:00:00.000Z',
+      counterparty: '按需展开咖啡馆',
+      amountMinor: 2800,
+      direction: 'expense',
+    });
+    const nov27Bill = makeBill({
+      id: 'lazy-nov-27',
+      localDate: '2026-11-27',
+      occurredAt: '2026-11-27T18:00:00.000Z',
+      counterparty: '昨日超市',
+      amountMinor: 6600,
+      direction: 'expense',
+    });
+
+    const listSpy = vi.fn<() => Promise<Bill[]>>().mockResolvedValue([nov28Bill, nov27Bill]);
+    const queryByDateSpy = vi
+      .fn<(from: string, to: string) => Promise<Bill[]>>()
+      .mockImplementation(async (from, to) => {
+        return [nov28Bill, nov27Bill].filter((b) => b.localDate >= from && b.localDate <= to);
+      });
+
+    const origList = FAKE_RUNTIME.billRepository.list;
+    FAKE_RUNTIME.billRepository.list = listSpy;
+    (
+      FAKE_RUNTIME.billRepository as {
+        queryByLocalDateRange?: typeof queryByDateSpy;
+      }
+    ).queryByLocalDateRange = queryByDateSpy;
+    (
+      FAKE_RUNTIME as {
+        database?: {
+          records: {
+            where: (idx: string) => {
+              between: () => { keys: () => Promise<[string, string][]> };
+            };
+          };
+        };
+      }
+    ).database = {
+      records: {
+        where: () => ({
+          between: () => ({
+            keys: async () => [
+              ['bill', '2026-11-28'],
+              ['bill', '2026-11-27'],
+            ],
+          }),
+        }),
+      },
+    };
+    setMemoryDailyBillIndex(FAKE_RUNTIME, [
+      {
+        localDate: '2026-11-28',
+        count: 1,
+        incomeMinor: 0,
+        expenseMinor: 2800,
+        totalsReady: true,
+      },
+      {
+        localDate: '2026-11-27',
+        count: 1,
+        incomeMinor: 0,
+        expenseMinor: 6600,
+        totalsReady: true,
+      },
+    ]);
+
+    try {
+      render(<BillsPage />);
+
+      // 1. 首屏立即渲染两个折叠日期组头与总笔数，0 次全表 list() 调用，且未挂载任何明细列表
+      expect(await screen.findByTestId('bill-group-header-2026-11-28')).toBeInTheDocument();
+      expect(screen.getByTestId('bill-group-header-2026-11-27')).toBeInTheDocument();
+      expect(screen.getByText(/共 2 条账单/)).toBeInTheDocument();
+      expect(listSpy).not.toHaveBeenCalled();
+      expect(queryByDateSpy).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('bill-virtual-list')).not.toBeInTheDocument();
+      expect(screen.queryByText('按需展开咖啡馆')).not.toBeInTheDocument();
+
+      // 2. 点击 2026-11-28 组头 -> 仅按需读取 2026-11-28 当日账单并展开渲染，2026-11-27 仍保持折叠未读取
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('bill-group-header-2026-11-28'));
+      });
+      await waitFor(() => {
+        expect(queryByDateSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(queryByDateSpy).toHaveBeenCalledWith('2026-11-28', '2026-11-28');
+      expect(screen.getByText('按需展开咖啡馆')).toBeInTheDocument();
+      expect(screen.queryByText('昨日超市')).not.toBeInTheDocument();
+
+      // 3. 再次点击 2026-11-28 组头 -> 立即折叠收起明细节点
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('bill-group-header-2026-11-28'));
+      });
+      expect(screen.queryByText('按需展开咖啡馆')).not.toBeInTheDocument();
+      expect(listSpy).not.toHaveBeenCalled();
+    } finally {
+      clearDailyBillIndexCache();
+      FAKE_RUNTIME.billRepository.list = origList;
+      delete (FAKE_RUNTIME.billRepository as { queryByLocalDateRange?: typeof queryByDateSpy })
+        .queryByLocalDateRange;
+      delete (FAKE_RUNTIME as { database?: unknown }).database;
+    }
+  });
 });

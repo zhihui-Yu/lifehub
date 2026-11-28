@@ -16,6 +16,8 @@ import {
   recordCloudTombstone,
   resolveCloudEndpointTarget,
   restoreBillsFromCloud,
+  syncCloudPullSmart,
+  syncCloudUploadSmart,
   syncUploadWithRemoteMerge,
   testCloudConnection,
   uploadBillsToCloud,
@@ -577,5 +579,245 @@ describe('Emoji UTF-16 代理对无损压缩加密与历史受损快照自动自
     const restored = restoreBillsFromCloud(cosConfig, 'QuotaPass1');
     expect(restored.bills.map((b) => b.id)).toEqual(['new-bill-1', 'new-bill-2']);
     setItemSpy.mockRestore();
+  });
+
+  it('按月切分加密分片 + 内容哈希对比：无变动零重传、单月改动仅重传该月分片、且无缝兼容旧版单文件迁移', async () => {
+    const store = new Map<string, string>();
+    const responseQueue = new Map<string, string>();
+    const calls: Array<{ method: string; objectName: string }> = [];
+
+    g.LifeHubAndroid = {
+      startCloudHttpRequest(reqId, targetUrl, method, _headersJson, bodyText) {
+        const cleanUrl = targetUrl.split('?')[0] ?? targetUrl;
+        const objectName = cleanUrl.split('/').pop() ?? cleanUrl;
+        calls.push({ method, objectName });
+        if (method === 'GET') {
+          const existing = store.get(cleanUrl);
+          responseQueue.set(
+            reqId,
+            existing
+              ? JSON.stringify({ proxied: true, status: 200, body: existing })
+              : JSON.stringify({ proxied: true, status: 404, body: '<Error><Code>NoSuchKey</Code></Error>' }),
+          );
+        } else if (method === 'PUT') {
+          store.set(cleanUrl, bodyText);
+          responseQueue.set(reqId, JSON.stringify({ proxied: true, status: 200, body: '' }));
+        }
+        queueMicrotask(() => {
+          window.dispatchEvent(
+            new CustomEvent('lifehub:android-http-done', { detail: { requestId: reqId } }),
+          );
+        });
+      },
+      takeCloudHttpResponse(reqId) {
+        const val = responseQueue.get(reqId) ?? '';
+        responseQueue.delete(reqId);
+        return val;
+      },
+    };
+
+    const cosConfig: CloudStorageConfig = {
+      provider: 'tencent-cos',
+      endpoint: 'https://example-bucket-1250000000.cos.ap-guangzhou.myqcloud.com',
+      bucket: '',
+      accessKey: 'AKID_SHARD_TEST',
+      secretKey: 'SECRET_SHARD_TEST',
+      encryptUpload: true,
+    };
+
+    // 0. 预置一份旧版单文件 `lifehub-backup.json.enc` 到远端桶，验证首次同步自动合并升级为分片结构
+    uploadBillsToCloud(
+      cosConfig,
+      [
+        makeBill({
+          id: 'legacy-sep-1',
+          localDate: '2026-09-10',
+          occurredAt: '2026-09-10T08:00:00.000Z',
+          counterparty: '九月历史账单',
+          amountMinor: 1200,
+        }),
+      ],
+      'ShardPass#2026',
+    );
+    const legacySnapshotRaw = window.localStorage.getItem(CLOUD_SNAPSHOT_STORAGE_KEY) ?? '';
+    store.set(
+      'https://example-bucket-1250000000.cos.ap-guangzhou.myqcloud.com/lifehub-backup.json.enc',
+      legacySnapshotRaw,
+    );
+    window.localStorage.clear();
+    calls.length = 0;
+
+    // 1. 首次同步：本地有 10 月与 11 月账单，自动拉取合并旧版 9 月单文件，并生成 core + 09 + 10 + 11 四个分片及清单
+    const octBill = makeBill({
+      id: 'oct-1',
+      localDate: '2026-10-15',
+      occurredAt: '2026-10-15T09:00:00.000Z',
+      counterparty: '十月超市',
+      amountMinor: 5600,
+    });
+    const novBill1 = makeBill({
+      id: 'nov-1',
+      localDate: '2026-11-20',
+      occurredAt: '2026-11-20T10:00:00.000Z',
+      counterparty: '十一月午餐',
+      amountMinor: 2800,
+    });
+    const sync1 = await syncUploadWithRemoteMerge(
+      cosConfig,
+      emptyDataset({ bills: [octBill, novBill1] }),
+      'ShardPass#2026',
+    );
+    expect(sync1.mergedFromRemote).toBe(true);
+    expect(sync1.mergedDataset.bills).toHaveLength(3);
+    expect(sync1.totalShardCount).toBe(4); // core + 2026-09 + 2026-10 + 2026-11
+    expect(sync1.uploadedShardCount).toBe(4);
+    expect(sync1.skippedUnchangedUpload).toBe(false);
+
+    // 2. 数据完全未变时再次同步：仅 GET 清单比对哈希，0 次下载分片、0 次 PUT 重传！
+    calls.length = 0;
+    const sync2 = await syncUploadWithRemoteMerge(
+      cosConfig,
+      sync1.mergedDataset,
+      'ShardPass#2026',
+    );
+    expect(sync2.skippedUnchangedUpload).toBe(true);
+    expect(sync2.uploadedShardCount).toBe(0);
+    expect(sync2.downloadedShardCount).toBe(0);
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+    expect(calls.filter((c) => c.method === 'GET').map((c) => c.objectName)).toEqual([
+      'lifehub-sync-manifest.json.enc',
+    ]);
+
+    // 3. 仅在 2026-11 新增一笔账单：9月、10月与 core 分片均不下载也不重传，仅 PUT 2026-11 分片与清单！
+    calls.length = 0;
+    const novBill2 = makeBill({
+      id: 'nov-2',
+      localDate: '2026-11-28',
+      occurredAt: '2026-11-28T12:00:00.000Z',
+      counterparty: '十一月晚餐新增',
+      amountMinor: 4500,
+    });
+    const datasetWithNovAdd = emptyDataset({
+      bills: [...sync1.mergedDataset.bills, novBill2],
+    });
+    const sync3 = await syncUploadWithRemoteMerge(
+      cosConfig,
+      datasetWithNovAdd,
+      'ShardPass#2026',
+    );
+    expect(sync3.skippedUnchangedUpload).toBe(false);
+    expect(sync3.uploadedShardCount).toBe(1);
+    expect(sync3.downloadedShardCount).toBe(0);
+    const putObjects = calls.filter((c) => c.method === 'PUT').map((c) => c.objectName);
+    expect(putObjects).toEqual([
+      'lifehub-shard-bills-2026-11.json.enc',
+      'lifehub-sync-manifest.json.enc',
+    ]);
+    expect(putObjects).not.toContain('lifehub-shard-bills-2026-09.json.enc');
+    expect(putObjects).not.toContain('lifehub-shard-bills-2026-10.json.enc');
+    expect(putObjects).not.toContain('lifehub-shard-core.json.enc');
+
+    // 4. 验证按日懒加载模式下（内存 bills 为空），syncCloudUploadSmart 与 syncCloudPullSmart 0 次全表读取即可秒级跳过或仅按月读取差异！
+    calls.length = 0;
+    const loadAllSpy = vi.fn(async () => sync3.mergedDataset.bills);
+    const loadMonthSpy = vi.fn(async (month: string) =>
+      sync3.mergedDataset.bills.filter((b) => b.localDate.slice(0, 7) === month),
+    );
+    const smartUploadNoop = await syncCloudUploadSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => sync3.mergedDataset.bills.length,
+        loadMonthLocalBills: loadMonthSpy,
+        loadAllLocalBills: loadAllSpy,
+      },
+    );
+    expect(smartUploadNoop.skippedUnchangedUpload).toBe(true);
+    expect(smartUploadNoop.billsToPut).toHaveLength(0);
+    expect(loadAllSpy).not.toHaveBeenCalled();
+    expect(loadMonthSpy).not.toHaveBeenCalled();
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+
+    calls.length = 0;
+    const smartPullNoop = await syncCloudPullSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => sync3.mergedDataset.bills.length,
+        loadMonthLocalBills: loadMonthSpy,
+        loadAllLocalBills: loadAllSpy,
+      },
+    );
+    expect(smartPullNoop.unchanged).toBe(true);
+    expect(smartPullNoop.downloadedShardCount).toBe(0);
+    expect(smartPullNoop.billsToPut).toHaveLength(0);
+    expect(loadAllSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ method: 'GET', objectName: 'lifehub-sync-manifest.json.enc' }]);
+
+    // 5. 验证新设备空库拉取恢复时实时回调进度，且落盘后提交 syncedShards，二次拉取立即进入 0 下载快路！
+    window.localStorage.clear();
+    calls.length = 0;
+    const progressLogs: string[] = [];
+    const firstDeviceRestore = await syncCloudPullSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => 0,
+        loadMonthLocalBills: async () => [],
+        loadAllLocalBills: async () => [],
+      },
+      { onProgress: (msg) => progressLogs.push(msg) },
+    );
+    expect(firstDeviceRestore.unchanged).toBe(false);
+    expect(firstDeviceRestore.billsToPut).toHaveLength(4);
+    expect(progressLogs.some((m) => m.includes('正在连接云端读取分片清单'))).toBe(true);
+    expect(typeof firstDeviceRestore.commitSyncedStateAfterPersist).toBe('function');
+    firstDeviceRestore.commitSyncedStateAfterPersist?.();
+
+    calls.length = 0;
+    const secondPullAfterRestore = await syncCloudPullSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => 4,
+        loadMonthLocalBills: loadMonthSpy,
+        loadAllLocalBills: loadAllSpy,
+      },
+    );
+    expect(secondPullAfterRestore.unchanged).toBe(true);
+    expect(secondPullAfterRestore.downloadedShardCount).toBe(0);
+    expect(loadAllSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ method: 'GET', objectName: 'lifehub-sync-manifest.json.enc' }]);
+  });
+
+  it('大规模账单备份压缩与解压保持毫秒级线性吞吐且 100% 无损，彻底消除 V8 大字符串扁平化卡死', () => {
+    const manyBills = Array.from({ length: 3000 }, (_, idx) =>
+      makeBill({
+        id: `perf-bill-${String(idx).padStart(5, '0')}`,
+        localDate: `2026-10-${String((idx % 28) + 1).padStart(2, '0')}`,
+        occurredAt: `2026-10-${String((idx % 28) + 1).padStart(2, '0')}T08:30:00.000Z`,
+        counterparty: `高频餐饮商户_${idx % 120} 🍜`,
+        note: `工作餐支付明细 #${idx} ☕️`,
+        amountMinor: 1500 + (idx % 9000),
+      }),
+    );
+    const largeJson = JSON.stringify({
+      format: 'lifehub-cloud-shard-bills-v1',
+      month: '2026-10',
+      bills: manyBills,
+    });
+    const t0 = performance.now();
+    const compressed = compressBackupJson(largeJson);
+    const t1 = performance.now();
+    const restored = decompressBackupJson(compressed);
+    const t2 = performance.now();
+
+    expect(restored).toBe(largeJson);
+    expect(t1 - t0).toBeLessThan(1500);
+    expect(t2 - t1).toBeLessThan(500);
   });
 });

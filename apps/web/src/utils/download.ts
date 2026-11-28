@@ -311,6 +311,23 @@ export function getWebDirectoryHandleName(): string | null {
   return activeDirectoryHandle ? activeDirectoryHandle.name : null;
 }
 
+/** 记录每个自动快照目标最近一次落盘的内容指纹，避免内容未变化时重复全量写盘。 */
+const lastAutoSnapshotFingerprints = new Map<string, string>();
+let lastAndroidBridgeRef: unknown = null;
+
+function computeSnapshotContentHash(text: string): string {
+  // 忽略顶层易变时间戳字段，仅对实质业务数据内容计算快速 FNV-1a 64-bit 指纹
+  const canonical = text.replace(/"updatedAt"\s*:\s*"[^"]*"/, '"updatedAt":""');
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < canonical.length; i += 1) {
+    const ch = canonical.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ ((ch << 5) | (h1 >>> 27)), 0x85ebca6b) >>> 0;
+  }
+  return `${canonical.length}:${h1.toString(16)}:${h2.toString(16)}`;
+}
+
 /**
  * 当任意业务模块的数据发生增删改时，将该模块的数据文件（如 `lifehub-bills.json`、`lifehub-schedule.json`、`lifehub-habits.json`、`lifehub-treehole.json`、`lifehub-categories.json`）
  * 实时静默落盘至用户已配置的文件存储目录，同时同步更新全量快照 `lifehub-auto-snapshot.json`。
@@ -322,8 +339,20 @@ export function syncAutoSnapshotToStorageDir(
   snapshotJson: string,
   moduleFileName = 'lifehub-auto-snapshot.json',
 ): void {
+  const currentBridge = (globalThis as { LifeHubAndroid?: AndroidFileBridge }).LifeHubAndroid ?? null;
+  if (currentBridge !== lastAndroidBridgeRef) {
+    lastAndroidBridgeRef = currentBridge;
+    lastAutoSnapshotFingerprints.clear();
+  }
+  const contentHash = computeSnapshotContentHash(snapshotJson);
+
   const writeSingleFile = (targetName: string, text: string) => {
     const subDir = getStorageDirectory();
+    const dedupKey = `${subDir}::${targetName}`;
+    if (lastAutoSnapshotFingerprints.get(dedupKey) === contentHash) {
+      return;
+    }
+    lastAutoSnapshotFingerprints.set(dedupKey, contentHash);
 
     // 1. Android 原生容器：优先走静默接口（不弹 Toast、覆盖同名文件），旧版 APK 回退到 saveTextFile
     const bridge = (globalThis as { LifeHubAndroid?: AndroidFileBridge }).LifeHubAndroid;

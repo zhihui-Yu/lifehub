@@ -75,6 +75,8 @@ const INTERNAL_TRANSFER_KEYWORDS: readonly string[] = [
   '本金划转',
   '倒卡',
   '内转',
+  '数字人民币兑回',
+  '数字人民币兑出',
 ];
 
 /** 配对检测时的弱转账特征词（当同批次内出现同金额一收一支时辅助判定）。 */
@@ -97,6 +99,16 @@ const PAIR_TRANSFER_HINTS: readonly string[] = [
   '汇款',
   '划转',
 ];
+
+/** 预转小写的强特征词列表（避免万级账单循环内重复 toLowerCase）。 */
+const LOWER_INTERNAL_TRANSFER_KEYWORDS: readonly string[] = INTERNAL_TRANSFER_KEYWORDS.map((kw) =>
+  kw.toLowerCase(),
+);
+
+/** 预转小写的配对辅助特征词列表。 */
+const LOWER_PAIR_TRANSFER_HINTS: readonly string[] = PAIR_TRANSFER_HINTS.map((kw) =>
+  kw.toLowerCase(),
+);
 
 /**
  * 判断指定分类是否属于「内部转账」系统分类。
@@ -142,8 +154,8 @@ export function isInternalTransferBill(
   }
 
   const combined = `${bill.counterparty} ${bill.note}`.toLowerCase();
-  for (const kw of INTERNAL_TRANSFER_KEYWORDS) {
-    if (combined.includes(kw.toLowerCase())) {
+  for (const kw of LOWER_INTERNAL_TRANSFER_KEYWORDS) {
+    if (combined.includes(kw)) {
       return true;
     }
   }
@@ -180,7 +192,8 @@ export function detectTransferPairs(
   categoryMap?: ReadonlyMap<string, Category>,
 ): TransferPair[] {
   const expenses: Bill[] = [];
-  const incomes: Bill[] = [];
+  // 按「币种:金额(分)」建立哈希桶索引，将万级账单配对复杂度从 O(N²) 降至 O(N)
+  const incomesByAmountKey = new Map<string, Bill[]>();
 
   for (const bill of bills) {
     if (bill.amountMinor <= 0) {
@@ -196,7 +209,13 @@ export function detectTransferPairs(
     if (bill.direction === 'expense') {
       expenses.push(bill);
     } else if (bill.direction === 'income') {
-      incomes.push(bill);
+      const key = `${bill.currency}:${bill.amountMinor}`;
+      const bucket = incomesByAmountKey.get(key);
+      if (bucket) {
+        bucket.push(bill);
+      } else {
+        incomesByAmountKey.set(key, [bill]);
+      }
     }
   }
 
@@ -204,31 +223,37 @@ export function detectTransferPairs(
   const pairs: TransferPair[] = [];
 
   for (const exp of expenses) {
+    const candidates = incomesByAmountKey.get(`${exp.currency}:${exp.amountMinor}`);
+    if (!candidates || candidates.length === 0) {
+      continue;
+    }
     let bestIncome: Bill | null = null;
     let bestDayDiff = 999;
 
-    for (const inc of incomes) {
+    const expIsTransferCat = Boolean(
+      exp.categoryId && categoryMap && isTransferCategory(categoryMap.get(exp.categoryId)),
+    );
+
+    for (const inc of candidates) {
       if (usedIncomeIds.has(inc.id) || inc.id === exp.id) {
-        continue;
-      }
-      if (inc.amountMinor !== exp.amountMinor || inc.currency !== exp.currency) {
         continue;
       }
 
       let dayDiff = 999;
-      try {
-        dayDiff = Math.abs(diffDays(exp.localDate, inc.localDate));
-      } catch {
-        dayDiff = exp.localDate === inc.localDate ? 0 : 999;
+      if (exp.localDate === inc.localDate) {
+        dayDiff = 0;
+      } else {
+        try {
+          dayDiff = Math.abs(diffDays(exp.localDate, inc.localDate));
+        } catch {
+          dayDiff = 999;
+        }
       }
       if (dayDiff > 1) {
         continue;
       }
 
       // 如果两笔账单都已经归入「内部转账」分类，则无需再次作为待确认配对提示。
-      const expIsTransferCat = Boolean(
-        exp.categoryId && categoryMap && isTransferCategory(categoryMap.get(exp.categoryId)),
-      );
       const incIsTransferCat = Boolean(
         inc.categoryId && categoryMap && isTransferCategory(categoryMap.get(inc.categoryId)),
       );
@@ -238,9 +263,10 @@ export function detectTransferPairs(
 
       const crossFile = exp.sourceFileId !== inc.sourceFileId;
       const text = `${exp.counterparty} ${exp.note} ${inc.counterparty} ${inc.note}`.toLowerCase();
-      const hasTransferHint = PAIR_TRANSFER_HINTS.some((kw) => text.includes(kw.toLowerCase()));
+      const hasTransferHint =
+        crossFile || LOWER_PAIR_TRANSFER_HINTS.some((kw) => text.includes(kw));
 
-      if (!crossFile && !hasTransferHint) {
+      if (!hasTransferHint) {
         continue;
       }
 
@@ -298,8 +324,8 @@ export function inferSystemCategoryName(input: CategoryInferenceInput): string |
   }
 
   // 1. 优先识别内部转账 / 本人互转 / 信用卡还款 / 提现充值
-  for (const kw of INTERNAL_TRANSFER_KEYWORDS) {
-    if (combined.includes(kw.toLowerCase())) {
+  for (const kw of LOWER_INTERNAL_TRANSFER_KEYWORDS) {
+    if (combined.includes(kw)) {
       return '内部转账';
     }
   }

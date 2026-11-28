@@ -16,8 +16,8 @@ export const PROMPT_TEMPLATE_ID = 'lifehub-life-review-v1';
 /** AI 专项分析与互动对话主题类型。 */
 export type AiAnalysisTopic = 'comprehensive' | 'finance' | 'life' | 'habits' | 'persona';
 
-/** AI 分析数据时间段预设（最长支持近半年 6 个月）。 */
-export type AiTimeRangePreset = '7d' | '1m' | '3m' | '6m';
+/** AI 分析数据时间段预设（支持近 7 天至近 1 年及全量历史数据）。 */
+export type AiTimeRangePreset = '7d' | '1m' | '3m' | '6m' | '1y' | 'all';
 
 export const AI_TIME_RANGE_OPTIONS: ReadonlyArray<{
   value: AiTimeRangePreset;
@@ -28,6 +28,8 @@ export const AI_TIME_RANGE_OPTIONS: ReadonlyArray<{
   { value: '1m', label: '近 1 个月', days: 30 },
   { value: '3m', label: '近 3 个月', days: 90 },
   { value: '6m', label: '近半年', days: 180 },
+  { value: '1y', label: '近 1 年', days: 365 },
+  { value: 'all', label: '全部数据', days: 3650 },
 ];
 
 /** AI 多轮对话单条消息结构。 */
@@ -90,7 +92,7 @@ export const AI_TOPIC_META: Record<
     desc: '聚焦微习惯连续打卡、定量累计总量与防断签策略',
     starterQuestions: [
       '结合我各项习惯的打卡天数和累计总量（如饮水/运动量），有哪些优化建议？',
-      '怎样提高微习惯连续打卡天数，并把习惯和课表固定时段绑定起来？',
+      '怎样稳定提高微习惯连续打卡天数，降低精力不足日的断签率？',
     ],
   },
   persona: {
@@ -103,6 +105,20 @@ export const AI_TOPIC_META: Record<
     ],
   },
 };
+
+/** 单个课表时间块在所选周期内的执行明细。 */
+export interface AiScheduleSlotDetail {
+  /** 时间块标题（如「晨间英语」「力量训练」）。 */
+  title: string;
+  /** 时间区间 'HH:mm-HH:mm'。 */
+  timeWindow: string;
+  /** 所选周期内应执行次数。 */
+  expectedCount: number;
+  /** 所选周期内已完成次数。 */
+  completedCount: number;
+  /** 单项完成率（0..100）。 */
+  completionRate: number;
+}
 
 /**
  * 课表模块聚合指标摘要。
@@ -120,6 +136,14 @@ export interface AiScheduleSummaryInput {
   monthCompleted: number;
   /** 本月完成率（0..100）。 */
   monthRate: number;
+  /** 所选分析周期内应完成总时段数。 */
+  rangeExpected?: number;
+  /** 所选分析周期内已完成总时段数。 */
+  rangeCompleted?: number;
+  /** 所选分析周期整体完成率（0..100）。 */
+  rangeRate?: number;
+  /** 各课表时间块在所选周期内的具体执行率排行。 */
+  slotDetails?: readonly AiScheduleSlotDetail[];
 }
 
 /**
@@ -180,10 +204,12 @@ export interface AiPromptContext {
   diaryStats?: RedactedDiarySummary;
   /** 可选的专项分析主题（默认 'comprehensive'）。 */
   topic?: AiAnalysisTopic;
-  /** 分析数据覆盖的起始日期（YYYY-MM-DD，最长半年）。 */
+  /** 分析数据覆盖的起始日期（YYYY-MM-DD）。 */
   fromDate?: string;
   /** 分析数据覆盖的结束日期（YYYY-MM-DD）。 */
   toDate?: string;
+  /** 当所选短期窗口无账单时，是否已自动回退纳入历史全量账单供参考。 */
+  usedHistoricalBillsFallback?: boolean;
 }
 
 /**
@@ -242,40 +268,89 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 
   const topicRoleMap: Record<AiAnalysisTopic, string> = {
     comprehensive:
-      '请基于脱敏后的消费分桶结构、生活课表完成率、微习惯连续打卡与各习惯定量累计数据（如饮水量、运动里程等），以及用户脱敏后的树洞心情记录，输出简明、结构化的中文复盘建议，并回答用户的追问。',
+      '当前为【综合复盘】模式。必检关键信号（缺一不可）：① 财务总支/结余状态与 Top1 支出分类占比；② 课表整体完成率与最低效时段；③ 每个微习惯的打卡天数、累计总量与连续打卡差距；④ 树洞主导情绪与核心消耗/滋养点；⑤ 1~2 条跨模块联动发现（如忙碌疲惫是否引发冲动消费或断签），并给出跨模块协同的具体落地方法。',
     finance:
-      '你当前处于【财务分析专项】模式：请深度聚焦用户的脱敏收支分桶分布、消费分类结构、高频匿名商户特征与大额支出风险，提供可落地的预算控制与财务优化方案。',
+      '当前为【财务分析专项】模式（仅含账单模块）。必检关键信号（缺一不可）：① 总支出/总收入区间与结余（或超支）比例；② 支出占比 Top 3 分类（占比% + 粗化区间）；③ 月度收支走势拐点或异常冲高月；④ 高占比匿名商户集中度与 500 元以上中大额支出笔数风险；⑤ 针对头部分类与大额项给出具体可执行的省钱与预算控制方法（如频次封顶、日常平替、专户隔离、大额冷静期等）。',
     life:
-      '你当前处于【生活课表与时间分析专项】模式：请深度聚焦用户的周/月课表时间块完成率、作息密度与精力分配，给出具体的时间块重排与执行力提升建议。',
+      '当前为【课表节律专项】模式（仅含课表模块）。必检关键信号（缺一不可）：① 周期整体及本周/本月完成率对比（判断执行力走高或滑坡）；② 完成率最高的锚点时段 vs 完成率最低的拖后腿时段（必须点名具体时间块与完成率%）；③ 针对低效时段给出具体可操作的时间块改造方法（如微任务启动拆解、顺延绑定高完成率锚点时段、精力波峰错峰重排、块间缓冲留白等）。',
     habits:
-      '你当前处于【微习惯养成专项】模式：请深度聚焦用户的活跃微习惯、各习惯完成天数（每天完成计 1 次）、定量习惯的周期累计总量与打卡日均表现（如喝水 ml、跑步 km 是否达标或稳定）、连续打卡天数（Streak）与课表协同情况，给出科学的定量进阶与防断签方案。',
+      '当前为【习惯追踪专项】模式（仅含微习惯模块）。必检关键信号（缺一不可）：① 逐一覆盖全部活跃习惯（严禁漏掉任何一个习惯）的打卡天数、定量累计总量及打卡日均 vs 每日目标差距；② 当前连续打卡与历史最长的差距（锁定易断签习惯）；③ 针对每个薄弱习惯给出具体养成方法（如绑定起床/餐后等既有动作触发、正常日与加班疲惫日双档定量阶梯设计、断签后次日快速重启机制）。',
     persona:
-      '你当前处于【人物观察与树洞心理分析专项】模式：请深度聚焦用户主动勾选的树洞随笔、情绪标签、人际关系记录与未来规划，温和且深刻地剖析用户的情绪轨迹、关注的人物互动特征与内在需求。',
+      '当前为【树洞洞察专项】模式（仅含树洞模块）。必检关键信号（缺一不可）：① 主导情绪分布占比与跨月情绪变化趋势；② 高频 #标签 与反复出现的压力消耗源 vs 积极滋养源；③ 核心人际边界或内在需求提炼，并给出具体可操作的情绪调节与人际应对方法（如消耗型请求延迟回复法、睡前纸面卸载拆解法、高能量时段优先分配法）。',
   };
 
+  const privacyScopeLine =
+    topic === 'comprehensive' || topic === 'finance'
+      ? '数据已在本地完成隐私脱敏（金额已粗化为区间/占比、商户已泛化为代号、日期已粗化到月）。'
+      : '数据已在本地完成隐私脱敏与模块隔离（仅含当前所选专项数据）。';
+
   const systemPrompt = [
-    '你是 LifeHub 个人生活与财务复盘及深度对话顾问。',
-    '用户提供的数据已在本地经过严格隐私脱敏（金额已分桶、交易对手已泛化为匿名代号、日期已粗化到月份）。',
+    '你是 LifeHub 资深生活与财务实战顾问。风格准则：**现状诊断高度精炼不啰嗦，行动建议必须讲清「具体用什么方法做到」**。',
+    privacyScopeLine,
     topicRoleMap[topic],
     '',
-    '【输出排版规范（严格遵循 Markdown 结构化格式）】',
-    '1. 开头先用一段 `> 💡 **核心洞察**：...` 引用块总结最关键的 1~2 句结论；',
-    '2. 使用清晰的二级标题（如 `## 📊 现状诊断`、`## 🔍 关键发现`、`## 🎯 行动建议`）组织层次；',
-    '3. 涉及多维指标对比时，优先使用 Markdown 表格（`| 指标维度 | 当前状态 | 优化方向 |`）直观呈现；',
-    '4. 列表项请使用 `- **核心词**：具体说明` 的格式，重点数据或结论用 `**加粗**` 标注，保持排版清爽易读。',
+    '【输出结构与深度规范（严格执行）】',
+    '1. **零寒暄零废话，数据用表浓缩**：严禁开场客套、结尾套话及“理性消费/劳逸结合/保持好心态”等正确的废话；多维现状指标一律合并进 **1 张紧凑 Markdown 表格**（100% 覆盖上方必检信号，绝不漏项），不在正文中重复抄写数字。',
+    '2. **建议绝不能只写「做什么」，必须写透「怎么做到（具体方法）」**：',
+    '   - 严禁只抛出一句干瘪的目标口号（例如只写“压降餐饮15%”“缩短时段”“执行保底量”是不合格的！）；',
+    '   - 每一条行动建议必须包含三要素：**① 针对目标**（绑定具体异常数据） + **② 具体实操方法**（写出明确的执行抓手、触发时机、替代方案或拆解步骤，让人看完立刻知道下一步怎么操作） + **③ 突发阻力兜底**（加班/聚餐/疲惫时怎么灵活调整不断档）。',
+    '3. **篇幅与版式平衡**：',
+    '   - 完整复盘控制在 **420～650 字**（精炼有力且方法详实），固定三部分：`> 💡 **核心诊断**：...`（1~2 句点破核心症结） → `## 📊 关键信号`（紧凑表格 + 1~2 条关键趋势/异常点） → `## 🎯 行动方案与落地方法`（2~4 条，每条用加粗小标题 + 具体实操步骤展开）；',
+    '   - 若用户提出具体问题/追问，控制在 **220～400 字**，直接给出核心判断 + 数据依据 + 2~3 个具体可落地的操作方法。',
   ].join('\n');
 
-  const bucketLines = Object.entries(redactedBills.bucketDistribution)
-    .map(([bucket, count]) => `  - ${bucket}: ${count} 笔`)
-    .join('\n');
+  const expenseBucketLines = Object.entries(redactedBills.expenseBucketDistribution)
+    .map(([bucket, count]) => `${bucket}: ${count}笔`)
+    .join(' | ');
+  const incomeBucketLines = Object.entries(redactedBills.incomeBucketDistribution)
+    .filter(([, count]) => count > 0)
+    .map(([bucket, count]) => `${bucket}: ${count}笔`)
+    .join(' | ');
 
-  const categoryLines =
-    Object.entries(redactedBills.categoryDistribution)
-      .sort((a, b) => b[1] - a[1])
-      .map(([cat, count]) => `  - ${cat}: ${count} 笔`)
-      .join('\n') || '  - 暂无分类数据';
+  const expenseCategoryLines =
+    redactedBills.expenseCategoryStats.length > 0
+      ? redactedBills.expenseCategoryStats
+          .map(
+            (c) =>
+              `  - ${c.categoryName}: ${c.count} 笔 | 占总支出 ${c.amountSharePercent}% | 粗化累计 ${c.amountRange}（主力区间 ${c.dominantBucket}）`,
+          )
+          .join('\n')
+      : Object.entries(redactedBills.categoryDistribution)
+          .sort((a, b) => b[1] - a[1])
+          .map(([cat, count]) => `  - ${cat}: ${count} 笔`)
+          .join('\n') || '  - 暂无分类数据';
 
-  const sampleItems = redactedBills.items.slice(0, 20);
+  const incomeCategoryLines =
+    redactedBills.incomeCategoryStats.length > 0
+      ? redactedBills.incomeCategoryStats
+          .map(
+            (c) =>
+              `  - ${c.categoryName}: ${c.count} 笔 | 占总收入 ${c.amountSharePercent}% | 粗化累计 ${c.amountRange}`,
+          )
+          .join('\n')
+      : '';
+
+  const monthlyTrendLines =
+    redactedBills.monthlyStats.length > 0
+      ? redactedBills.monthlyStats
+          .map(
+            (m) =>
+              `  - [${m.yearMonth}] 支出 ${m.expenseCount} 笔（${m.expenseRange}） | 收入 ${m.incomeCount} 笔（${m.incomeRange}） | ${m.balanceStatus}${m.topExpenseCategories.length > 0 ? ` | 主要支出分类: ${m.topExpenseCategories.join('、')}` : ''}`,
+          )
+          .join('\n')
+      : '  - 暂无月度收支记录';
+
+  const topMerchantLines =
+    redactedBills.topMerchants.length > 0
+      ? redactedBills.topMerchants
+          .map(
+            (mer) =>
+              `  - ${mer.merchantAlias}（主分类:${mer.primaryCategory}）: 支出 ${mer.expenseCount} 笔 | 占总支出 ${mer.expenseSharePercent}%（${mer.expenseRange}）`,
+          )
+          .join('\n')
+      : '  - 暂无高频匿名商户统计';
+
+  const sampleItems = redactedBills.items.slice(0, 36);
   const sampleLines =
     sampleItems.length > 0
       ? sampleItems
@@ -286,11 +361,28 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
           .join('\n')
       : '  （暂无账单样本）';
 
+  const scheduleSlotLines =
+    scheduleStats?.slotDetails && scheduleStats.slotDetails.length > 0
+      ? [
+          '- 各课表时间块在所选周期内的执行率明细（全量覆盖）：',
+          ...scheduleStats.slotDetails.map(
+            (s) =>
+              `  * ${s.title}（${s.timeWindow}）：已完成 ${s.completedCount}/${s.expectedCount} 次（完成率 ${s.completionRate}%）`,
+          ),
+        ]
+      : [];
+
   const scheduleSection = scheduleStats
     ? [
-        '【生活课表执行情况（模块 B）】',
+        '【生活课表执行情况（模块 B · 全量时段统计）】',
+        ...(scheduleStats.rangeExpected !== undefined
+          ? [
+              `- 所选周期整体完成率：${scheduleStats.rangeRate ?? 0}%（已完成 ${scheduleStats.rangeCompleted ?? 0} / 应完成 ${scheduleStats.rangeExpected}）`,
+            ]
+          : []),
         `- 本周完成率：${scheduleStats.weekRate}%（已完成 ${scheduleStats.weekCompleted} / 应完成 ${scheduleStats.weekExpected}）`,
         `- 本月完成率：${scheduleStats.monthRate}%（已完成 ${scheduleStats.monthCompleted} / 应完成 ${scheduleStats.monthExpected}）`,
+        ...scheduleSlotLines,
       ].join('\n')
     : '【生活课表执行情况（模块 B）】\n- 暂无课表统计数据';
 
@@ -304,60 +396,109 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 
   const habitSection = habitStats
     ? [
-        '【微习惯打卡与跨模块完成统计（模块 C）】',
+        topic === 'comprehensive'
+          ? '【微习惯打卡与跨模块完成统计（模块 C · 全量习惯汇总）】'
+          : '【微习惯打卡与定量表现统计（模块 C · 全量习惯汇总）】',
         `- 活跃习惯数：${habitStats.activeHabitCount} 个`,
         `- 习惯打卡完成总次数（按完成日计）：${habitStats.habitCompletedCount} 次`,
-        `- 课表完成次数：${habitStats.scheduleCompletedCount} 次`,
-        `- 课表 + 习惯合并完成事件总数：${habitStats.combinedCompletedCount} 次`,
+        ...(topic === 'comprehensive'
+          ? [
+              `- 课表完成次数：${habitStats.scheduleCompletedCount} 次`,
+              `- 课表 + 习惯合并完成事件总数：${habitStats.combinedCompletedCount} 次`,
+            ]
+          : []),
         `- 当前最高连续打卡：${habitStats.maxCurrentStreak} 天 | 历史最长连续打卡：${habitStats.maxLongestStreak} 天`,
         ...habitDetailLines,
       ].join('\n')
-    : '【微习惯打卡与跨模块完成统计（模块 C）】\n- 暂无习惯打卡数据';
+    : '【微习惯打卡统计（模块 C）】\n- 暂无习惯打卡数据';
+
+  const diaryTagLine =
+    diaryStats && Object.keys(diaryStats.tagDistribution ?? {}).length > 0
+      ? `- 高频关注标签：${Object.entries(diaryStats.tagDistribution)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 12)
+          .map(([t, c]) => `#${t}(${c}次)`)
+          .join('、')}`
+      : '';
+  const diaryMonthLine =
+    diaryStats && Object.keys(diaryStats.monthlyCountDistribution ?? {}).length > 0
+      ? `- 按月记录密度：${Object.entries(diaryStats.monthlyCountDistribution)
+          .map(([ym, c]) => `${ym}: ${c}篇`)
+          .join(' | ')}`
+      : '';
 
   const diarySection =
     diaryStats && diaryStats.selectedCount > 0
       ? [
-          `【树洞随笔与人物/心情摘要（模块 D · 已自动强制脱敏 ${diaryStats.selectedCount} 条，脱敏文本 ${diaryStats.sanitizedCharLength} 字）】`,
-          `- 心情分布：${Object.entries(diaryStats.moodDistribution)
+          `【树洞随笔与人物/心情摘要（模块 D · 已自动强制脱敏全量 ${diaryStats.selectedCount} 条，脱敏文本 ${diaryStats.sanitizedCharLength} 字）】`,
+          `- 全量心情分布：${Object.entries(diaryStats.moodDistribution)
             .map(([mood, count]) => `${mood} ${count} 条`)
             .join('、')}`,
-          ...diaryStats.items
-            .slice(0, 12)
-            .map(
-              (item, idx) =>
-                `  ${idx + 1}. [${item.yearMonth} · ${item.moodLabel}] ${item.tags.length > 0 ? `(${item.tags.map((t) => `#${t}`).join(' ')}) ` : ''}${item.sanitizedExcerpt}`,
-            ),
+          ...(diaryTagLine ? [diaryTagLine] : []),
+          ...(diaryMonthLine ? [diaryMonthLine] : []),
+          ...diaryStats.items.map(
+            (item, idx) =>
+              `  ${idx + 1}. [${item.yearMonth} · ${item.moodLabel}] ${item.tags.length > 0 ? `(${item.tags.map((t) => `#${t}`).join(' ')}) ` : ''}${item.sanitizedExcerpt}`,
+          ),
         ].join('\n')
       : '【树洞随笔与人物/心情摘要（模块 D）】\n- 所选时间段内暂无树洞条目';
 
+  const fallbackHint =
+    (topic === 'comprehensive' || topic === 'finance') && context.usedHistoricalBillsFallback
+      ? '；注：所选近期窗口内无新增账单，已自动纳入本机可用历史账单供完整复盘'
+      : '';
+  const scopeHintMap: Record<AiAnalysisTopic, string> = {
+    comprehensive: '全模块汇总',
+    finance: '仅发送财务账单模块，已隔离其他模块数据',
+    life: '仅发送生活课表模块，已隔离其他模块数据',
+    habits: '仅发送微习惯模块，已隔离其他模块数据',
+    persona: '仅发送树洞随笔模块，已隔离其他模块数据',
+  };
   const rangeLine =
     context.fromDate && context.toDate
-      ? `数据时间段: ${context.fromDate.slice(0, 7)} ~ ${context.toDate.slice(0, 7)}（系统已强制全量脱敏，最长不超过半年）`
-      : '数据时间段: 默认周期（系统已强制全量脱敏）';
+      ? `数据时间段: ${context.fromDate.slice(0, 7)} ~ ${context.toDate.slice(0, 7)}（${scopeHintMap[topic]} · 100% 全量聚合 + X-14 本地强制脱敏${fallbackHint}）`
+      : `数据时间段: 默认周期（${scopeHintMap[topic]} · 100% 全量聚合 + X-14 本地强制脱敏）`;
+
+  const financeSection = [
+    '【脱敏账单全量结构摘要（模块 A · 100% 账单已纳入聚合，非抽样截断）】',
+    `- 覆盖月份: ${redactedBills.months.length > 0 ? redactedBills.months.join(', ') : '无'}`,
+    `- 账单总规模: 共 ${redactedBills.totalCount} 笔（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔${redactedBills.neutralCount > 0 ? ` / 中性流转 ${redactedBills.neutralCount} 笔` : ''}），涉及独立匿名商户 ${redactedBills.merchantAliasCount} 个`,
+    `- 收支体量与结余（粗化区间）: 总支出约 ${redactedBills.totalExpenseRange} | 总收入约 ${redactedBills.totalIncomeRange} | ${redactedBills.overallBalanceSummary}`,
+    `- 支出金额分桶分布: ${expenseBucketLines}`,
+    ...(incomeBucketLines ? [`- 收入金额分桶分布: ${incomeBucketLines}`] : []),
+    '- 按月收支趋势全表（100% 月份覆盖）:',
+    monthlyTrendLines,
+    '- 支出分类全量结构（按实际支出金额占比排序）:',
+    expenseCategoryLines,
+    ...(incomeCategoryLines ? ['- 收入分类全量结构:', incomeCategoryLines] : []),
+    '- 高支出占比 / 高频匿名商户 Top 15:',
+    topMerchantLines,
+    `- 代表性分层样本（中大额重点与跨月均衡抽样，共 ${sampleItems.length} 条）:`,
+    sampleLines,
+  ].join('\n');
+
+  // 按所选分析维度严格切分隔离上传的数据段落：专项模式仅携带对应单模块数据，绝不混发无关模块
+  const activeModuleSections: string[] = [];
+  if (topic === 'comprehensive') {
+    activeModuleSections.push(financeSection, scheduleSection, habitSection, diarySection);
+  } else if (topic === 'finance') {
+    activeModuleSections.push(financeSection);
+  } else if (topic === 'life') {
+    activeModuleSections.push(scheduleSection);
+  } else if (topic === 'habits') {
+    activeModuleSections.push(habitSection);
+  } else if (topic === 'persona') {
+    activeModuleSections.push(diarySection);
+  }
 
   const userPrompt = [
     `Prompt 模板版本: ${PROMPT_TEMPLATE_ID}`,
     `分析维度: ${AI_TOPIC_META[topic]?.label ?? '全维综合复盘'}`,
     rangeLine,
     '',
-    '【脱敏账单结构摘要（模块 A · X-14 已强制脱敏）】',
-    `- 覆盖月份: ${redactedBills.months.length > 0 ? redactedBills.months.join(', ') : '无'}`,
-    `- 总笔数: ${redactedBills.totalCount} 笔（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔）`,
-    `- 独立匿名商户数: ${redactedBills.merchantAliasCount} 个`,
-    '- 金额区间分桶分布:',
-    bucketLines,
-    '- 消费分类笔数分布:',
-    categoryLines,
-    '- 脱敏流水样本（前 20 条）:',
-    sampleLines,
+    activeModuleSections.join('\n\n'),
     '',
-    scheduleSection,
-    '',
-    habitSection,
-    '',
-    diarySection,
-    '',
-    '请基于上述系统自动构造的脱敏上下文给出深度复盘洞察与可执行行动建议。',
+    `请按【输出结构与深度规范】输出复盘：现状用表格浓缩覆盖全部必检信号，行动建议必须写出具体可操作的落地方法步骤与兜底方案（零寒暄套话，控制在 420~650 字）。`,
   ].join('\n');
 
   const fullPreviewText = `=== System Prompt ===\n${systemPrompt}\n\n=== User Prompt (${PROMPT_TEMPLATE_ID}) ===\n${userPrompt}`;
@@ -383,102 +524,172 @@ export function buildLifeReviewPrompt(context: AiPromptContext): BuiltAiPrompt {
 export function generateLocalSmartSummary(context: AiPromptContext): string {
   const { redactedBills, scheduleStats, habitStats, diaryStats, topic = 'comprehensive' } = context;
 
-  // 找出最高频金额分桶
-  const topBucketEntry = Object.entries(redactedBills.bucketDistribution).sort(
-    (a, b) => b[1] - a[1],
-  )[0];
-  const topBucketText =
-    topBucketEntry && topBucketEntry[1] > 0
-      ? `${topBucketEntry[0]}（共 ${topBucketEntry[1]} 笔）`
-      : '暂无明显集中区间';
+  const topCategories = redactedBills.expenseCategoryStats
+    .slice(0, 3)
+    .map((c) => `${c.categoryName}(${c.amountSharePercent}% · ${c.amountRange})`)
+    .join('、');
+  const fallbackTopCat =
+    Object.entries(redactedBills.categoryDistribution)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([c, n]) => `${c}(${n}笔)`)
+      .join('、') || '暂无';
 
-  // 找出最高频分类
-  const topCategoryEntry = Object.entries(redactedBills.categoryDistribution).sort(
-    (a, b) => b[1] - a[1],
-  )[0];
-  const topCategoryText =
-    topCategoryEntry && topCategoryEntry[1] > 0
-      ? `${topCategoryEntry[0]}（${topCategoryEntry[1]} 笔）`
-      : '暂无分类记录';
+  const bigExpenseCount =
+    redactedBills.expenseBucketDistribution['500–1000 元'] +
+    redactedBills.expenseBucketDistribution['1000 元以上'];
+  const topMerchant = redactedBills.topMerchants[0];
 
   const topicTitle = AI_TOPIC_META[topic]?.label ?? '全维综合复盘';
   const lines: string[] = [
     `## 📊 LifeHub 本地智能复盘报告 · 【${topicTitle}】`,
-    `> 💡 **隐私与模板说明**：模板版本 \`${PROMPT_TEMPLATE_ID}\` · 全量数据已在本地强制脱敏（零网络生成）`,
   ];
 
-  if (topic === 'comprehensive' || topic === 'finance') {
+  // 1. 顶部一句话核心结论
+  if (topic === 'finance') {
     lines.push(
-      '',
-      '### 💰 【财务收支与脱敏分桶洞察】',
-      `- **账单概览**：共分析 **${redactedBills.totalCount} 笔**脱敏流水（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔），覆盖月份：\`${redactedBills.months.join('、') || '暂无'}\`。`,
-      `- **金额分桶特征**：最高频交易区间集中在 **${topBucketText}**，主要高频分类为 **${topCategoryText}**，涉及 **${redactedBills.merchantAliasCount} 个**泛化匿名商户。`,
-      redactedBills.bucketDistribution['500–1000 元'] + redactedBills.bucketDistribution['1000 元以上'] > 0
-        ? `- **支出提醒**：检测到 **${redactedBills.bucketDistribution['500–1000 元'] + redactedBills.bucketDistribution['1000 元以上']} 笔**中大额区间（500 元以上）账单，建议复核大额支出的必要性。`
-        : '- **支出提醒**：当前账单主要集中在中小额日常区间，整体消费结构平稳。',
+      `> 💡 **核心结论**：共 **${redactedBills.totalCount} 笔**流水，总支约 **${redactedBills.totalExpenseRange}**、总收约 **${redactedBills.totalIncomeRange}**（${redactedBills.overallBalanceSummary}）。`,
+    );
+  } else if (topic === 'life') {
+    lines.push(
+      `> 💡 **核心结论**：本周课表完成率 **${scheduleStats?.weekRate ?? 0}%**，本月 **${scheduleStats?.monthRate ?? 0}%**${scheduleStats?.rangeExpected ? `，所选周期整体 **${scheduleStats.rangeRate ?? 0}%**` : ''}。`,
+    );
+  } else if (topic === 'habits') {
+    lines.push(
+      `> 💡 **核心结论**：活跃习惯 **${habitStats?.activeHabitCount ?? 0} 个**，周期打卡 **${habitStats?.habitCompletedCount ?? 0} 次**，当前最高连续 **${habitStats?.maxCurrentStreak ?? 0} 天**（历史最长 ${habitStats?.maxLongestStreak ?? 0} 天）。`,
+    );
+  } else if (topic === 'persona') {
+    lines.push(
+      `> 💡 **核心结论**：周期内记录树洞 **${diaryStats?.selectedCount ?? 0} 篇**，离线模式已完成情绪与标签全量汇总。`,
+    );
+  } else {
+    lines.push(
+      `> 💡 **核心结论**：全维纳入 **${redactedBills.totalCount} 笔**账单（${redactedBills.overallBalanceSummary}）、课表周完成率 **${scheduleStats?.weekRate ?? 0}%**、习惯最高连续 **${habitStats?.maxCurrentStreak ?? 0} 天**、树洞 **${diaryStats?.selectedCount ?? 0} 篇**。`,
+    );
+  }
+
+  // 2. 紧凑关键信号表（零废话，关键数字全覆盖）
+  lines.push('', '### 📊 关键信号', '| 维度 | 核心指标数据 | 关键风险 / 亮点 |', '| :--- | :--- | :--- |');
+
+  if (topic === 'comprehensive' || topic === 'finance') {
+    const monthTrend =
+      redactedBills.monthlyStats.length > 1
+        ? redactedBills.monthlyStats.map((m) => `${m.yearMonth}:${m.expenseRange}`).join(' → ')
+        : redactedBills.months.join(', ') || '暂无';
+    lines.push(
+      `| 收支总览 | 支 ${redactedBills.totalExpenseRange}(${redactedBills.expenseCount}笔) / 收 ${redactedBills.totalIncomeRange}(${redactedBills.incomeCount}笔) | ${redactedBills.overallBalanceSummary} |`,
+      `| Top支出分类 | ${topCategories || fallbackTopCat} | ${bigExpenseCount > 0 ? `≥500元中大额共 **${bigExpenseCount}笔**` : '无≥500元大额支出'} |`,
+      `| 趋势与商户 | 月度：${monthTrend} | ${topMerchant ? `最高占比 ${topMerchant.merchantAlias}(${topMerchant.expenseSharePercent}% · ${topMerchant.expenseCount}笔)` : `匿名商户 ${redactedBills.merchantAliasCount} 个`} |`,
     );
   }
 
   if (topic === 'comprehensive' || topic === 'life') {
-    lines.push('', '### 📅 【生活课表时间块执行评估】');
     if (scheduleStats) {
+      const sortedSlots = [...(scheduleStats.slotDetails ?? [])].filter((s) => s.expectedCount > 0);
+      sortedSlots.sort((a, b) => a.completionRate - b.completionRate);
+      const worstSlot = sortedSlots[0];
+      const bestSlot = sortedSlots[sortedSlots.length - 1];
       lines.push(
-        `- **本周课表执行**：已完成 **${scheduleStats.weekCompleted} / ${scheduleStats.weekExpected}** 个时段（完成率 **${scheduleStats.weekRate}%**）。`,
-        `- **本月课表执行**：已完成 **${scheduleStats.monthCompleted} / ${scheduleStats.monthExpected}** 个时段（完成率 **${scheduleStats.monthRate}%**）。`,
-        scheduleStats.weekRate >= 80
-          ? '- **节律建议**：课表执行率优秀，建议保持当前时间块颗粒度。'
-          : '- **节律建议**：部分课表时段尚未勾选完成，建议适度精简高密度时间块或预留弹性缓冲时段。',
+        `| 课表执行 | 周 **${scheduleStats.weekRate}%**(${scheduleStats.weekCompleted}/${scheduleStats.weekExpected}) · 月 **${scheduleStats.monthRate}%**(${scheduleStats.monthCompleted}/${scheduleStats.monthExpected}) | ${worstSlot ? `短板：${worstSlot.title}(${worstSlot.completionRate}%)` : scheduleStats.weekRate >= 80 ? '节律稳定' : '存在漏勾时段'}${bestSlot && bestSlot !== worstSlot ? `；稳固：${bestSlot.title}(${bestSlot.completionRate}%)` : ''} |`,
       );
     } else {
-      lines.push('- **状态提示**：尚未配置课表时段，可前往「生活课表」添加固定学习或运动时间块。');
+      lines.push('| 课表执行 | 暂无时段配置 | 可前往「生活课表」建立固定时间块 |');
     }
   }
 
   if (topic === 'comprehensive' || topic === 'habits') {
-    lines.push('', '### 🔥 【微习惯养成与定量累计评估】');
-    if (habitStats) {
-      lines.push(
-        `- **习惯与课表协同**：当前维护 **${habitStats.activeHabitCount} 个**微习惯，周期内累计完成事件 **${habitStats.combinedCompletedCount} 次**（其中习惯完成日打卡 ${habitStats.habitCompletedCount} 次、课表完成 ${habitStats.scheduleCompletedCount} 次）。`,
-        `- **连续性表现**：当前最高连续打卡 **${habitStats.maxCurrentStreak} 天**，历史最长连续纪录 **${habitStats.maxLongestStreak} 天**。`,
-      );
-      if (habitStats.habitDetails && habitStats.habitDetails.length > 0) {
-        const detailSummary = habitStats.habitDetails
-          .map((d) =>
-            d.trackingMode === 'quantity' || d.unit !== '次'
-              ? `**${d.name}** 累计 **${d.totalQuantity} ${d.unit}**（打卡 ${d.completedDays} 天${d.completedDays > 0 ? `，日均 ${d.averagePerCompletedDay} ${d.unit}` : ''}）`
-              : `**${d.name}** 打卡 **${d.completedDays} 天**`,
-          )
-          .join('；');
-        lines.push(`- **各习惯周期累计量**：${detailSummary}。`);
+    if (habitStats && habitStats.habitDetails && habitStats.habitDetails.length > 0) {
+      for (const d of habitStats.habitDetails) {
+        const qtyStr =
+          d.trackingMode === 'quantity' || d.unit !== '次'
+            ? `打卡 ${d.completedDays}天 · 累计 **${d.totalQuantity}${d.unit}**（日均 ${d.averagePerCompletedDay}${d.unit}${d.dailyTarget ? `/${d.dailyTarget}${d.unit}` : ''}）`
+            : `打卡 **${d.completedDays}天**（共 ${d.totalQuantity}${d.unit}）`;
+        lines.push(
+          `| 习惯·${d.name} | ${qtyStr} | 连续 **${d.currentStreak}天**（最长 ${d.longestStreak}天） |`,
+        );
       }
+    } else if (habitStats) {
       lines.push(
-        habitStats.maxCurrentStreak >= 7
-          ? '- **激励反馈**：已形成稳固的周度连续节律，继续保持即可稳步提升周期累计总量！'
-          : '- **激励反馈**：建议将微习惯绑定在固定课表时间块之后触发（如晨间时段后立即打卡），降低漏打概率。',
+        `| 微习惯 | 活跃 ${habitStats.activeHabitCount} 个 · 打卡 ${habitStats.habitCompletedCount} 次 | 当前最高连续 **${habitStats.maxCurrentStreak}天** |`,
       );
     } else {
-      lines.push('- **状态提示**：尚未创建微习惯，可前往「习惯打卡」开启每日微习惯追踪。');
+      lines.push('| 微习惯 | 暂无习惯记录 | 可前往「习惯打卡」创建微习惯 |');
     }
   }
 
   if (topic === 'comprehensive' || topic === 'persona') {
     if (diaryStats && diaryStats.selectedCount > 0) {
       const moodText = Object.entries(diaryStats.moodDistribution)
-        .map(([mood, count]) => `${mood}（${count} 条）`)
+        .sort((a, b) => b[1] - a[1])
+        .map(([mood, count]) => `${mood}(${count})`)
         .join('、');
+      const topTags = Object.entries(diaryStats.tagDistribution ?? {})
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([t, c]) => `#${t}(${c})`)
+        .join(' ');
       lines.push(
-        '',
-        '### 🌲 【人物观察与树洞情绪/生活状态复盘】',
-        `- **情绪样本分布**：已纳入 **${diaryStats.selectedCount} 条**脱敏树洞记录（共 ${diaryStats.sanitizedCharLength} 字），主要情绪分布为：${moodText}。`,
-        '- **人物与心理洞察**：树洞随笔反映了您近期对自身节律与人际互动的细致观察。建议在情绪波动或疲惫日给自己留出独处缓冲空间，将重要的人际沟通或决策安排在「充实 / 平静」状态较好的时段。',
+        `| 树洞状态 | 共 **${diaryStats.selectedCount}篇** · 情绪：${moodText} | ${topTags ? `高频焦点：${topTags}` : '记录节律平稳'} |`,
       );
     } else if (topic === 'persona') {
+      lines.push('| 树洞状态 | 当前周期 0 篇 | 记录日常随笔后可生成情绪画像 |');
+    }
+  }
+
+  // 3. 行动方案与具体落地方法（目标 + 实操手段 + 阻力兜底）
+  lines.push('', '### 🎯 行动方案与落地方法');
+  if (topic === 'comprehensive' || topic === 'finance') {
+    const top1 = redactedBills.expenseCategoryStats[0];
+    if (top1) {
       lines.push(
-        '',
-        '### 🌲 【人物观察与树洞情绪/生活状态复盘】',
-        '- **状态提示**：所选时间段内暂无树洞随笔记录。您可以先在「树洞」页面记录日常想法、人际观察或未来规划，系统将自动全量脱敏并纳入人物分析。',
+        `- **控头部分类（\`${top1.categoryName}\` 占总支 ${top1.amountSharePercent}% · ${top1.amountRange}）**：目标下周期压降 15%。**落地方法**：将该分类下高频零散消费改为「每周固定频次封顶」（如每周最多点单/外购 3 次，其余用日常备餐或基础平替覆盖），并在月初先把目标结余转入独立储蓄账户，只留可用额度在日常支付卡。`,
       );
     }
+    if (bigExpenseCount > 0) {
+      lines.push(
+        `- **管控中大额支出（≥500 元共 ${bigExpenseCount} 笔）**：**落地方法**：启用「48 小时购物车冷静期」——凡单笔 ≥500 元非刚需开销先记入待买清单，满两天仍确认高频使用再付款，避免情绪性或凑单冲动支出。`,
+      );
+    } else if (!top1) {
+      lines.push(
+        `- **建立分类预算锚点**：**落地方法**：按「固定必要支出 / 弹性日常支出 / 储蓄结余」三账户分流，每周日晚花 3 分钟核对一次排名前二分类的进度。`,
+      );
+    }
+  }
+  if (topic === 'comprehensive' || topic === 'life') {
+    const lowSlot = [...(scheduleStats?.slotDetails ?? [])]
+      .filter((s) => s.expectedCount > 0)
+      .sort((a, b) => a.completionRate - b.completionRate)[0];
+    const bestSlot = [...(scheduleStats?.slotDetails ?? [])]
+      .filter((s) => s.expectedCount > 0)
+      .sort((a, b) => b.completionRate - a.completionRate)[0];
+    if (lowSlot && lowSlot.completionRate < 75) {
+      lines.push(
+        `- **改造低完成率时段（\`${lowSlot.title}\` 仅 ${lowSlot.completionRate}%）**：**落地方法**：采用「15 分钟微启动法」降低开启阻力（先只要求做满前 15 分钟即可打勾），${bestSlot && bestSlot.title !== lowSlot.title ? `或将其紧贴在执行最稳的 \`${bestSlot.title}\` 结束后顺势触发；` : ''}若当天临时加班错过原定时间，允许在睡前执行缩短版补位而非直接放弃。`,
+      );
+    } else if (scheduleStats) {
+      lines.push(
+        `- **巩固课表缓冲带（当前周完成率 ${scheduleStats.weekRate}%）**：**落地方法**：在两个连续专注时段之间固定预留 15 分钟空白缓冲格，用于起身补水与处理突发消息，防止单节超时引发后续整晚崩盘。`,
+      );
+    }
+  }
+  if (topic === 'comprehensive' || topic === 'habits') {
+    const riskHabit = [...(habitStats?.habitDetails ?? [])].sort(
+      (a, b) => a.currentStreak - b.currentStreak,
+    )[0];
+    if (riskHabit) {
+      const minDose =
+        riskHabit.trackingMode === 'quantity' && riskHabit.dailyTarget
+          ? `正常日冲刺 ${riskHabit.dailyTarget}${riskHabit.unit}，疲惫/加班日只需完成 ${Math.max(1, Math.round(riskHabit.dailyTarget * 0.25))}${riskHabit.unit} 保底档`
+          : '正常日按标准量执行，疲惫日执行 2 分钟微缩保底版';
+      lines.push(
+        `- **习惯防断签与定量进阶（\`${riskHabit.name}\` 当前连续 ${riskHabit.currentStreak} 天）**：**落地方法**：设置「双档弹性打卡制」（${minDose}），并将其死死绑定在一个每天必做的既有动作之后（如晨起洗漱后 / 午饭放下筷子后立即顺手完成），靠固定场景替代意志力硬撑。`,
+      );
+    }
+  }
+  if ((topic === 'comprehensive' && diaryStats && diaryStats.selectedCount > 0) || (topic === 'persona' && diaryStats && diaryStats.selectedCount > 0)) {
+    lines.push(
+      `- **情绪卸载与人际边界保护**：**落地方法**：遇到消耗型人际请求时执行「延迟 2 小时回复原则」，给自己留出理性评估缓冲；在感到焦虑或疲惫的当晚用树洞做「3 行拆解记录」（今天什么事耗能 → 我能控制哪部分 → 明天第一件小事），切断睡前反刍内耗。`,
+    );
   }
 
   return lines.join('\n');
@@ -496,29 +707,32 @@ export function generateLocalChatReply(context: AiPromptContext, userQuestion: s
   const { redactedBills, scheduleStats, habitStats, diaryStats, topic = 'comprehensive' } = context;
 
   if (/财务|消费|花销|钱|预算|账单|省钱|支出|收入/.test(q) || topic === 'finance') {
-    const topCats = Object.entries(redactedBills.categoryDistribution)
-      .sort((a, b) => b[1] - a[1])
+    const topCats = redactedBills.expenseCategoryStats
       .slice(0, 3)
-      .map(([c, n]) => `${c}(${n}笔)`)
+      .map((c) => `${c.categoryName}(${c.amountSharePercent}% · ${c.amountRange})`)
       .join('、');
     const bigCount =
-      redactedBills.bucketDistribution['500–1000 元'] +
-      redactedBills.bucketDistribution['1000 元以上'];
+      redactedBills.expenseBucketDistribution['500–1000 元'] +
+      redactedBills.expenseBucketDistribution['1000 元以上'];
     return [
-      `💡 **针对您的提问「${q}」的财务分析建议：**`,
-      `1. **收支结构现状**：当前共有 ${redactedBills.totalCount} 笔流水（支出 ${redactedBills.expenseCount} 笔 / 收入 ${redactedBills.incomeCount} 笔），高频消费分类依次为：${topCats || '暂无分类'}。`,
-      `2. **大额支出排查**：500 元以上的中大额支出共有 **${bigCount} 笔**，小额（0–50 元）日常支出共 **${redactedBills.bucketDistribution['0–50 元']} 笔**。`,
-      `3. **可执行行动**：建议先对排名前二的消费分类设定月度笔数上限；若您已配置 DeepSeek / OpenAI API Key，可点击「AI 深度对话」让大模型结合具体分桶给出更细致的定制方案。`,
+      `> 💡 **核心判断**：总支约 **${redactedBills.totalExpenseRange}**（${redactedBills.expenseCount} 笔），${redactedBills.overallBalanceSummary}；主力支出依次为 ${topCats || '暂无分类'}（≥500 元大额共 ${bigCount} 笔）。`,
+      '',
+      '- **方法 1 · 高频分类频次封顶**：对占比第一的分类不搞一刀切禁欲，而是设定「每周固定外购/点单次数上限」，超出的频次用工作日自备或平替方案顶替，轻松压降 15%~20%。',
+      '- **方法 2 · 发薪日先储蓄后消费 + 48h 冷静期**：月初先把目标结余划出日常支付卡；单笔 ≥500 元非刚需消费先放清单冷却 48 小时再决定是否付款。',
     ].join('\n');
   }
 
   if (/课表|时间|生活|规划|作息|精力|安排|完成率/.test(q) || topic === 'life') {
     const weekRate = scheduleStats?.weekRate ?? 0;
     const monthRate = scheduleStats?.monthRate ?? 0;
+    const lowSlot = [...(scheduleStats?.slotDetails ?? [])]
+      .filter((s) => s.expectedCount > 0)
+      .sort((a, b) => a.completionRate - b.completionRate)[0];
     return [
-      `💡 **针对您的提问「${q}」的生活与课表规划建议：**`,
-      `1. **时间块执行率**：本周课表完成率为 **${weekRate}%**（${scheduleStats?.weekCompleted ?? 0}/${scheduleStats?.weekExpected ?? 0}），本月完成率为 **${monthRate}%**（${scheduleStats?.monthCompleted ?? 0}/${scheduleStats?.monthExpected ?? 0}）。`,
-      `2. **节律优化**：${weekRate >= 75 ? '您目前的时间块执行非常稳定，可尝试使用「同步到未来 X 个月」固化核心作息。' : '当前存在一定比例未勾选时段，建议将高难度时间块缩短至 45~60 分钟，并在两个高强度时段之间留出 15 分钟弹性空白。'}`,
+      `> 💡 **核心判断**：课表周完成率 **${weekRate}%**（${scheduleStats?.weekCompleted ?? 0}/${scheduleStats?.weekExpected ?? 0}），月完成率 **${monthRate}%**${lowSlot ? `；主要短板在 \`${lowSlot.title}（${lowSlot.timeWindow}）\`（完成率 ${lowSlot.completionRate}%）` : ''}。`,
+      '',
+      `- **方法 1 · 微启动拆解法**：针对常漏勾的时间块，把启动门槛降为「先做满 15 分钟即算启动成功」，克服畏难拖延。`,
+      `- **方法 2 · 块间 15 分钟留白 + 弹性补位**：不在晚间连续排满无缝时间块，每两块间留 15 分钟缓冲；当天突发占用时改做 10 分钟精简版而非整块作废。`,
     ].join('\n');
   }
 
@@ -528,34 +742,35 @@ export function generateLocalChatReply(context: AiPromptContext, userQuestion: s
         ? habitStats.habitDetails
             .map((d) =>
               d.trackingMode === 'quantity' || d.unit !== '次'
-                ? `${d.name}累计 **${d.totalQuantity} ${d.unit}**（${d.completedDays}天，打卡日均 ${d.averagePerCompletedDay} ${d.unit}）`
-                : `${d.name}打卡 **${d.completedDays} 天**`,
+                ? `${d.name} **${d.totalQuantity}${d.unit}**（${d.completedDays}天，日均 ${d.averagePerCompletedDay}${d.unit}）`
+                : `${d.name} **${d.completedDays}天**`,
             )
             .join('；')
         : '暂无细分习惯记录';
     return [
-      `💡 **针对您的提问「${q}」的微习惯养成建议：**`,
-      `1. **当前连续度**：活跃微习惯 **${habitStats?.activeHabitCount ?? 0} 个**，当前最高连续打卡 **${habitStats?.maxCurrentStreak ?? 0} 天**（历史最高 **${habitStats?.maxLongestStreak ?? 0} 天**）。`,
-      `2. **周期累计表现**：${detailText}。`,
-      `3. **进阶与防断签技巧**：采用「保底打卡 + 定量累加」策略——精力不足日哪怕喝一杯水或慢跑 1 km 也先保住连续打卡不断签，状态好时再冲刺每日目标量。`,
+      `> 💡 **核心判断**：活跃习惯 **${habitStats?.activeHabitCount ?? 0} 个**，最高连续 **${habitStats?.maxCurrentStreak ?? 0} 天**（最长 ${habitStats?.maxLongestStreak ?? 0} 天）；累计表现：${detailText}。`,
+      '',
+      '- **方法 1 · 既有动作锚点绑定**：给每个习惯找一个每天雷打不动的触发点（如「刷完牙立刻喝第一杯水」「下班换鞋后立刻拉伸 5 分钟」），用条件反射代替靠记忆提醒。',
+      '- **方法 2 · 正常日/疲惫日双档制**：设定一个哪怕加班到深夜也能 2 分钟完成的「不断签保底档」（约日常目标的 25%），彻底消除“今天没空做全套干脆放弃”的全或无心态。',
     ].join('\n');
   }
 
   if (/人物|树洞|心情|情绪|关系|朋友|同事|家人|性格|压力/.test(q) || topic === 'persona') {
     if (!diaryStats || diaryStats.selectedCount === 0) {
-      return `💡 **提示**：您询问了关于「${q}」的人物/树洞分析，但当前时间段内暂无树洞随笔记录。您可以先在「树洞」页面记录想法或人际观察，系统会自动强制脱敏后纳入对话！`;
+      return `> 💡 **提示**：当前周期暂无树洞随笔，先在「树洞」记录想法后即可自动脱敏分析。`;
     }
     const moods = Object.entries(diaryStats.moodDistribution)
-      .map(([m, c]) => `${m}(${c}条)`)
+      .map(([m, c]) => `${m}(${c}篇)`)
       .join('、');
     const snippets = diaryStats.items
       .slice(0, 3)
-      .map((it) => `「${it.sanitizedExcerpt.slice(0, 40)}」`)
+      .map((it) => `「${it.sanitizedExcerpt.slice(0, 36)}」`)
       .join('；');
     return [
-      `💡 **针对您的提问「${q}」的人物与树洞深度分析：**`,
-      `1. **情绪与状态基底**：在当前时间段已自动脱敏的 ${diaryStats.selectedCount} 条树洞记录中，情绪分布为 ${moods}，关键片段涵盖：${snippets}。`,
-      `2. **人物关系与内心洞察**：您在记录中展现出较强的自我觉察力。对于令您产生内耗或疲惫的人际互动，建议明确心理边界、减少过度共情；对于带给您平静与振奋的人和事，建议在课表中预留固定交流或深耕时间。`,
+      `> 💡 **核心判断**：共 **${diaryStats.selectedCount} 篇**树洞，主导情绪为 ${moods}；核心线索：${snippets}。`,
+      '',
+      '- **方法 1 · 消耗型互动延迟响应法**：对容易引发你内耗或被迫揽责的沟通，先回复“稍后确认”留出 1~2 小时缓冲，避免在情绪波峰做决定。',
+      '- **方法 2 · 睡前纸面三分卸载法**：出现焦虑或疲惫时，用 3 句话写下「客观事实 → 我能控制的一步 → 其余暂放明天」，把脑内反刍转化为具体小动作。',
     ].join('\n');
   }
 

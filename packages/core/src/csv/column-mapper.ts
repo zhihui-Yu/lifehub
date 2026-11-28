@@ -175,8 +175,17 @@ const SAMPLE_DIRECTION_VALUES: ReadonlySet<string> = new Set([
   '出',
 ]);
 
-/** 备注为空时可回退读取的候选商品名/摘要表头名。 */
-const NOTE_FALLBACK_HEADERS: readonly string[] = ['商品', '商品说明', '商品名称', '摘要'];
+/** 备注为空或需合并优惠/附言时可回退读取的候选商品名/备注表头名。 */
+const NOTE_FALLBACK_HEADERS: readonly string[] = [
+  '商品',
+  '商品说明',
+  '商品名称',
+  '摘要',
+  '备注',
+  '交易备注',
+  '附言',
+];
+const REMARK_LIKE_HEADERS: ReadonlySet<string> = new Set(['备注', '交易备注', '附言']);
 
 /**
  * 判断单元格文本是否为微信/支付宝常见的空占位符（"/" 或 "--"）。
@@ -468,7 +477,8 @@ export class ColumnMapper {
       result.note = '';
     }
     const hasNoteMapped = Object.values(mapping).includes('note');
-    if (hasNoteMapped && result.note.trim() === '') {
+    if (hasNoteMapped) {
+      const currentNote = result.note.trim();
       for (let i = 0; i < this.columns.length; i += 1) {
         if (mapping[i] !== undefined) {
           continue;
@@ -477,7 +487,17 @@ export class ColumnMapper {
         if (NOTE_FALLBACK_HEADERS.includes(header)) {
           const candidate = (row[i] ?? '').trim();
           if (candidate !== '' && !isPlaceholderCell(candidate)) {
-            result.note = candidate;
+            if (currentNote === '') {
+              result.note = candidate;
+            } else if (!currentNote.includes(candidate) && !candidate.includes(currentNote)) {
+              if (REMARK_LIKE_HEADERS.has(header)) {
+                // 当「商品」列已被映射为主 note 时，将非空「备注」列（如「已优惠¥0.10」或转账附言）追加保留
+                result.note = `${currentNote}（${candidate}）`;
+              } else if (/^(?:已?优惠|立减|随机立减)[¥￥\s]*[\d.]+/.test(currentNote)) {
+                // 当「备注」列已被映射为主 note 且仅为自动优惠文本时，前置补充「商品」列真实消费品名
+                result.note = `${candidate}（${currentNote}）`;
+              }
+            }
             break;
           }
         }

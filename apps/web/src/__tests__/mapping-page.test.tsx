@@ -170,6 +170,7 @@ describe('MappingPage', () => {
     renderPage();
 
     const button = screen.getByTestId('run-import-button');
+    expect(screen.getByTestId('import-step-3')).toHaveAttribute('data-step-state', 'pending');
     await act(async () => {
       button.click();
     });
@@ -178,6 +179,7 @@ describe('MappingPage', () => {
       expect(screen.getByText('成功导入 2 条')).toBeInTheDocument();
     });
     expect(run).toHaveBeenCalledTimes(1);
+    expect(useImportStore.getState().stage).toBeDefined();
   });
 
   it('自动识别全部必填字段后展示零配置横幅与字段摘要 Chip，支持顶部「直接开始导入」一键入库', async () => {
@@ -217,7 +219,7 @@ describe('MappingPage', () => {
     });
   });
 
-  it('支持通过「收起字段映射 / 展开字段映射」按钮折叠或展开映射看板并同步更新 aria-expanded', async () => {
+  it('默认收起「列头映射」与「收支方向判定方式」，支持点击按钮展开或收起，且导入完成后步骤 3 高亮变色', async () => {
     useImportStore.setState({
       plan: plan(),
       mapping: { 0: 'occurredAt', 1: 'amount', 2: 'counterparty' },
@@ -225,15 +227,41 @@ describe('MappingPage', () => {
     });
     renderPage();
 
-    const toggleBtn = screen.getByTestId('toggle-mapping-details');
-    expect(toggleBtn).toHaveTextContent('收起字段映射');
-    expect(toggleBtn).toHaveAttribute('aria-expanded', 'true');
+    const toggleMappingBtn = screen.getByTestId('toggle-mapping-details');
+    expect(toggleMappingBtn).toHaveTextContent('展开字段映射');
+    expect(toggleMappingBtn).toHaveAttribute('aria-expanded', 'false');
+
+    const toggleDirectionBtn = screen.getByTestId('toggle-direction-details');
+    expect(toggleDirectionBtn).toHaveTextContent('展开');
+    expect(toggleDirectionBtn).toHaveAttribute('aria-expanded', 'false');
 
     await act(async () => {
-      toggleBtn.click();
+      toggleMappingBtn.click();
+      toggleDirectionBtn.click();
     });
-    expect(toggleBtn).toHaveTextContent('展开字段映射');
-    expect(toggleBtn).toHaveAttribute('aria-expanded', 'false');
+    expect(toggleMappingBtn).toHaveTextContent('收起字段映射');
+    expect(toggleMappingBtn).toHaveAttribute('aria-expanded', 'true');
+    expect(toggleDirectionBtn).toHaveTextContent('收起');
+    expect(toggleDirectionBtn).toHaveAttribute('aria-expanded', 'true');
+
+    // 当 summary 生成（导入完成）时，步骤 3 切换为 completed 状态高亮变色
+    act(() => {
+      useImportStore.setState({
+        stage: 'done',
+        summary: {
+          batchId: 'b-done',
+          rowTotal: 1,
+          rowImported: 1,
+          rowSkipped: 0,
+          rowDuplicated: 0,
+          rowCrossSourceDuplicate: 0,
+          errors: [],
+          durationMs: 3,
+          duplicateFile: false,
+        },
+      });
+    });
+    expect(screen.getByTestId('import-step-3')).toHaveAttribute('data-step-state', 'completed');
   });
 
   it('检测到重复文件时展示覆盖重导复选框与「立即重新导入」按钮，点击后传入 allowDuplicate 与 overwriteExisting', async () => {

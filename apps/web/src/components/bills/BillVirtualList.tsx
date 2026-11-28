@@ -62,9 +62,15 @@ export function BillVirtualList({
     count: bills.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => estimateSize,
-    overscan: 12,
+    overscan: 6,
   });
   const hasActions = Boolean(onToggleTransfer || onEdit || onDelete);
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
+  const paddingTop = virtualItems.length > 0 ? (virtualItems[0]?.start ?? 0) : 0;
+  const lastVirtual = virtualItems[virtualItems.length - 1];
+  const lastEnd = lastVirtual ? lastVirtual.start + lastVirtual.size : 0;
+  const paddingBottom = virtualItems.length > 0 ? Math.max(0, totalSize - lastEnd) : 0;
 
   return (
     <div ref={parentRef} style={{ maxHeight: '62vh', overflow: 'auto' }} data-testid="bill-virtual-list">
@@ -155,7 +161,12 @@ export function BillVirtualList({
           </TableRow>
         </TableHead>
         <TableBody>
-          {virtualizer.getVirtualItems().map((virtualRow) => {
+          {paddingTop > 0 ? (
+            <tr aria-hidden="true">
+              <td colSpan={7} style={{ height: paddingTop, padding: 0, border: 0 }} />
+            </tr>
+          ) : null}
+          {virtualItems.map((virtualRow) => {
             const bill = bills[virtualRow.index];
             if (!bill) {
               return null;
@@ -175,6 +186,11 @@ export function BillVirtualList({
               />
             );
           })}
+          {paddingBottom > 0 ? (
+            <tr aria-hidden="true">
+              <td colSpan={7} style={{ height: paddingBottom, padding: 0, border: 0 }} />
+            </tr>
+          ) : null}
         </TableBody>
       </Table>
     </div>

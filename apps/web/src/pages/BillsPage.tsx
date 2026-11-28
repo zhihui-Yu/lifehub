@@ -196,7 +196,19 @@ function triggerBrowserDownload(content: string, fileName: string, mimeType: str
  */
 export function BillsPage() {
   const { runtime, status } = useVault();
-  const { groups, bills, loading, error } = useBillList();
+  const {
+    groups,
+    bills,
+    totalBillCount,
+    isDailyCollapsedMode,
+    expandedDates,
+    loadingDates,
+    toggleDateExpand,
+    ensureDateLoaded,
+    ensureAllBillsLoaded,
+    loading,
+    error,
+  } = useBillList();
   const categoriesState = useCategories();
   const { categories } = categoriesState;
   const { addBill, updateBill, deleteBill, clearAllBills, setBillCategoryId, markBillsAsTransfer } =
@@ -206,6 +218,14 @@ export function BillsPage() {
   const clearFilters = useBillStore((state) => state.clearFilters);
   // 原始工作集（过滤前）——用于区分「根本没有账单」与「筛选后为空」两种空状态。
   const allBills = useBillStore((state) => state.bills);
+  const hasAnyFilter =
+    filters.keyword.trim() !== '' ||
+    filters.directions.length > 0 ||
+    filters.dateFrom !== '' ||
+    filters.dateTo !== '' ||
+    filters.categoryId !== '' ||
+    (filters.categoryIds?.length ?? 0) > 0;
+  const hasAnyStoredBills = allBills.length > 0 || totalBillCount > 0 || hasAnyFilter;
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Bill | null>(null);
@@ -382,18 +402,32 @@ export function BillsPage() {
     return true;
   };
 
-  const handleExportCsv = (): void => {
-    const csvContent = buildBillsCsvContent(bills, categoryNames, sourceFileNames);
-    const today = new Date().toISOString().slice(0, 10);
-    triggerBrowserDownload(csvContent, `lifehub-bills-${today}.csv`, 'text/csv;charset=utf-8');
-    setExportMessage(`已成功导出 ${bills.length} 条账单记录（CSV 格式）`);
+  const resolveExportBills = async (): Promise<Bill[]> => {
+    if (!isDailyCollapsedMode || allBills.length > 0) {
+      return bills;
+    }
+    const loadedAll = await ensureAllBillsLoaded();
+    return loadedAll.filter((b) => {
+      if (filters.dateFrom !== '' && b.localDate < filters.dateFrom) return false;
+      if (filters.dateTo !== '' && b.localDate > filters.dateTo) return false;
+      return true;
+    });
   };
 
-  const handleExportJson = (): void => {
-    const jsonContent = buildBillsJsonContent(bills, categoryNames, sourceFileNames);
+  const handleExportCsv = async (): Promise<void> => {
+    const targetBills = await resolveExportBills();
+    const csvContent = buildBillsCsvContent(targetBills, categoryNames, sourceFileNames);
+    const today = new Date().toISOString().slice(0, 10);
+    triggerBrowserDownload(csvContent, `lifehub-bills-${today}.csv`, 'text/csv;charset=utf-8');
+    setExportMessage(`已成功导出 ${targetBills.length} 条账单记录（CSV 格式）`);
+  };
+
+  const handleExportJson = async (): Promise<void> => {
+    const targetBills = await resolveExportBills();
+    const jsonContent = buildBillsJsonContent(targetBills, categoryNames, sourceFileNames);
     const today = new Date().toISOString().slice(0, 10);
     triggerBrowserDownload(jsonContent, `lifehub-bills-${today}.json`, 'application/json;charset=utf-8');
-    setExportMessage(`已成功导出 ${bills.length} 条账单记录（JSON 格式）`);
+    setExportMessage(`已成功导出 ${targetBills.length} 条账单记录（JSON 格式）`);
   };
 
   const handleBackToTop = (): void => {
@@ -493,11 +527,11 @@ export function BillsPage() {
         </ListItemIcon>
         <ListItemText primary="导入账单" />
       </MenuItem>
-      {bills.length > 0 ? (
+      {totalBillCount > 0 ? (
         <MenuItem
           onClick={() => {
             setMoreAnchorEl(null);
-            handleExportCsv();
+            void handleExportCsv();
           }}
           data-testid="export-bills-button"
         >
@@ -507,11 +541,11 @@ export function BillsPage() {
           <ListItemText primary="导出 CSV" />
         </MenuItem>
       ) : null}
-      {bills.length > 0 ? (
+      {totalBillCount > 0 ? (
         <MenuItem
           onClick={() => {
             setMoreAnchorEl(null);
-            handleExportJson();
+            void handleExportJson();
           }}
           data-testid="export-bills-json-button"
         >
@@ -521,8 +555,8 @@ export function BillsPage() {
           <ListItemText primary="导出 JSON" />
         </MenuItem>
       ) : null}
-      {interactive && allBills.length > 0 ? <Divider /> : null}
-      {interactive && allBills.length > 0 ? (
+      {interactive && hasAnyStoredBills ? <Divider /> : null}
+      {interactive && hasAnyStoredBills ? (
         <MenuItem
           onClick={() => {
             setMoreAnchorEl(null);
@@ -598,7 +632,7 @@ export function BillsPage() {
     </Stack>
   );
 
-  if (interactive && allBills.length === 0 && !loading) {
+  if (interactive && !hasAnyStoredBills && !loading) {
     return (
       <div data-testid="bills-page">
         {pageHeader}
@@ -672,10 +706,12 @@ export function BillsPage() {
           ），建议标记为「内部转账」以免虚增收支。
         </Alert>
       ) : null}
-      {/* 账单可视化分析已独立至 #/stats 页面，此处通过样式类隐藏内联面板以保持首页整洁 */}
-      <Box className="lifehub-bills-inline-dashboard" data-testid="bills-inline-dashboard-hidden">
-        <BillVisualDashboard bills={bills} categories={effectiveCategories} />
-      </Box>
+      {/* 账单可视化分析已独立至 #/stats 页面；按日懒加载模式或海量账单（>500 条）时跳过隐藏面板计算与挂载以避免主线程开销 */}
+      {!isDailyCollapsedMode && bills.length <= 500 ? (
+        <Box className="lifehub-bills-inline-dashboard" data-testid="bills-inline-dashboard-hidden">
+          <BillVisualDashboard bills={bills} categories={effectiveCategories} />
+        </Box>
+      ) : null}
       <BillFilterBar
         filters={filters}
         onChange={setFilters}
@@ -691,7 +727,17 @@ export function BillsPage() {
       ) : (
         <BillGroupList
           groups={groups}
-          onSelectGroup={(group) => setSelectedGroupDate(group.localDate)}
+          collapsible={isDailyCollapsedMode}
+          expandedDates={expandedDates}
+          loadingDates={loadingDates}
+          onToggleDate={(date) => {
+            void toggleDateExpand(date);
+          }}
+          onSelectGroup={(group) => {
+            void ensureDateLoaded(group.localDate).then(() => {
+              setSelectedGroupDate(group.localDate);
+            });
+          }}
           renderBills={(group) => (
             <BillVirtualList
               bills={group.bills}
@@ -836,10 +882,10 @@ export function BillsPage() {
       </Dialog>
       <Box sx={{ mt: 2 }}>
         <Typography variant="body2" sx={{ color: 'var(--lifehub-text-muted)' }}>
-          共 {bills.length} 条账单
+          共 {totalBillCount} 条账单
         </Typography>
       </Box>
-      {bills.length > 0 ? (
+      {totalBillCount > 0 ? (
         <Button
           variant="contained"
           color="primary"

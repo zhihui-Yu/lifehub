@@ -6,8 +6,8 @@
  * 说明：列含日期、金额（含方向标识）、对方、分类、来源文件（PRD A-08 ③）。
  * 解锁态下额外提供「编辑 / 删除」操作（A 模块记账闭环）。
  */
-import { useState } from 'react';
-import { Box, Chip, IconButton, Menu, MenuItem, TableCell, TableRow, Tooltip } from '@mui/material';
+import { memo, useState } from 'react';
+import { Box, Chip, IconButton, Menu, MenuItem, TableCell, TableRow } from '@mui/material';
 import DeleteOutline from '@mui/icons-material/DeleteOutline';
 import EditOutlined from '@mui/icons-material/EditOutlined';
 import SwapHorizOutlined from '@mui/icons-material/SwapHorizOutlined';
@@ -58,7 +58,7 @@ export interface BillRowProps {
  * @returns React 节点
  * @throws 无显式抛出
  */
-export function BillRow({
+export const BillRow = memo(function BillRow({
   bill,
   categoryNames,
   sourceFileNames,
@@ -202,10 +202,10 @@ export function BillRow({
             />
           ) : null}
         </Box>
-        {canQuickSelect && categories ? (
+        {canQuickSelect && categories && categoryMenuAnchor ? (
           <Menu
             anchorEl={categoryMenuAnchor}
-            open={Boolean(categoryMenuAnchor)}
+            open
             onClose={() => setCategoryMenuAnchor(null)}
             data-testid="quick-category-menu"
           >
@@ -270,35 +270,30 @@ export function BillRow({
         {onToggleTransfer || onEdit || onDelete ? (
           <>
             {onToggleTransfer ? (
-              <Tooltip title={isTransfer ? '恢复计入收支' : '设为内部转账（不计收支）'}>
-                <IconButton
-                  size="small"
-                  color={isTransfer ? 'primary' : 'default'}
-                  aria-label={isTransfer ? '恢复计入收支' : '设为内部转账'}
-                  onClick={() => onToggleTransfer(bill)}
-                  data-testid={`toggle-transfer-${bill.id}`}
-                >
-                  <SwapHorizOutlined fontSize="small" />
-                </IconButton>
-              </Tooltip>
+              <IconButton
+                size="small"
+                color={isTransfer ? 'primary' : 'default'}
+                title={isTransfer ? '恢复计入收支' : '设为内部转账（不计收支）'}
+                aria-label={isTransfer ? '恢复计入收支' : '设为内部转账'}
+                onClick={() => onToggleTransfer(bill)}
+                data-testid={`toggle-transfer-${bill.id}`}
+              >
+                <SwapHorizOutlined fontSize="small" />
+              </IconButton>
             ) : null}
             {onEdit ? (
-              <Tooltip title="编辑">
-                <IconButton size="small" aria-label="编辑账单" onClick={() => onEdit(bill)}>
-                  <EditOutlined fontSize="small" />
-                </IconButton>
-              </Tooltip>
+              <IconButton size="small" title="编辑" aria-label="编辑账单" onClick={() => onEdit(bill)}>
+                <EditOutlined fontSize="small" />
+              </IconButton>
             ) : null}
             {onDelete ? (
-              <Tooltip title="删除">
-                <IconButton size="small" aria-label="删除账单" onClick={() => onDelete(bill)}>
-                  <DeleteOutline fontSize="small" />
-                </IconButton>
-              </Tooltip>
+              <IconButton size="small" title="删除" aria-label="删除账单" onClick={() => onDelete(bill)}>
+                <DeleteOutline fontSize="small" />
+              </IconButton>
             ) : null}
           </>
         ) : null}
       </TableCell>
     </TableRow>
   );
-}
+});

@@ -130,6 +130,90 @@ export function recordCloudTombstone(
   recordCloudTombstones(entityType, [id], deletedAt);
 }
 
+/** 本地账单云同步脏月份追踪键名（用于按月跳过未改动历史月份的本地库全表读取）。 */
+export const CLOUD_BILLS_DIRTY_TRACKER_KEY = 'lifehub.cloudStorage.billsDirty:v1';
+
+/** 本机账单自上次云同步以来的改动范围状态。 */
+export interface CloudBillsDirtyState {
+  /** 是否需要全量扫描账单（首次同步、批量导入或删除账单后为 true）。 */
+  allBillsDirty: boolean;
+  /** 仅局部新增/修改过的月份集合（如 `['2026-11']`）。 */
+  dirtyMonths: string[];
+}
+
+/**
+ * 读取本机账单自上次云同步以来的脏月份状态。
+ */
+export function loadCloudBillsDirtyState(): CloudBillsDirtyState {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return { allBillsDirty: true, dirtyMonths: [] };
+    }
+    const raw = window.localStorage.getItem(CLOUD_BILLS_DIRTY_TRACKER_KEY);
+    if (!raw) {
+      return { allBillsDirty: true, dirtyMonths: [] };
+    }
+    const parsed = JSON.parse(raw) as Partial<CloudBillsDirtyState>;
+    return {
+      allBillsDirty: parsed.allBillsDirty !== false,
+      dirtyMonths: Array.isArray(parsed.dirtyMonths)
+        ? parsed.dirtyMonths.filter((m): m is string => typeof m === 'string' && m.length > 0)
+        : [],
+    };
+  } catch {
+    return { allBillsDirty: true, dirtyMonths: [] };
+  }
+}
+
+/**
+ * 标记本机账单特定日期（或全表）自上次云同步后发生了变更。
+ */
+export function markCloudBillsDirty(dates?: readonly string[]): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return;
+    }
+    if (!dates || dates.length === 0) {
+      window.localStorage.setItem(
+        CLOUD_BILLS_DIRTY_TRACKER_KEY,
+        JSON.stringify({ allBillsDirty: true, dirtyMonths: [] }),
+      );
+      return;
+    }
+    const prev = loadCloudBillsDirtyState();
+    if (prev.allBillsDirty) {
+      return;
+    }
+    const monthSet = new Set(prev.dirtyMonths);
+    for (const d of dates) {
+      const m = /^\d{4}-\d{2}/.test(d) ? d.slice(0, 7) : 'unknown';
+      monthSet.add(m);
+    }
+    window.localStorage.setItem(
+      CLOUD_BILLS_DIRTY_TRACKER_KEY,
+      JSON.stringify({ allBillsDirty: false, dirtyMonths: [...monthSet] }),
+    );
+  } catch {
+    // 忽略配额异常
+  }
+}
+
+/**
+ * 云同步完成后清除本机账单脏标记。
+ */
+export function clearCloudBillsDirtyState(): void {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(
+        CLOUD_BILLS_DIRTY_TRACKER_KEY,
+        JSON.stringify({ allBillsDirty: false, dirtyMonths: [] }),
+      );
+    }
+  } catch {
+    // 忽略配额异常
+  }
+}
+
 /**
  * 批量记录多个实体的本地删除墓碑。
  */
@@ -141,6 +225,9 @@ export function recordCloudTombstones(
   const validIds = ids.filter((id) => typeof id === 'string' && id.length > 0);
   if (validIds.length === 0) {
     return;
+  }
+  if (entityType === 'bill') {
+    markCloudBillsDirty();
   }
   const existing = loadLocalCloudTombstones();
   const appended: DeletedEntityTombstone[] = validIds.map((id) => ({
