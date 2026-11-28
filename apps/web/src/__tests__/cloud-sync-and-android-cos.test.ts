@@ -16,6 +16,8 @@ import {
   recordCloudTombstone,
   resolveCloudEndpointTarget,
   restoreBillsFromCloud,
+  syncCloudPullSmart,
+  syncCloudUploadSmart,
   syncUploadWithRemoteMerge,
   testCloudConnection,
   uploadBillsToCloud,
@@ -714,5 +716,44 @@ describe('Emoji UTF-16 代理对无损压缩加密与历史受损快照自动自
     expect(putObjects).not.toContain('lifehub-shard-bills-2026-09.json.enc');
     expect(putObjects).not.toContain('lifehub-shard-bills-2026-10.json.enc');
     expect(putObjects).not.toContain('lifehub-shard-core.json.enc');
+
+    // 4. 验证按日懒加载模式下（内存 bills 为空），syncCloudUploadSmart 与 syncCloudPullSmart 0 次全表读取即可秒级跳过或仅按月读取差异！
+    calls.length = 0;
+    const loadAllSpy = vi.fn(async () => sync3.mergedDataset.bills);
+    const loadMonthSpy = vi.fn(async (month: string) =>
+      sync3.mergedDataset.bills.filter((b) => b.localDate.slice(0, 7) === month),
+    );
+    const smartUploadNoop = await syncCloudUploadSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => sync3.mergedDataset.bills.length,
+        loadMonthLocalBills: loadMonthSpy,
+        loadAllLocalBills: loadAllSpy,
+      },
+    );
+    expect(smartUploadNoop.skippedUnchangedUpload).toBe(true);
+    expect(smartUploadNoop.billsToPut).toHaveLength(0);
+    expect(loadAllSpy).not.toHaveBeenCalled();
+    expect(loadMonthSpy).not.toHaveBeenCalled();
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+
+    calls.length = 0;
+    const smartPullNoop = await syncCloudPullSmart(
+      cosConfig,
+      'ShardPass#2026',
+      {},
+      {
+        getLocalBillCount: async () => sync3.mergedDataset.bills.length,
+        loadMonthLocalBills: loadMonthSpy,
+        loadAllLocalBills: loadAllSpy,
+      },
+    );
+    expect(smartPullNoop.unchanged).toBe(true);
+    expect(smartPullNoop.downloadedShardCount).toBe(0);
+    expect(smartPullNoop.billsToPut).toHaveLength(0);
+    expect(loadAllSpy).not.toHaveBeenCalled();
+    expect(calls).toEqual([{ method: 'GET', objectName: 'lifehub-sync-manifest.json.enc' }]);
   });
 });

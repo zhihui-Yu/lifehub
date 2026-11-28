@@ -21,6 +21,7 @@ import {
   scanIndexedDbBillDateCounts,
   type DailyBillSummaryItem,
 } from '@/lib/bill-daily-index';
+import { markCloudBillsDirty } from '@/lib/cloud-tombstones';
 import type { PlatformRuntime } from '@/platform';
 import { formatAmount } from '@/utils/format';
 import { useDebouncedValue } from './useDebouncedValue';
@@ -124,7 +125,13 @@ let cachedDayBillsRecord: Record<string, Bill[]> = {};
 /**
  * 在账单增删改后通知按日明细缓存刷新指定日期或清空重取。
  */
-export function invalidateLoadedDayBillsCache(dates?: readonly string[]): void {
+export function invalidateLoadedDayBillsCache(
+  dates?: readonly string[],
+  options?: { skipCloudDirtyMark?: boolean },
+): void {
+  if (!options?.skipCloudDirtyMark) {
+    markCloudBillsDirty(dates);
+  }
   if (!dates || dates.length === 0) {
     cachedDayBillsRecord = {};
     return;
